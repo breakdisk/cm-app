@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::domain::entities::{LegStatus, Order, OrderStatus, VendorLeg};
+use crate::domain::entities::{LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus, VendorLeg};
 use crate::domain::repositories::OrderRepository;
 
 pub struct PgOrderRepository { pool: PgPool }
@@ -20,6 +20,25 @@ fn order_status(s: &str) -> anyhow::Result<OrderStatus> {
         "delivered"        => OrderStatus::Delivered,
         "cancelled"        => OrderStatus::Cancelled,
         other => anyhow::bail!("unknown order status in database: {other}"),
+    })
+}
+
+fn payment_method(s: &str) -> anyhow::Result<PaymentMethod> {
+    Ok(match s {
+        "cod"    => PaymentMethod::Cod,
+        "online" => PaymentMethod::Online,
+        other => anyhow::bail!("unknown payment method in database: {other}"),
+    })
+}
+
+fn payment_status(s: &str) -> anyhow::Result<PaymentStatus> {
+    Ok(match s {
+        "pending"    => PaymentStatus::Pending,
+        "authorized" => PaymentStatus::Authorized,
+        "captured"   => PaymentStatus::Captured,
+        "voided"     => PaymentStatus::Voided,
+        "failed"     => PaymentStatus::Failed,
+        other => anyhow::bail!("unknown payment status in database: {other}"),
     })
 }
 
@@ -47,8 +66,10 @@ impl OrderRepository for PgOrderRepository {
                 goods_total_cents, delivery_fee_cents, tip_cents, grand_total_cents,
                 courier_trip_cents, courier_task_id, placed_at, delivered_at,
                 delivery_lat, delivery_lng, customer_name, customer_phone, courier_user_id,
-                delivery_note
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+                delivery_note, payment_method, payment_status, payment_intent_id,
+                prepaid_amount_cents, payment_authorized_at, pending_offer_card
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                      $21,$22,$23,$24,$25,$26)
             ON CONFLICT (id) DO UPDATE SET
                 status          = EXCLUDED.status,
                 courier_task_id = EXCLUDED.courier_task_id,
@@ -65,7 +86,16 @@ impl OrderRepository for PgOrderRepository {
                 customer_name   = COALESCE(EXCLUDED.customer_name, omnideliv.orders.customer_name),
                 delivery_note   = COALESCE(EXCLUDED.delivery_note, omnideliv.orders.delivery_note),
                 customer_phone  = COALESCE(EXCLUDED.customer_phone, omnideliv.orders.customer_phone),
-                courier_user_id = COALESCE(EXCLUDED.courier_user_id, omnideliv.orders.courier_user_id)
+                courier_user_id = COALESCE(EXCLUDED.courier_user_id, omnideliv.orders.courier_user_id),
+                -- Mutable after creation — the payment.intent.authorized
+                -- consumer, the courier-milestone capture, and the recovery
+                -- sweep's void all advance these on an already-persisted order.
+                -- `payment_method` and `prepaid_amount_cents` are deliberately
+                -- absent from this list: both are fixed at checkout and never
+                -- change again, exactly like `goods_total_cents` above them.
+                payment_status         = EXCLUDED.payment_status,
+                payment_intent_id      = EXCLUDED.payment_intent_id,
+                payment_authorized_at  = EXCLUDED.payment_authorized_at
             "#,
         )
         .bind(o.id).bind(o.tenant_id).bind(o.customer_id).bind(o.basket_id).bind(o.plan_id)
@@ -76,6 +106,9 @@ impl OrderRepository for PgOrderRepository {
         .bind(o.delivery_lat).bind(o.delivery_lng)
         .bind(&o.customer_name).bind(&o.customer_phone).bind(o.courier_user_id)
         .bind(&o.delivery_note)
+        .bind(o.payment_method.as_str()).bind(o.payment_status.as_str())
+        .bind(o.payment_intent_id).bind(o.prepaid_amount_cents).bind(o.payment_authorized_at)
+        .bind(&o.pending_offer_card)
         .execute(&mut *tx).await?;
 
         for l in &o.legs {
@@ -118,6 +151,8 @@ impl OrderRepository for PgOrderRepository {
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let status: String = r.get("status");
+            let pm: String = r.get("payment_method");
+            let ps: String = r.get("payment_status");
             out.push(Order {
                 id:                 r.get("id"),
                 tenant_id:          r.get("tenant_id"),
@@ -140,6 +175,12 @@ impl OrderRepository for PgOrderRepository {
                 legs:               Vec::new(),
                 placed_at:          r.get("placed_at"),
                 delivered_at:       r.get("delivered_at"),
+                payment_method:        payment_method(&pm)?,
+                payment_status:        payment_status(&ps)?,
+                payment_intent_id:     r.get("payment_intent_id"),
+                prepaid_amount_cents:  r.get("prepaid_amount_cents"),
+                payment_authorized_at: r.get("payment_authorized_at"),
+                pending_offer_card:    r.get("pending_offer_card"),
             });
         }
         Ok(out)
@@ -235,6 +276,8 @@ impl OrderRepository for PgOrderRepository {
         }
 
         let status: String = r.get("status");
+        let pm: String = r.get("payment_method");
+        let ps: String = r.get("payment_status");
         Ok(Some(Order {
             id:                 r.get("id"),
             tenant_id:          r.get("tenant_id"),
@@ -257,6 +300,12 @@ impl OrderRepository for PgOrderRepository {
             legs,
             placed_at:          r.get("placed_at"),
             delivered_at:       r.get("delivered_at"),
+            payment_method:        payment_method(&pm)?,
+            payment_status:        payment_status(&ps)?,
+            payment_intent_id:     r.get("payment_intent_id"),
+            prepaid_amount_cents:  r.get("prepaid_amount_cents"),
+            payment_authorized_at: r.get("payment_authorized_at"),
+            pending_offer_card:    r.get("pending_offer_card"),
         }))
     }
 }

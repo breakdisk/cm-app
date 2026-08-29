@@ -23,6 +23,15 @@ pub mod event_type {
     /// Paid, but no courier accepted within the retry window.
     pub const COURIER_REOFFERED: &str = "courier.reoffered";
     pub const ORDER_ESCALATED:   &str = "order.escalated";
+    /// `payment.intent.authorized` landed for an `Online` order — the courier
+    /// offer that COD makes immediately at checkout happens here instead.
+    pub const PAYMENT_AUTHORIZED: &str = "payment.authorized";
+    /// A courier accepted an `Online` order's job and the authorization hold
+    /// was captured.
+    pub const PAYMENT_CAPTURED:   &str = "payment.captured";
+    /// No courier accepted an `Online` order within the no-courier timeout —
+    /// the authorization hold was released. The customer was never charged.
+    pub const PAYMENT_VOIDED:     &str = "payment.voided";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

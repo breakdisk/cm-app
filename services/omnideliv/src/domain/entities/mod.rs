@@ -17,7 +17,10 @@ pub use catalog::{
     ModifierError, ModifierGroup, ModifierOption, SelectedModifier,
 };
 pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
-pub use order::{LegStatus, Order, OrderStatus, Settlement, VendorLeg};
+pub use order::{
+    FundingSource, LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus,
+    PaymentTransitionError, Settlement, VendorLeg,
+};
 pub use telemetry::TelemetryEvent;
 pub use vendor::{Vendor, VendorStatus, Vertical};
 pub use vendor_ledger::{current_period,EntryKind, LedgerEntry, LedgerStatus, VendorLedger};

@@ -52,6 +52,70 @@ impl LegStatus {
     }
 }
 
+/// How the customer pays. `Cod` is every order this service has ever placed;
+/// `Online` is the prepaid-checkout foundation — see `PaymentStatus` and
+/// `Order::cod_amount_cents`.
+///
+/// `Cod` is `#[default]` — every order this service has ever placed.
+/// `CheckoutRequest::payment_method` defaults to this so a client that
+/// predates this feature (the OmniDeliv mobile app included) keeps getting
+/// exactly today's behavior without having to learn a new field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentMethod {
+    #[default]
+    Cod,
+    Online,
+}
+
+impl PaymentMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PaymentMethod::Cod    => "cod",
+            PaymentMethod::Online => "online",
+        }
+    }
+}
+
+/// Where an `Online` order's authorization hold stands. Meaningless for `Cod`
+/// orders — cash never touches a gateway, so this simply never leaves
+/// `Pending` for one, and nothing reads it for a `Cod` order.
+///
+/// `Pending` -> `Authorized` -> `Captured`, or `Pending`/`Authorized` -> `Failed`
+/// / `Voided`. See `Order::payment_authorized` et al. for the guarded
+/// transitions — deliberately its own small state machine, independent of
+/// `OrderStatus`: a courier being offered the job and money being ring-fenced
+/// for it are two different facts about an order, discovered by two different,
+/// asynchronous events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentStatus {
+    #[default]
+    Pending,
+    Authorized,
+    Captured,
+    Voided,
+    Failed,
+}
+
+impl PaymentStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PaymentStatus::Pending    => "pending",
+            PaymentStatus::Authorized => "authorized",
+            PaymentStatus::Captured   => "captured",
+            PaymentStatus::Voided     => "voided",
+            PaymentStatus::Failed     => "failed",
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PaymentTransitionError {
+    #[error("cannot go from payment status {from:?} to {to:?}")]
+    Illegal { from: PaymentStatus, to: PaymentStatus },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VendorLeg {
     pub id:                   Uuid,
@@ -108,6 +172,30 @@ impl VendorLeg {
     }
 }
 
+/// Where the money funding a settlement actually came from.
+///
+/// The four `Settlement` legs sum to `grand_total_cents` either way — this
+/// does not change the arithmetic, only which pool each leg is owed *from*.
+/// A COD order's courier holds the customer's cash and remits it, netting
+/// their own earnings out of what they hand back. A prepaid order's cash
+/// never touches the courier at all: it landed in the NI merchant account,
+/// so the courier is *owed* their earnings from that digital pool instead —
+/// there is nothing for them to net against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FundingSource {
+    /// Every cent is cash the courier collected at the door and must remit.
+    CourierCollectedCash,
+    /// Every cent already sat in the NI merchant account before the courier
+    /// ever showed up. The courier collects nothing and is owed their
+    /// earnings from this pool rather than netting against remitted cash.
+    DigitalPool,
+    /// A partially-prepaid order: `prepaid_amount_cents` came in through NI,
+    /// the rest (`cod_amount_cents`) is cash the courier collects and remits
+    /// exactly like a wholly-COD order — e.g. goods paid online, tip in cash.
+    Mixed { cod_amount_cents: i64, prepaid_amount_cents: i64 },
+}
+
 /// The full three-leg split for one order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Settlement {
@@ -115,15 +203,18 @@ pub struct Settlement {
     pub commissions_cents:      i64,
     pub courier_earnings_cents: i64,
     pub partner_margin_cents:   i64,
+    /// See `FundingSource`. Does not participate in the balance identity —
+    /// it says where the four amounts above came from, not a fifth amount.
+    pub funding: FundingSource,
 }
 
 impl Settlement {
     /// Everything the Partner keeps, by both routes.
     ///
     /// Provided as a method rather than a field on `Settlement` because the
-    /// struct's four fields must each name a disjoint slice of the grand total
-    /// — a fifth field overlapping two of them would break the balance
-    /// identity the moment anyone summed the struct naively.
+    /// struct's four money fields must each name a disjoint slice of the
+    /// grand total — a fifth money field overlapping two of them would break
+    /// the balance identity the moment anyone summed the struct naively.
     pub fn partner_revenue_cents(&self) -> i64 {
         self.commissions_cents + self.partner_margin_cents
     }
@@ -186,6 +277,33 @@ pub struct Order {
     pub legs:               Vec<VendorLeg>,
     pub placed_at:          DateTime<Utc>,
     pub delivered_at:       Option<DateTime<Utc>>,
+    /// `Cod` for every order this service has ever placed. `Default::default()`
+    /// so `Order::place`'s ten-argument signature is unchanged and every
+    /// existing call site — production and test alike — keeps constructing a
+    /// byte-identical COD order. Set via `with_payment` for the `Online` path.
+    pub payment_method:        PaymentMethod,
+    /// Meaningless for `Cod` — see `PaymentStatus`.
+    pub payment_status:        PaymentStatus,
+    /// The `payments` service's `payment_intents.id` for this order's
+    /// authorization hold. `None` for every `Cod` order and for an `Online`
+    /// order before `authorize()` returns.
+    pub payment_intent_id:     Option<Uuid>,
+    /// How much of `grand_total_cents` was (or will be) taken online rather
+    /// than left for the courier to collect at the door. `0` for `Cod`. Not
+    /// necessarily equal to `grand_total_cents` for `Online` either — see
+    /// `cod_amount_cents`.
+    pub prepaid_amount_cents:  i64,
+    /// When `payment_authorized` last ran. `None` until then. This, not
+    /// `placed_at`, is the clock the no-courier void timeout counts from —
+    /// `placed_at` predates authorization by however long the customer spent
+    /// on the hosted checkout page (up to the intent's own TTL).
+    pub payment_authorized_at: Option<DateTime<Utc>>,
+    /// The exact offer card `build_offer_card` produced at checkout time, held
+    /// here so the `payment.intent.authorized` consumer can offer the job to
+    /// couriers with the identical card a COD order would have shown
+    /// immediately — rather than trying to reconstruct one later from less
+    /// information. `None` for `Cod` orders, which never defer the offer.
+    pub pending_offer_card:    Option<serde_json::Value>,
 }
 
 /// Namespaces identity mints from a phone number for OTP-only sign-in.
@@ -417,6 +535,16 @@ impl Order {
             legs,
             placed_at: Utc::now(),
             delivered_at: None,
+            // Defaulted, not taken as parameters — see the field doc comment.
+            // Set via `with_payment` for the one call site (checkout) that
+            // knows a payment method; every other caller (recovery, replay,
+            // tests) gets exactly today's COD order.
+            payment_method: PaymentMethod::default(),
+            payment_status: PaymentStatus::default(),
+            payment_intent_id: None,
+            prepaid_amount_cents: 0,
+            payment_authorized_at: None,
+            pending_offer_card: None,
         }
     }
 
@@ -441,6 +569,97 @@ impl Order {
     pub fn with_delivery_note(mut self, note: Option<String>) -> Self {
         self.delivery_note = note;
         self
+    }
+
+    /// Switch this order onto the `Online` prepaid rail (or explicitly confirm
+    /// `Cod`). Chainable and separate from `place`'s ten arguments for the same
+    /// reason `with_customer_contact` is: only checkout's `place` call site
+    /// knows a payment method, and every other caller keeps getting the
+    /// `Cod` / `0` default without having to pass it.
+    pub fn with_payment(mut self, method: PaymentMethod, prepaid_amount_cents: i64) -> Self {
+        self.payment_method = method;
+        self.prepaid_amount_cents = prepaid_amount_cents;
+        self
+    }
+
+    /// Hold the exact offer card built at checkout for later use by the
+    /// `payment.intent.authorized` consumer. See the field doc comment.
+    pub fn with_pending_offer_card(mut self, card: Option<serde_json::Value>) -> Self {
+        self.pending_offer_card = card;
+        self
+    }
+
+    /// What the courier collects in cash at the door.
+    ///
+    /// Not a binary switch on `payment_method` — a partially-prepaid order
+    /// (goods paid online, tip left in cash) is representable today by giving
+    /// `prepaid_amount_cents` any value strictly between `0` and
+    /// `grand_total_cents`, and this formula is the one and only place that
+    /// has to know how to turn that into "what does the courier collect."
+    /// Every dispatch call site (checkout, the authorized-payment consumer,
+    /// and the stuck-order recovery sweep) reads this rather than
+    /// `grand_total_cents` directly.
+    pub fn cod_amount_cents(&self) -> i64 {
+        self.grand_total_cents - self.prepaid_amount_cents
+    }
+
+    fn advance_payment(
+        &mut self,
+        to: PaymentStatus,
+        from: &[PaymentStatus],
+    ) -> Result<(), PaymentTransitionError> {
+        // Kafka (and the recovery sweep) can redeliver/re-run the same
+        // transition — a repeat of the current status is a no-op, mirroring
+        // `advance` on `OrderStatus` above.
+        if self.payment_status == to {
+            return Ok(());
+        }
+        if !from.contains(&self.payment_status) {
+            return Err(PaymentTransitionError::Illegal { from: self.payment_status, to });
+        }
+        self.payment_status = to;
+        Ok(())
+    }
+
+    /// The `payment.intent.authorized` webhook landed: funds are ring-fenced,
+    /// not yet taken. This is what unblocks the courier offer for an `Online`
+    /// order — see the consumer in `infrastructure/messaging`.
+    ///
+    /// The already-`Authorized` case is checked explicitly, before deferring
+    /// to `advance_payment`'s own idempotent no-op: that guard only protects
+    /// `payment_status` itself, and would otherwise still let a Kafka
+    /// redelivery re-stamp `payment_authorized_at` with a fresh timestamp —
+    /// which is exactly the clock the no-courier void timeout counts from.
+    pub fn payment_authorized(&mut self, intent_id: Uuid) -> Result<(), PaymentTransitionError> {
+        if self.payment_status == PaymentStatus::Authorized {
+            return Ok(());
+        }
+        self.advance_payment(PaymentStatus::Authorized, &[PaymentStatus::Pending])?;
+        self.payment_intent_id = Some(intent_id);
+        self.payment_authorized_at = Some(Utc::now());
+        Ok(())
+    }
+
+    /// A courier actually accepted the job — the "capture" half of
+    /// authorize-then-capture-or-void. Called from `courier_claimed`'s caller,
+    /// never from within `courier_claimed` itself: capturing money is a
+    /// gateway call the pure state transition must not know how to make.
+    pub fn payment_captured(&mut self) -> Result<(), PaymentTransitionError> {
+        self.advance_payment(PaymentStatus::Captured, &[PaymentStatus::Authorized])
+    }
+
+    /// No courier accepted within the no-courier timeout — release the hold.
+    /// The customer is never charged.
+    pub fn payment_voided(&mut self) -> Result<(), PaymentTransitionError> {
+        self.advance_payment(PaymentStatus::Voided, &[PaymentStatus::Authorized])
+    }
+
+    /// The gateway declined the charge, or the hosted-checkout session simply
+    /// expired unused (`services/payments`' own sweep — both publish the same
+    /// `payment.intent.failed` event, see its doc comment). Either way this
+    /// order never had a courier offered to it, and never will.
+    pub fn payment_failed(&mut self) -> Result<(), PaymentTransitionError> {
+        self.advance_payment(PaymentStatus::Failed, &[PaymentStatus::Pending, PaymentStatus::Authorized])
     }
 
     /// Kafka is at-least-once, so a repeat of the transition we already made is
@@ -545,6 +764,23 @@ impl Order {
         let courier_earnings_cents = self.courier_trip_cents + self.tip_cents;
         let fee_margin_cents       = self.delivery_fee_cents - self.courier_trip_cents;
 
+        // Where the money came from — does not change any of the four amounts
+        // above, only which pool each is owed from. See `FundingSource`.
+        let funding = match self.payment_method {
+            PaymentMethod::Cod => FundingSource::CourierCollectedCash,
+            PaymentMethod::Online => {
+                let cod = self.cod_amount_cents();
+                if cod <= 0 {
+                    FundingSource::DigitalPool
+                } else {
+                    FundingSource::Mixed {
+                        cod_amount_cents: cod,
+                        prepaid_amount_cents: self.prepaid_amount_cents,
+                    }
+                }
+            }
+        };
+
         Settlement {
             vendor_payouts_cents,
             commissions_cents,
@@ -557,6 +793,7 @@ impl Order {
             // `Settlement::partner_revenue_cents`, which adds the two back
             // together for reporting without breaking the identity.
             partner_margin_cents: fee_margin_cents,
+            funding,
         }
     }
 }
@@ -809,6 +1046,182 @@ mod tests {
         assert!(o.courier_claimed(assignment, None).is_ok());
         assert_eq!(o.status, OrderStatus::Collecting);
         assert_eq!(o.courier_task_id, Some(assignment));
+    }
+
+    /// A COD order never touches `with_payment` — every existing call site of
+    /// `Order::place` (production and every test file in this crate) still
+    /// constructs exactly this order, byte-identical to before this feature.
+    #[test]
+    fn a_default_order_is_cod_and_fully_collectible_at_the_door() {
+        let o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        assert_eq!(o.payment_method, PaymentMethod::Cod);
+        assert_eq!(o.payment_status, PaymentStatus::Pending);
+        assert_eq!(o.prepaid_amount_cents, 0);
+        assert_eq!(o.payment_intent_id, None);
+        assert_eq!(
+            o.cod_amount_cents(), o.grand_total_cents,
+            "with nothing prepaid, the courier collects the entire grand total \
+             — exactly today's behavior",
+        );
+    }
+}
+
+#[cfg(test)]
+mod prepaid_checkout {
+    use super::*;
+
+    fn leg(subtotal: i64, bps: i32) -> VendorLeg {
+        VendorLeg::settle(Uuid::new_v4(), Uuid::new_v4(), subtotal, bps)
+    }
+
+    fn cod_order() -> Order {
+        Order::place(
+            Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(),
+            vec![leg(34_000, 1500)], 7_900, 4_000, 5_800, 14.5995, 120.9842,
+        )
+    }
+
+    fn online_order(prepaid_amount_cents: i64) -> Order {
+        cod_order().with_payment(PaymentMethod::Online, prepaid_amount_cents)
+    }
+
+    /// The formula the whole feature rests on: not a binary switch between
+    /// "collect everything" and "collect nothing."
+    #[test]
+    fn cod_amount_is_the_grand_total_minus_whatever_was_prepaid() {
+        let o = online_order(0);
+        assert_eq!(o.cod_amount_cents(), o.grand_total_cents, "nothing prepaid yet");
+
+        let fully_prepaid = online_order(o.grand_total_cents);
+        assert_eq!(fully_prepaid.cod_amount_cents(), 0, "a fully online order collects nothing");
+
+        // The case the design exists for: goods paid online, tip left in cash.
+        let partial = o.tip_cents; // whatever isn't prepaid
+        let mixed = online_order(o.grand_total_cents - partial);
+        assert_eq!(mixed.cod_amount_cents(), partial, "the remainder is exactly what wasn't prepaid");
+        assert!(
+            mixed.cod_amount_cents() > 0 && mixed.cod_amount_cents() < mixed.grand_total_cents,
+            "a genuinely partial prepay, not one of the two extremes",
+        );
+    }
+
+    #[test]
+    fn payment_authorized_moves_pending_to_authorized_and_stamps_the_intent() {
+        let mut o = online_order(o_total(&cod_order()));
+        let intent = Uuid::new_v4();
+
+        assert!(o.payment_authorized(intent).is_ok());
+        assert_eq!(o.payment_status, PaymentStatus::Authorized);
+        assert_eq!(o.payment_intent_id, Some(intent));
+        assert!(o.payment_authorized_at.is_some());
+    }
+
+    fn o_total(o: &Order) -> i64 { o.grand_total_cents }
+
+    /// Kafka redelivers `payment.intent.authorized` at least once — a repeat
+    /// must not error and must not re-stamp `payment_authorized_at`.
+    #[test]
+    fn a_repeated_authorization_is_idempotent() {
+        let mut o = online_order(1);
+        o.payment_authorized(Uuid::new_v4()).unwrap();
+        let first_stamp = o.payment_authorized_at;
+
+        assert!(o.payment_authorized(Uuid::new_v4()).is_ok(), "a duplicate must not error");
+        assert_eq!(o.payment_authorized_at, first_stamp, "and must not advance again");
+    }
+
+    #[test]
+    fn capture_requires_an_authorized_intent() {
+        let mut o = online_order(1);
+        assert!(o.payment_captured().is_err(), "nothing was authorized yet");
+
+        o.payment_authorized(Uuid::new_v4()).unwrap();
+        assert!(o.payment_captured().is_ok());
+        assert_eq!(o.payment_status, PaymentStatus::Captured);
+    }
+
+    #[test]
+    fn void_requires_an_authorized_intent_and_the_customer_is_never_charged() {
+        let mut o = online_order(1);
+        assert!(o.payment_voided().is_err(), "nothing was authorized yet");
+
+        o.payment_authorized(Uuid::new_v4()).unwrap();
+        assert!(o.payment_voided().is_ok());
+        assert_eq!(o.payment_status, PaymentStatus::Voided);
+    }
+
+    /// Once captured or voided, the payment status is terminal — a stray
+    /// second capture or void attempt must be refused, not silently repeated
+    /// against the gateway.
+    #[test]
+    fn a_terminal_payment_status_refuses_further_transitions() {
+        let mut captured = online_order(1);
+        captured.payment_authorized(Uuid::new_v4()).unwrap();
+        captured.payment_captured().unwrap();
+        assert!(captured.payment_voided().is_err());
+
+        let mut voided = online_order(1);
+        voided.payment_authorized(Uuid::new_v4()).unwrap();
+        voided.payment_voided().unwrap();
+        assert!(voided.payment_captured().is_err());
+    }
+
+    #[test]
+    fn payment_failed_is_reachable_before_or_after_authorization() {
+        let mut before = online_order(1);
+        assert!(before.payment_failed().is_ok());
+        assert_eq!(before.payment_status, PaymentStatus::Failed);
+
+        let mut after = online_order(1);
+        after.payment_authorized(Uuid::new_v4()).unwrap();
+        assert!(after.payment_failed().is_ok());
+        assert_eq!(after.payment_status, PaymentStatus::Failed);
+    }
+
+    /// A COD order's settlement is funded from cash the courier collected —
+    /// unchanged from today.
+    #[test]
+    fn cod_settlement_is_funded_by_courier_collected_cash() {
+        let o = cod_order();
+        assert_eq!(o.settlement().funding, FundingSource::CourierCollectedCash);
+    }
+
+    /// A fully-prepaid order's courier collects nothing, so their earnings
+    /// are owed from the digital pool, not netted against remitted cash.
+    #[test]
+    fn a_fully_prepaid_settlement_is_funded_from_the_digital_pool() {
+        let o = online_order(o_total(&cod_order()));
+        assert_eq!(o.settlement().funding, FundingSource::DigitalPool);
+    }
+
+    /// A partially-prepaid order's settlement names both pools and the exact
+    /// split between them.
+    #[test]
+    fn a_partially_prepaid_settlement_names_the_split() {
+        let full = o_total(&cod_order());
+        let o = online_order(full - 4_000); // everything but the tip
+        let funding = o.settlement().funding;
+        assert_eq!(
+            funding,
+            FundingSource::Mixed { cod_amount_cents: 4_000, prepaid_amount_cents: full - 4_000 },
+        );
+    }
+
+    /// Whatever the funding source, the four-leg balance identity — the
+    /// invariant `settlement_invariant.rs` sweeps — must still hold exactly.
+    /// Prepaying changes *where* the money came from, never *how much* is
+    /// owed to whom.
+    #[test]
+    fn the_balance_identity_holds_regardless_of_funding_source() {
+        for prepaid in [0, 20_000, o_total(&cod_order())] {
+            let o = online_order(prepaid);
+            let s = o.settlement();
+            assert_eq!(
+                o.grand_total_cents,
+                s.vendor_payouts_cents + s.commissions_cents + s.courier_earnings_cents + s.partner_margin_cents,
+                "prepaid={prepaid} must still balance",
+            );
+        }
     }
 }
 

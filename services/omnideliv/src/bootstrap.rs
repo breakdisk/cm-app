@@ -5,13 +5,16 @@ use logisticos_auth::jwt::JwtService;
 use sqlx::postgres::PgPoolOptions;
 
 use crate::api::http::{router, AppState};
+use crate::application::services::order_payments::OrderPayments;
 use crate::application::services::{BasketService, CatalogService};
 use crate::config::Config;
 use crate::infrastructure::db::{
     PgBasketRepository, PgCatalogRepository, PgOrderRepository, PgTelemetryRepository,
     PgVendorRepository,
 };
-use crate::infrastructure::external::{BasketServiceAdapter, CatalogServiceAdapter, FieldOpsDispatch};
+use crate::infrastructure::external::{
+    BasketServiceAdapter, CatalogServiceAdapter, FieldOpsDispatch, OmniPaymentsClient,
+};
 use crate::application::services::{CheckoutService, RecoveryService};
 use crate::domain::repositories::{
     OrderRepository, TelemetryRepository, VendorLedgerRepository, VendorRepository,
@@ -95,6 +98,14 @@ pub async fn run() -> anyhow::Result<()> {
         },
     ));
 
+    // OmniDeliv's prepaid-checkout foundation: authorize-then-capture-or-void
+    // against `services/payments`' mesh-internal payment-intent routes. A
+    // deployment with this misconfigured still boots and still takes COD
+    // orders — only `PaymentMethod::Online` checkout fails, and it fails
+    // loudly per-request (a 5xx from `payments.authorize`) rather than at
+    // startup.
+    let payments: Arc<dyn OrderPayments> = Arc::new(OmniPaymentsClient::new(cfg.payments_url.clone()));
+
     let checkout = Arc::new(CheckoutService::new(
         Arc::new(PgBasketRepository::new(pool.clone())),
         Arc::new(PgVendorRepository::new(pool.clone())),
@@ -102,6 +113,9 @@ pub async fn run() -> anyhow::Result<()> {
         // `tenant_id` from the claim set, so the token has to be minted per
         // call with the caller's tenant. See field_ops_dispatch.rs.
         field_ops.clone(),
+        payments.clone(),
+        cfg.payment_currency.clone(),
+        cfg.payment_return_url_base.clone(),
     ));
     let orders: Arc<dyn OrderRepository> = Arc::new(PgOrderRepository::new(pool.clone()));
     let telemetry: Arc<dyn TelemetryRepository> = Arc::new(PgTelemetryRepository::new(pool.clone()));
@@ -180,6 +194,7 @@ pub async fn run() -> anyhow::Result<()> {
         ledgers,
         telemetry.clone(),
         order_events,
+        payments.clone(),
     ));
 
     match logisticos_events::consumer::KafkaConsumer::new(
@@ -221,6 +236,50 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
+    // `payment.intent.authorized` / `payment.intent.failed` — the deferred
+    // half of `PaymentMethod::Online` checkout. Without this, an online order
+    // opens an authorization hold and then sits forever: no courier is ever
+    // offered, and a declined/expired payment never cancels the order. See
+    // `infrastructure::messaging::payment_consumer`'s module doc comment.
+    match logisticos_events::consumer::KafkaConsumer::new(
+        &cfg.kafka.brokers,
+        "omnideliv-payment-intents",
+        &[
+            logisticos_events::topics::PAYMENT_INTENT_AUTHORIZED,
+            logisticos_events::topics::PAYMENT_INTENT_FAILED,
+        ],
+    ) {
+        Ok(consumer) => {
+            let orders_for_payments = orders.clone();
+            let telemetry_for_payments = telemetry.clone();
+            let dispatch_for_payments: Arc<dyn crate::application::services::CourierDispatch> =
+                field_ops.clone();
+            tokio::spawn(async move {
+                let r = consumer
+                    .run(move |topic, payload| {
+                        let orders = orders_for_payments.clone();
+                        let telemetry = telemetry_for_payments.clone();
+                        let dispatch = dispatch_for_payments.clone();
+                        async move {
+                            crate::infrastructure::messaging::payment_consumer::handle(
+                                &topic, payload, &orders, &telemetry, &dispatch,
+                            )
+                            .await
+                        }
+                    })
+                    .await;
+
+                if let Err(e) = r {
+                    tracing::error!(err = %e, "omnideliv payment-intent consumer stopped");
+                }
+            });
+        }
+        Err(e) => {
+            tracing::error!(err = %e, brokers = %cfg.kafka.brokers,
+                "Kafka unavailable — payment-intent events will NOT be consumed, so an online                  order will never have its courier offered and a failed payment will never cancel it");
+        }
+    }
+
     // Stuck-order recovery. A timer rather than an event handler, because a
     // stuck order is defined by an event that never arrived — nothing
     // event-driven can notice its absence.
@@ -230,6 +289,8 @@ pub async fn run() -> anyhow::Result<()> {
         // The same field-ops client checkout uses, so a re-offer is
         // indistinguishable from a first offer at the platform tier.
         field_ops.clone(),
+        payments.clone(),
+        cfg.online_no_courier_timeout_mins,
     ));
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
