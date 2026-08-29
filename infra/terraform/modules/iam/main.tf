@@ -56,6 +56,12 @@ variable "pod_photos_bucket_name" {
   default     = ""
 }
 
+variable "pop_photos_bucket_name" {
+  description = "Name of the S3 bucket used for POP (Proof of Pickup) photos."
+  type        = string
+  default     = ""
+}
+
 variable "model_artifacts_bucket_name" {
   description = "Name of the S3 bucket used for ONNX model artifacts consumed by the AI layer."
   type        = string
@@ -96,6 +102,10 @@ locals {
   pod_photos_bucket = coalesce(
     var.pod_photos_bucket_name,
     "logisticos-pod-photos-${var.environment}"
+  )
+  pop_photos_bucket = coalesce(
+    var.pop_photos_bucket_name,
+    "logisticos-pop-photos-${var.environment}"
   )
   model_artifacts_bucket = coalesce(
     var.model_artifacts_bucket_name,
@@ -859,7 +869,10 @@ resource "aws_iam_role" "pod" {
 }
 
 data "aws_iam_policy_document" "pod_permissions" {
-  # S3 — POD photos (driver captures signature/photo at delivery point)
+  # S3 — POD photos (driver captures signature/photo at delivery point) and
+  # POP photos (parcel photo at pickup). Both buckets are owned by the pod
+  # service; presigned driver uploads target whichever bucket matches the
+  # evidence type, so the role needs read/write on both.
   statement {
     sid    = "S3PODPhotosReadWrite"
     effect = "Allow"
@@ -873,6 +886,8 @@ data "aws_iam_policy_document" "pod_permissions" {
     resources = [
       "arn:aws:s3:::${local.pod_photos_bucket}",
       "arn:aws:s3:::${local.pod_photos_bucket}/*",
+      "arn:aws:s3:::${local.pop_photos_bucket}",
+      "arn:aws:s3:::${local.pop_photos_bucket}/*",
     ]
   }
 
@@ -907,7 +922,7 @@ data "aws_iam_policy_document" "pod_permissions" {
     ]
   }
 
-  # Deny any S3 access outside the POD bucket
+  # Deny any S3 access outside the POD/POP evidence buckets
   statement {
     sid    = "DenyNonPODS3"
     effect = "Deny"
@@ -917,6 +932,8 @@ data "aws_iam_policy_document" "pod_permissions" {
     not_resources = [
       "arn:aws:s3:::${local.pod_photos_bucket}",
       "arn:aws:s3:::${local.pod_photos_bucket}/*",
+      "arn:aws:s3:::${local.pop_photos_bucket}",
+      "arn:aws:s3:::${local.pop_photos_bucket}/*",
     ]
   }
 }

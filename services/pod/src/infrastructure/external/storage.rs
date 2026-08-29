@@ -207,3 +207,74 @@ impl StorageAdapter for S3StorageAdapter {
         }
     }
 }
+
+impl S3StorageAdapter {
+    /// Verify this adapter's bucket can actually take uploads, creating it when
+    /// possible. Returns true when the bucket exists, was just created, or
+    /// accepts writes despite HEAD being denied (bucket-scoped R2 tokens deny
+    /// HeadBucket/CreateBucket while object PUTs work fine). Returns false when
+    /// presigned PUTs against it would fail — the caller should fall back to a
+    /// bucket that is known to work.
+    ///
+    /// Why this exists: presigning is pure local signature computation and never
+    /// touches the network, so this service happily hands out PUT URLs for a
+    /// bucket that was never created. The failure then surfaces only on the
+    /// driver's phone as a rejected upload (NoSuchBucket / AccessDenied), which
+    /// the app treats as non-fatal — the POP submits without its photo and the
+    /// evidence silently never reaches R2. Probing at boot turns that invisible
+    /// per-upload failure into one loud startup log plus an automatic fallback.
+    pub async fn ensure_bucket(&self) -> bool {
+        // 1. HEAD — cheapest, succeeds in the common healthy case.
+        match self.client.head_bucket().bucket(&self.bucket).send().await {
+            Ok(_) => return true,
+            Err(e) => tracing::warn!(
+                bucket = %self.bucket, error = ?e,
+                "HEAD bucket failed — attempting to create it"
+            ),
+        }
+
+        // 2. Create — works on MinIO, R2 admin tokens, and AWS when the role has
+        // CreateBucket. No LocationConstraint on purpose: R2/MinIO ignore it and
+        // regional AWS provisioning belongs to Terraform, not runtime.
+        match self.client.create_bucket().bucket(&self.bucket).send().await {
+            Ok(_) => {
+                tracing::info!(bucket = %self.bucket, "bucket did not exist — created it");
+                return true;
+            }
+            Err(e) => tracing::warn!(
+                bucket = %self.bucket, error = ?e,
+                "CreateBucket failed — probing writability with a zero-byte object"
+            ),
+        }
+
+        // 3. Probe write — exercises exactly the permission drivers need for
+        // presigned PUTs, rescuing the scoped-token case where HEAD/Create 403
+        // even though the bucket is fully usable.
+        let probe_key = ".logisticos-bucket-probe";
+        match self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(probe_key)
+            .body(aws_sdk_s3::primitives::ByteStream::from_static(b""))
+            .send()
+            .await
+        {
+            Ok(_) => {
+                let _ = self.client.delete_object().bucket(&self.bucket).key(probe_key).send().await;
+                tracing::info!(
+                    bucket = %self.bucket,
+                    "probe write succeeded — bucket usable despite HEAD/Create denial (scoped token)"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::error!(
+                    bucket = %self.bucket, error = ?e,
+                    "bucket unusable: HEAD, CreateBucket, and probe write all failed — \
+                     presigned uploads against it would be rejected"
+                );
+                false
+            }
+        }
+    }
+}
