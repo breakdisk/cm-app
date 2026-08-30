@@ -150,6 +150,22 @@ fn an_order_with_a_leg_on_the_counter_does_not_advance_to_delivering() {
 }
 
 #[test]
+fn an_order_with_a_leg_still_earlier_in_acceptance_does_not_advance() {
+    // Same defect, two more points on the same curve: `Ready` was covered
+    // above, but a leg that hasn't even been accepted yet, or is mid-prep,
+    // must block collection exactly as much as one sitting cooked on the
+    // counter.
+    for blocking in [LegStatus::Accepted, LegStatus::Preparing] {
+        let mut o = order_with(&[LegStatus::PickedUp, blocking]);
+        o.status = OrderStatus::Collecting;
+        assert!(
+            o.all_legs_collected().is_err(),
+            "a leg at {blocking:?} must block the order from advancing",
+        );
+    }
+}
+
+#[test]
 fn an_order_whose_legs_are_all_resolved_advances() {
     let mut o = order_with(&[LegStatus::PickedUp, LegStatus::Rejected]);
     o.status = OrderStatus::Collecting;
