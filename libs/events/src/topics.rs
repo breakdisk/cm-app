@@ -133,6 +133,17 @@ pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbo
 pub const OMNIDELIV_ORDER_PLACED:    &str = "omnideliv.order.placed";
 pub const OMNIDELIV_ORDER_DELIVERED: &str = "omnideliv.order.delivered";
 
+// Vendor-facing, and keyed on `vendor_id` rather than `order_id` (ADR-0017).
+//
+// A stall needs its own work delivered in order, and one foodcourt order
+// produces one message per stall. Keying these on the order would put three
+// stalls' work on one partition and interleave it; widening `order.placed`
+// instead would put two recipients with different authorization rules on one
+// message.
+pub const OMNIDELIV_VENDOR_LEG_RECEIVED: &str = "omnideliv.vendor.leg.received";
+pub const OMNIDELIV_VENDOR_LEG_ACCEPTED: &str = "omnideliv.vendor.leg.accepted";
+pub const OMNIDELIV_VENDOR_LEG_REJECTED: &str = "omnideliv.vendor.leg.rejected";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +159,25 @@ mod tests {
         assert_eq!(HUB_DISPATCH_REQUESTED,        "logisticos.hub.shipment.dispatch_requested");
         assert_eq!(HUB_CARRIER_BOOKING_REQUESTED, "logisticos.hub.shipment.carrier_booking_requested");
         assert_eq!(CONSOLIDATION_PLAN_LOADED,     "logisticos.hub.consolidation.plan_loaded");
+    }
+
+    /// OmniDeliv topics are deliberately outside the `logisticos.` namespace
+    /// asserted below — it is a product tier, not the platform (ADR-0009) — so
+    /// they get their own check rather than being left uncovered.
+    #[test]
+    fn omnideliv_topics_are_namespaced_to_the_product() {
+        let topics: &[&str] = &[
+            OMNIDELIV_ORDER_PLACED, OMNIDELIV_ORDER_DELIVERED,
+            OMNIDELIV_VENDOR_LEG_RECEIVED, OMNIDELIV_VENDOR_LEG_ACCEPTED,
+            OMNIDELIV_VENDOR_LEG_REJECTED,
+        ];
+        for t in topics {
+            assert!(t.starts_with("omnideliv."), "Topic '{t}' must start with omnideliv.");
+            assert!(
+                t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),
+                "Topic '{t}' has invalid chars",
+            );
+        }
     }
 
     #[test]

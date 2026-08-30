@@ -146,6 +146,19 @@ create_topic "fieldops.courier" 1
 create_topic "omnideliv.order.placed" 1
 create_topic "omnideliv.order.delivered" 1
 
+# OmniDeliv vendor legs (ADR-0017) — one message per vendor per order, keyed on
+# vendor_id so a stall's own work arrives in order. Created here for the same
+# reason as fieldops.courier above: the vendor console and the notification
+# consumers subscribe at startup, and a topic that does not exist yet leaves
+# them logging UnknownTopicOrPartition with no recovery short of a restart.
+#
+# One partition. Ordering per vendor is what matters, these are keyed on
+# vendor_id, and a single partition gives total order for free at this volume —
+# a stall must never see "accepted" before the "received" it answers.
+create_topic "omnideliv.vendor.leg.received" 1
+create_topic "omnideliv.vendor.leg.accepted" 1
+create_topic "omnideliv.vendor.leg.rejected" 1
+
 # ── Topics that had consumers but no topic ───────────────────────────────────
 #
 # A topic is created by its first PUBLISH. A consumer that subscribes before
