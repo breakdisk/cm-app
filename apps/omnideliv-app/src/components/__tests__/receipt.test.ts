@@ -63,4 +63,44 @@ describe("settlementLine", () => {
     });
     expect(l.owed).toBe(false);
   });
+
+  /**
+   * The field arrives absent, not null, when the deployed omnideliv service
+   * predates it. TypeScript types it non-optional, so nothing catches that at
+   * the boundary and every branch below silently reads `undefined`:
+   * `undefined === 0` is false, so a card order fell through to the cash
+   * sentence, and peso(undefined) rendered the amount as NaN. Observed live on
+   * 2026-08-30 as "Please have PhpNaN in cash ready" on a card order.
+   */
+  describe("when the server omits cod_amount_cents", () => {
+    const absent = undefined as unknown as number;
+
+    it("never renders NaN", () => {
+      for (const payment_status of ["pending", "authorized", "captured"] as const) {
+        for (const settled of [true, false]) {
+          const l = settlementLine({ cod_amount_cents: absent, payment_status, settled });
+          expect(l.text).not.toMatch(/NaN/);
+        }
+      }
+    });
+
+    it("does not send a card customer to find cash", () => {
+      for (const payment_status of ["authorized", "captured"] as const) {
+        const l = settlementLine({ cod_amount_cents: absent, payment_status, settled: false });
+        expect(l.owed).toBe(false);
+        expect(l.text).not.toMatch(/cash/i);
+      }
+    });
+
+    it("still warns an unpaid customer, without inventing an amount", () => {
+      const l = settlementLine({
+        cod_amount_cents: absent,
+        payment_status: "pending",
+        settled: false,
+      });
+      expect(l.owed).toBe(true);
+      expect(l.text).toMatch(/cash/i);
+      expect(l.text).not.toMatch(/NaN/);
+    });
+  });
 });

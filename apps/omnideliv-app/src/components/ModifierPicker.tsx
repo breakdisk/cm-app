@@ -15,6 +15,7 @@
  */
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { ModifierGroup, SearchHit } from "@/api/catalog";
 import { theme } from "@/theme";
@@ -44,6 +45,7 @@ export function ModifierPicker({
   // dependency below on every render and defeat it entirely.
   const groups = useMemo(() => item.modifiers ?? [], [item.modifiers]);
   const [chosen, setChosen] = useState<string[]>([]);
+  const insets = useSafeAreaInsets();
 
   const toggle = (g: ModifierGroup, optionId: string) => {
     setChosen((prev) => {
@@ -97,7 +99,15 @@ export function ModifierPicker({
           borderTopRightRadius: 20,
           borderTopWidth: 1,
           borderColor: "rgba(255,255,255,0.1)",
-          padding: 20,
+          paddingTop: 20,
+          paddingHorizontal: 20,
+          // This overlay is pinned to the window's `bottom: 0`, so it runs under
+          // the Android navigation bar instead of stopping above it: the screen's
+          // SafeAreaView pads its own flow children, and an absolutely positioned
+          // one escapes that padding. Cancel and Add rendered beneath the system
+          // buttons and could not be tapped. Math.max keeps the original 20 where
+          // there is no inset to clear — gesture navigation, and the web export.
+          paddingBottom: Math.max(insets.bottom, 20),
           gap: 14,
           maxHeight: "80%",
         }}

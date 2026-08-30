@@ -37,9 +37,13 @@ export default function Review() {
   const [tip, setTip] = useState("0");
   // The courier reads this at the door. See `checkout` in api/orders.ts.
   const [note, setNote] = useState("");
-  // COD is the default because it is what every order before this feature was,
-  // and because it is the one method that cannot fail after the order exists.
-  const [method, setMethod] = useState<PaymentMethod>("cod");
+  // Card is the default. COD held this slot because it is the one method that
+  // cannot fail after the order exists, and that is still true — but defaulting
+  // to it made the common case a doorstep cash handover and a courier carrying
+  // change. The trade-off is taken deliberately: an authorization can be
+  // declined, so cash stays one tap away rather than being removed, and a hold
+  // that no courier accepts is released instead of charged.
+  const [method, setMethod] = useState<PaymentMethod>("online");
   const [placing, setPlacing] = useState(false);
 
   const load = useCallback(async () => {
@@ -324,17 +328,20 @@ export default function Review() {
             <View style={{ gap: 6 }}>
               <Text style={{ color: theme.muted, fontSize: 12 }}>How you&apos;ll pay</Text>
               <View style={{ flexDirection: "row", gap: 8 }}>
-                <PayOption
-                  label="Cash on delivery"
-                  sub="Pay the courier at the door"
-                  selected={method === "cod"}
-                  onPress={() => setMethod("cod")}
-                />
+                {/* Card leads because it is the default. An option that is
+                    already selected on arrival but rendered second reads as
+                    though something else was chosen on your behalf. */}
                 <PayOption
                   label="Card"
                   sub="Pay now, nothing at the door"
                   selected={method === "online"}
                   onPress={() => setMethod("online")}
+                />
+                <PayOption
+                  label="Cash on delivery"
+                  sub="Pay the courier at the door"
+                  selected={method === "cod"}
+                  onPress={() => setMethod("cod")}
                 />
               </View>
               {method === "online" && (
