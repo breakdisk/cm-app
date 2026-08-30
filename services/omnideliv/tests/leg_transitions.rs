@@ -113,3 +113,79 @@ fn the_accepted_subtotal_excludes_refused_legs() {
         other => panic!("expected Resolved, got {other:?}"),
     }
 }
+
+use logisticos_omnideliv::domain::entities::OrderStatus;
+
+#[test]
+fn an_unrecognised_wire_string_is_rejected_rather_than_defaulted() {
+    // `order_repo::leg_status` depends entirely on this: a row written by a
+    // newer deploy must fail loudly, not decode as Pending and re-offer work
+    // that is already underway.
+    assert_eq!(LegStatus::from_wire("bogus"), None);
+    assert_eq!(LegStatus::from_wire(""), None);
+    assert_eq!(LegStatus::from_wire("PENDING"), None, "parsing is case-sensitive");
+}
+
+#[test]
+fn a_leg_still_being_prepared_blocks_collection() {
+    // The bug this test exists for: under the old four states, "not pending"
+    // meant "resolved". It no longer does. A leg sitting at Ready is accepted
+    // and cooked and still on the counter — the order must not advance.
+    for s in [LegStatus::Pending, LegStatus::Accepted, LegStatus::Preparing, LegStatus::Ready] {
+        assert!(s.blocks_collection(), "{s:?} must block the order from advancing");
+    }
+    for s in [LegStatus::PickedUp, LegStatus::Rejected, LegStatus::Failed, LegStatus::Served] {
+        assert!(!s.blocks_collection(), "{s:?} is resolved and must not block");
+    }
+}
+
+#[test]
+fn an_order_with_a_leg_on_the_counter_does_not_advance_to_delivering() {
+    let mut o = order_with(&[LegStatus::PickedUp, LegStatus::Ready]);
+    o.status = OrderStatus::Collecting;
+    assert!(
+        o.all_legs_collected().is_err(),
+        "one leg collected and one still ready must not advance the order",
+    );
+}
+
+#[test]
+fn an_order_whose_legs_are_all_resolved_advances() {
+    let mut o = order_with(&[LegStatus::PickedUp, LegStatus::Rejected]);
+    o.status = OrderStatus::Collecting;
+    assert!(o.all_legs_collected().is_ok(), "a rejected leg is resolved, not outstanding");
+    assert_eq!(o.status, OrderStatus::Delivering);
+}
+
+#[test]
+fn every_status_is_covered_by_the_transition_graph_lookup() {
+    // `LegStatus::ALL` is what the repository derives its SQL predecessor list
+    // from. A variant missing from it would silently become untransitionable.
+    assert_eq!(LegStatus::ALL.len(), 9);
+    for s in LegStatus::ALL {
+        assert_eq!(LegStatus::from_wire(s.as_str()), Some(s));
+    }
+}
+
+#[test]
+fn a_failed_leg_is_neither_accepted_nor_rejected() {
+    // `Failed` means the leg passed acceptance and broke afterwards, so it is
+    // not a vendor refusal — conflating the two would send an ops team down
+    // the wrong remediation path. The consequence, which is easy to misread
+    // on a dashboard, is that `accepted + rejected` does NOT equal the leg
+    // count when any leg failed.
+    let o = order_with(&[LegStatus::Accepted, LegStatus::Failed]);
+    assert_eq!(
+        o.acceptance_state(),
+        AcceptanceState::Resolved { accepted: 1, rejected: 0, accepted_subtotal_cents: 1_000 },
+    );
+}
+
+#[test]
+fn an_order_with_no_legs_is_resolved_and_owed_nothing() {
+    let o = order_with(&[]);
+    assert_eq!(
+        o.acceptance_state(),
+        AcceptanceState::Resolved { accepted: 0, rejected: 0, accepted_subtotal_cents: 0 },
+    );
+}

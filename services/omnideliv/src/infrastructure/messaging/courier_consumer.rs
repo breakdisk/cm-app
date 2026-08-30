@@ -193,6 +193,19 @@ impl CourierMilestoneHandler {
                     return Ok(());
                 }
 
+                // A leg that reached a terminal state is not re-opened by a
+                // late or out-of-order collection event. Without this, a
+                // `Collected` arriving after a vendor rejected its leg would
+                // overwrite `Rejected` with `PickedUp` and credit a store for
+                // goods it refused to hand over.
+                if leg.status.is_terminal() {
+                    tracing::warn!(
+                        %order_id, %vendor_id, status = leg.status.as_str(),
+                        "collection event for a leg already in a terminal state — not crediting",
+                    );
+                    return Ok(());
+                }
+
                 leg.mark_picked_up();
                 let (goods, commission, leg_id) =
                     (leg.goods_subtotal_cents, leg.commission_cents, leg.id);

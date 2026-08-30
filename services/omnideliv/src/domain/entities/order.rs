@@ -84,6 +84,15 @@ impl LegStatus {
         })
     }
 
+    /// Every variant. The repository derives its legal-predecessor list from
+    /// this rather than hand-writing one per route, so `can_transition_to`
+    /// stays the only statement of the graph.
+    pub const ALL: [LegStatus; 9] = [
+        LegStatus::Pending,  LegStatus::Accepted, LegStatus::Preparing,
+        LegStatus::Ready,    LegStatus::PickedUp, LegStatus::Served,
+        LegStatus::Rejected, LegStatus::Failed,   LegStatus::Settled,
+    ];
+
     pub fn is_terminal(self) -> bool {
         matches!(self, LegStatus::Rejected | LegStatus::Failed | LegStatus::Settled)
     }
@@ -92,6 +101,28 @@ impl LegStatus {
     /// acceptance barrier — see `Order::acceptance_state`.
     pub fn has_answered(self) -> bool {
         self != LegStatus::Pending
+    }
+
+    /// Whether this leg still owes the courier something.
+    ///
+    /// Not the same question as `has_answered`: a leg can have answered the
+    /// vendor's accept/reject question and still be sitting on the counter.
+    /// Before the acceptance states existed, "not pending" happened to mean
+    /// "resolved" — it does not any more, and `all_legs_collected` is the
+    /// caller that would otherwise advance an order whose goods never moved.
+    pub fn blocks_collection(self) -> bool {
+        matches!(
+            self,
+            LegStatus::Pending | LegStatus::Accepted | LegStatus::Preparing | LegStatus::Ready
+        )
+    }
+
+    /// Whether this leg will not be fulfilled — refused by the store, or
+    /// broken later. The acceptance barrier excludes exactly these from the
+    /// amount it captures, so the rule lives here rather than in a closure
+    /// that a later plan would have to re-derive.
+    pub fn declined(self) -> bool {
+        matches!(self, LegStatus::Rejected | LegStatus::Failed)
     }
 
     /// The legal transition graph. Enforced here rather than only in SQL so the
@@ -130,6 +161,9 @@ pub enum AcceptanceState {
     Awaiting { outstanding: usize },
     /// Every leg has answered. `accepted_subtotal_cents` is the amount that may
     /// be captured; the rest of the authorization is voided.
+    ///
+    /// `accepted + rejected` does not necessarily equal the leg count: a
+    /// `Failed` leg is in neither bucket, because it was not refused.
     Resolved { accepted: usize, rejected: usize, accepted_subtotal_cents: i64 },
 }
 
@@ -829,14 +863,17 @@ impl Order {
 
     /// Every leg has reached a terminal state and at least one was collected.
     ///
-    /// A failed leg is resolved, not pending — the courier delivers what they
-    /// have and the failed leg is refunded separately. Only a still-`Pending`
-    /// leg blocks, because delivering then would pay a vendor whose goods were
-    /// never picked up.
+    /// A failed or rejected leg is resolved; a leg still being prepared is
+    /// not.
     pub fn all_legs_collected(&mut self) -> Result<(), TransitionError> {
-        let pending = self.legs.iter().filter(|l| l.status == LegStatus::Pending).count();
-        if pending > 0 {
-            return Err(TransitionError::LegsPending(pending));
+        // Was: a count of `Pending` legs. That was equivalent to "unresolved"
+        // only while `Pending | PickedUp | Failed | Settled` were the only
+        // states. A leg at `Ready` is accepted and cooked and still on the
+        // counter — advancing here would deliver an order whose goods were
+        // never handed over.
+        let outstanding = self.legs.iter().filter(|l| l.status.blocks_collection()).count();
+        if outstanding > 0 {
+            return Err(TransitionError::LegsPending(outstanding));
         }
         if !self.legs.iter().any(|l| l.status == LegStatus::PickedUp) {
             return Err(TransitionError::NothingCollected);
@@ -884,9 +921,7 @@ impl Order {
         // "Accepted" here means the leg survived the ask — anything that is not
         // an outright refusal or failure. A leg already picked up or served is
         // emphatically accepted.
-        let survived = |l: &&VendorLeg| {
-            !matches!(l.status, LegStatus::Rejected | LegStatus::Failed)
-        };
+        let survived = |l: &&VendorLeg| !l.status.declined();
 
         AcceptanceState::Resolved {
             accepted: self.legs.iter().filter(survived).count(),
