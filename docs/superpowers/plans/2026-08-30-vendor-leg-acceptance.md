@@ -37,6 +37,7 @@ ADR-0017 covers four separable subsystems. Per the one-plan-per-subsystem rule, 
 | `services/omnideliv/src/domain/repositories/mod.rs` | Modify: add `VendorLegRepository` trait |
 | `services/omnideliv/src/infrastructure/db/leg_repo.rs` | Create: guarded conditional-UPDATE transitions and the queue read |
 | `services/omnideliv/src/infrastructure/db/order_repo.rs:45` | Modify: teach `leg_status()` the new variants |
+| `services/omnideliv/src/infrastructure/messaging/courier_consumer.rs:192` | Modify (Task 2A): stop a late collection event re-opening a terminal leg and crediting a vendor that rejected it |
 | `services/omnideliv/src/infrastructure/messaging/vendor_events.rs` | Create: vendor-keyed leg publisher |
 | `libs/events/src/topics.rs` | Modify: add the topic constant |
 | `services/omnideliv/src/api/http/vendor_orders.rs` | Create: the queue read and four action routes |
@@ -399,6 +400,177 @@ git commit -m "feat(omnideliv): derive acceptance state from vendor legs"
 
 ---
 
+## Task 2A: Close the four-state assumptions in existing consumers
+
+> **Added after Task 1's code review.** Two call sites were written when a leg could only be `Pending | PickedUp | Failed | Settled`, and both silently become wrong once the intermediate states are reachable. The compiler did not catch them because they use `==` against single variants rather than exhaustive `match`. Neither is a defect in Task 1's diff — both go live when Task 6 lands the routes, so they are fixed first.
+
+**Files:**
+- Modify: `services/omnideliv/src/domain/entities/order.rs` — `all_legs_collected()` (~line 820) and `LegStatus`
+- Modify: `services/omnideliv/src/infrastructure/messaging/courier_consumer.rs` (~line 192)
+- Test: `services/omnideliv/tests/leg_transitions.rs`
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `services/omnideliv/tests/leg_transitions.rs`:
+
+```rust
+use logisticos_omnideliv::domain::entities::OrderStatus;
+
+#[test]
+fn an_unrecognised_wire_string_is_rejected_rather_than_defaulted() {
+    // `order_repo::leg_status` depends entirely on this: a row written by a
+    // newer deploy must fail loudly, not decode as Pending and re-offer work
+    // that is already underway.
+    assert_eq!(LegStatus::from_wire("bogus"), None);
+    assert_eq!(LegStatus::from_wire(""), None);
+    assert_eq!(LegStatus::from_wire("PENDING"), None, "parsing is case-sensitive");
+}
+
+#[test]
+fn a_leg_still_being_prepared_blocks_collection() {
+    // The bug this test exists for: under the old four states, "not pending"
+    // meant "resolved". It no longer does. A leg sitting at Ready is accepted
+    // and cooked and still on the counter — the order must not advance.
+    for s in [LegStatus::Pending, LegStatus::Accepted, LegStatus::Preparing, LegStatus::Ready] {
+        assert!(s.blocks_collection(), "{s:?} must block the order from advancing");
+    }
+    for s in [LegStatus::PickedUp, LegStatus::Rejected, LegStatus::Failed, LegStatus::Served] {
+        assert!(!s.blocks_collection(), "{s:?} is resolved and must not block");
+    }
+}
+
+#[test]
+fn an_order_with_a_leg_on_the_counter_does_not_advance_to_delivering() {
+    let mut o = order_with(&[LegStatus::PickedUp, LegStatus::Ready]);
+    o.status = OrderStatus::Collecting;
+    assert!(
+        o.all_legs_collected().is_err(),
+        "one leg collected and one still ready must not advance the order",
+    );
+}
+
+#[test]
+fn an_order_whose_legs_are_all_resolved_advances() {
+    let mut o = order_with(&[LegStatus::PickedUp, LegStatus::Rejected]);
+    o.status = OrderStatus::Collecting;
+    assert!(o.all_legs_collected().is_ok(), "a rejected leg is resolved, not outstanding");
+    assert_eq!(o.status, OrderStatus::Delivering);
+}
+
+#[test]
+fn every_status_is_covered_by_the_transition_graph_lookup() {
+    // `LegStatus::ALL` is what the repository derives its SQL predecessor list
+    // from. A variant missing from it would silently become untransitionable.
+    assert_eq!(LegStatus::ALL.len(), 9);
+    for s in LegStatus::ALL {
+        assert_eq!(LegStatus::from_wire(s.as_str()), Some(s));
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+```bash
+CARGO_INCREMENTAL=0 cargo test -p logisticos-omnideliv --test leg_transitions
+```
+
+Expected: compile error — `no method named 'blocks_collection'`, `no associated item named 'ALL'`.
+
+- [ ] **Step 3: Add `ALL` and `blocks_collection` to `LegStatus`**
+
+In `services/omnideliv/src/domain/entities/order.rs`, inside `impl LegStatus`:
+
+```rust
+    /// Every variant. The repository derives its legal-predecessor list from
+    /// this rather than hand-writing one per route, so `can_transition_to`
+    /// stays the only statement of the graph.
+    pub const ALL: [LegStatus; 9] = [
+        LegStatus::Pending,  LegStatus::Accepted, LegStatus::Preparing,
+        LegStatus::Ready,    LegStatus::PickedUp, LegStatus::Served,
+        LegStatus::Rejected, LegStatus::Failed,   LegStatus::Settled,
+    ];
+
+    /// Whether this leg still owes the courier something.
+    ///
+    /// Not the same question as `has_answered`: a leg can have answered the
+    /// vendor's accept/reject question and still be sitting on the counter.
+    /// Before the acceptance states existed, "not pending" happened to mean
+    /// "resolved" — it does not any more, and `all_legs_collected` is the
+    /// caller that would otherwise advance an order whose goods never moved.
+    pub fn blocks_collection(self) -> bool {
+        matches!(
+            self,
+            LegStatus::Pending | LegStatus::Accepted | LegStatus::Preparing | LegStatus::Ready
+        )
+    }
+```
+
+- [ ] **Step 4: Fix `all_legs_collected`**
+
+Replace the `pending` count in `Order::all_legs_collected` (~line 820). Keep the rest of the method and its `advance` call as they are:
+
+```rust
+    pub fn all_legs_collected(&mut self) -> Result<(), TransitionError> {
+        // Was: a count of `Pending` legs. That was equivalent to "unresolved"
+        // only while `Pending | PickedUp | Failed | Settled` were the only
+        // states. A leg at `Ready` is accepted and cooked and still on the
+        // counter — advancing here would deliver an order whose goods were
+        // never handed over.
+        let outstanding = self.legs.iter().filter(|l| l.status.blocks_collection()).count();
+        if outstanding > 0 {
+            return Err(TransitionError::LegsPending(outstanding));
+        }
+        if !self.legs.iter().any(|l| l.status == LegStatus::PickedUp) {
+            return Err(TransitionError::NothingCollected);
+        }
+        self.advance(OrderStatus::Delivering, &[OrderStatus::Collecting])
+    }
+```
+
+Also update the method's existing doc comment: the line "A failed leg is resolved, not pending" should read "A failed or rejected leg is resolved; a leg still being prepared is not."
+
+- [ ] **Step 5: Fix the double-credit hole in the collection consumer**
+
+In `services/omnideliv/src/infrastructure/messaging/courier_consumer.rs` (~line 192), the `CourierEvent::Collected` arm guards only against `PickedUp`. Add the terminal guard immediately after it:
+
+```rust
+                // The idempotence that matters: a redelivered event must not
+                // credit the vendor a second time.
+                if leg.status == LegStatus::PickedUp {
+                    return Ok(());
+                }
+
+                // A leg that reached a terminal state is not re-opened by a
+                // late or out-of-order collection event. Without this, a
+                // `Collected` arriving after a vendor rejected its leg would
+                // overwrite `Rejected` with `PickedUp` and credit a store for
+                // goods it refused to hand over.
+                if leg.status.is_terminal() {
+                    tracing::warn!(
+                        %order_id, %vendor_id, status = leg.status.as_str(),
+                        "collection event for a leg already in a terminal state — not crediting",
+                    );
+                    return Ok(());
+                }
+```
+
+- [ ] **Step 6: Run the tests**
+
+```bash
+CARGO_INCREMENTAL=0 cargo test -p logisticos-omnideliv
+```
+
+Expected: the whole suite passes, including the five new tests. If an existing test asserted the old `all_legs_collected` behaviour, read it before changing it — it may be encoding the assumption this task exists to remove, in which case update it and say so in the commit.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add services/omnideliv/src/domain/entities/order.rs services/omnideliv/src/infrastructure/messaging/courier_consumer.rs services/omnideliv/tests/leg_transitions.rs
+git commit -m "fix(omnideliv): close four-state assumptions before acceptance states go live"
+```
+
+---
+
 ## Task 3: Migration — widen the status CHECK and add acceptance columns
 
 **Files:**
@@ -495,7 +667,13 @@ pub enum LegTransition {
 
 #[async_trait]
 pub trait VendorLegRepository: Send + Sync {
-    /// Moves one leg from any of `from` to `to`, atomically.
+    /// Moves one leg to `to`, atomically, from whichever states legally precede
+    /// it.
+    ///
+    /// The caller does not pass a predecessor list. It is derived from
+    /// `LegStatus::can_transition_to`, so the transition graph is stated in the
+    /// domain exactly once instead of being re-hand-written at every call site
+    /// where it could silently drift.
     ///
     /// Scoped by `vendor_id` as well as `tenant_id` so a store cannot transition
     /// another store's leg by guessing an id — the same reason the HTTP surface
@@ -509,7 +687,6 @@ pub trait VendorLegRepository: Send + Sync {
         tenant_id:        Uuid,
         vendor_id:        Uuid,
         leg_id:           Uuid,
-        from:             &[LegStatus],
         to:               LegStatus,
         ready_in_minutes: Option<i32>,
         rejected_reason:  Option<&str>,
@@ -570,12 +747,18 @@ impl VendorLegRepository for PgVendorLegRepository {
         tenant_id:        Uuid,
         vendor_id:        Uuid,
         leg_id:           Uuid,
-        from:             &[LegStatus],
         to:               LegStatus,
         ready_in_minutes: Option<i32>,
         rejected_reason:  Option<&str>,
     ) -> anyhow::Result<LegTransition> {
-        let from_strs: Vec<String> = from.iter().map(|s| s.as_str().to_owned()).collect();
+        // Derived from the domain graph, never hand-written here. A change to
+        // `can_transition_to` reaches the SQL automatically, so the two cannot
+        // drift apart.
+        let from_strs: Vec<String> = LegStatus::ALL
+            .iter()
+            .filter(|s| s.can_transition_to(to))
+            .map(|s| s.as_str().to_owned())
+            .collect();
 
         // The whole guard is the WHERE clause. If another tablet already moved
         // this leg, `status = ANY($4)` no longer holds and zero rows update.
@@ -959,7 +1142,6 @@ async fn act(
     st: &AppState,
     claims: &AuthClaims,
     leg_id: Uuid,
-    from: &[LegStatus],
     to: LegStatus,
     ready_in_minutes: Option<i32>,
     rejected_reason: Option<&str>,
@@ -970,7 +1152,7 @@ async fn act(
         .legs
         .transition(
             claims.tenant_id, vendor_id, leg_id,
-            from, to, ready_in_minutes, rejected_reason,
+            to, ready_in_minutes, rejected_reason,
         )
         .await
         .map_err(|e| {
@@ -1005,8 +1187,7 @@ async fn accept(
     if req.ready_in_minutes < 1 || req.ready_in_minutes > 240 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    act(&st, &claims, leg_id, &[LegStatus::Pending], LegStatus::Accepted,
-        Some(req.ready_in_minutes), None).await
+    act(&st, &claims, leg_id, LegStatus::Accepted, Some(req.ready_in_minutes), None).await
 }
 
 async fn reject(
@@ -1021,8 +1202,7 @@ async fn reject(
         // died unexplainable, so it is a 400 rather than a default string.
         return Err(StatusCode::BAD_REQUEST);
     }
-    act(&st, &claims, leg_id, &[LegStatus::Pending], LegStatus::Rejected,
-        None, Some(reason)).await
+    act(&st, &claims, leg_id, LegStatus::Rejected, None, Some(reason)).await
 }
 
 async fn ready(
@@ -1030,8 +1210,7 @@ async fn ready(
     claims: AuthClaims,
     Path(leg_id): Path<Uuid>,
 ) -> Result<Json<TransitionResponse>, StatusCode> {
-    act(&st, &claims, leg_id, &[LegStatus::Accepted, LegStatus::Preparing],
-        LegStatus::Ready, None, None).await
+    act(&st, &claims, leg_id, LegStatus::Ready, None, None).await
 }
 
 async fn served(
@@ -1039,7 +1218,7 @@ async fn served(
     claims: AuthClaims,
     Path(leg_id): Path<Uuid>,
 ) -> Result<Json<TransitionResponse>, StatusCode> {
-    act(&st, &claims, leg_id, &[LegStatus::Ready], LegStatus::Served, None, None).await
+    act(&st, &claims, leg_id, LegStatus::Served, None, None).await
 }
 ```
 
@@ -1178,7 +1357,6 @@ async fn act(
     headers: &HeaderMap,
     action: &str,
     leg_id: Uuid,
-    from: &[LegStatus],
     to: LegStatus,
     ready_in_minutes: Option<i32>,
     rejected_reason: Option<&str>,
@@ -1210,7 +1388,7 @@ async fn act(
         .legs
         .transition(
             claims.tenant_id, vendor_id, leg_id,
-            from, to, ready_in_minutes, rejected_reason,
+            to, ready_in_minutes, rejected_reason,
         )
         .await
         .map_err(|e| {
@@ -1357,6 +1535,9 @@ git commit -m "feat(omnideliv): idempotency keys on vendor leg actions"
 - [ ] One store cannot transition another store's leg, by any id it can guess
 - [ ] `Order::acceptance_state()` reports the accepted subtotal that Plan 4 will capture
 - [ ] `OrderStatus` is untouched — no second writer introduced
+- [ ] An order with one leg collected and one still `Ready` does **not** advance to `Delivering`
+- [ ] A late `Collected` event for a rejected leg does **not** credit that vendor
+- [ ] The transition graph is stated once: no call site hand-writes a predecessor list
 - [ ] `cargo check -p logisticos-omnideliv` is clean
 
 ## What this plan deliberately does not do
