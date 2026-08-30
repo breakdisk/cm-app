@@ -117,6 +117,22 @@ impl LegStatus {
     }
 }
 
+/// How far an order has got through asking its vendors.
+///
+/// Deliberately separate from `OrderStatus`: that field is written by the
+/// courier-event path, and a second writer on the same field is how two
+/// sources of truth disagree about one order. This is derived on read and
+/// stored nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum AcceptanceState {
+    /// At least one vendor has not answered yet.
+    Awaiting { outstanding: usize },
+    /// Every leg has answered. `accepted_subtotal_cents` is the amount that may
+    /// be captured; the rest of the authorization is voided.
+    Resolved { accepted: usize, rejected: usize, accepted_subtotal_cents: i64 },
+}
+
 /// How the customer pays. `Cod` is every order this service has ever placed;
 /// `Online` is the prepaid-checkout foundation — see `PaymentStatus` and
 /// `Order::cod_amount_cents`.
@@ -851,6 +867,37 @@ impl Order {
         }
         self.status = OrderStatus::Cancelled;
         Ok(())
+    }
+
+    /// How far this order has got through asking its vendors, derived from the
+    /// legs and stored nowhere. See `AcceptanceState`.
+    ///
+    /// This is what the acceptance barrier reads to decide how much of the
+    /// authorization to capture: once every leg has answered, capture
+    /// `accepted_subtotal_cents` and void the rest.
+    pub fn acceptance_state(&self) -> AcceptanceState {
+        let outstanding = self.legs.iter().filter(|l| !l.status.has_answered()).count();
+        if outstanding > 0 {
+            return AcceptanceState::Awaiting { outstanding };
+        }
+
+        // "Accepted" here means the leg survived the ask — anything that is not
+        // an outright refusal or failure. A leg already picked up or served is
+        // emphatically accepted.
+        let survived = |l: &&VendorLeg| {
+            !matches!(l.status, LegStatus::Rejected | LegStatus::Failed)
+        };
+
+        AcceptanceState::Resolved {
+            accepted: self.legs.iter().filter(survived).count(),
+            rejected: self.legs.iter().filter(|l| l.status == LegStatus::Rejected).count(),
+            accepted_subtotal_cents: self
+                .legs
+                .iter()
+                .filter(survived)
+                .map(|l| l.goods_subtotal_cents)
+                .sum(),
+        }
     }
 
     /// Where every cent the customer paid goes.

@@ -58,3 +58,58 @@ fn every_status_round_trips_through_its_wire_string() {
         assert_eq!(LegStatus::from_wire(s.as_str()), Some(s), "round trip failed for {s:?}");
     }
 }
+
+use logisticos_omnideliv::domain::entities::{AcceptanceState, Order, VendorLeg};
+use uuid::Uuid;
+
+fn order_with(statuses: &[LegStatus]) -> Order {
+    let legs: Vec<VendorLeg> = statuses
+        .iter()
+        .map(|s| {
+            let mut l = VendorLeg::settle(Uuid::new_v4(), Uuid::new_v4(), 1_000, 1_500);
+            l.status = *s;
+            l
+        })
+        .collect();
+    Order::place(
+        Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(),
+        legs, 0, 0, 0, 14.5995, 120.9842,
+    )
+}
+
+#[test]
+fn an_order_with_a_pending_leg_is_still_waiting() {
+    let o = order_with(&[LegStatus::Accepted, LegStatus::Pending]);
+    assert_eq!(o.acceptance_state(), AcceptanceState::Awaiting { outstanding: 1 });
+}
+
+#[test]
+fn the_barrier_lifts_only_when_every_leg_has_answered() {
+    let o = order_with(&[LegStatus::Accepted, LegStatus::Rejected, LegStatus::Preparing]);
+    assert_eq!(
+        o.acceptance_state(),
+        AcceptanceState::Resolved { accepted: 2, rejected: 1, accepted_subtotal_cents: 2_000 },
+    );
+}
+
+#[test]
+fn an_order_every_stall_refused_is_resolved_with_nothing_accepted() {
+    let o = order_with(&[LegStatus::Rejected, LegStatus::Rejected]);
+    assert_eq!(
+        o.acceptance_state(),
+        AcceptanceState::Resolved { accepted: 0, rejected: 2, accepted_subtotal_cents: 0 },
+    );
+}
+
+#[test]
+fn the_accepted_subtotal_excludes_refused_legs() {
+    // The number the acceptance barrier captures. A rejected leg's subtotal
+    // must never reach it.
+    let o = order_with(&[LegStatus::Ready, LegStatus::Rejected]);
+    match o.acceptance_state() {
+        AcceptanceState::Resolved { accepted_subtotal_cents, .. } => {
+            assert_eq!(accepted_subtotal_cents, 1_000, "only the surviving leg counts");
+        }
+        other => panic!("expected Resolved, got {other:?}"),
+    }
+}
