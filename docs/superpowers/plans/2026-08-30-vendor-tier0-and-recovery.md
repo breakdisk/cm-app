@@ -779,6 +779,10 @@ git commit -m "feat(merchant-portal): vendor order console with a repeating aler
 
 ## Definition of done
 
+> **Verified 2026-08-30.** `cargo test -p logisticos-omnideliv -p logisticos-events`: 226 lib tests + every integration binary green. `cargo clippy --all-targets`: 0 errors, 0 warnings. `npx tsc --noEmit` in `apps/merchant-portal`: clean, re-run cold after deleting `tsconfig.tsbuildinfo` because a stale one has produced a false green in this repo before.
+>
+> Not verified: nothing has been run against a live database or a browser. The sweep, the queue read and the console are verified by types, unit tests and compilation only.
+
 - [ ] A leg unanswered for 2 minutes is re-alerted; one unanswered for 8 minutes escalates with the vendor named
 - [ ] The ladder never changes a leg's status — no auto-reject, verified by reading the sweep
 - [ ] The sweep is bounded and runs across all tenants
