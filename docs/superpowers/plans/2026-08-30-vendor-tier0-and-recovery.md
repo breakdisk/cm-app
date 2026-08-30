@@ -781,7 +781,11 @@ git commit -m "feat(merchant-portal): vendor order console with a repeating aler
 
 > **Verified 2026-08-30.** `cargo test -p logisticos-omnideliv -p logisticos-events`: 226 lib tests + every integration binary green. `cargo clippy --all-targets`: 0 errors, 0 warnings. `npx tsc --noEmit` in `apps/merchant-portal`: clean, re-run cold after deleting `tsconfig.tsbuildinfo` because a stale one has produced a false green in this repo before.
 >
-> Not verified: nothing has been run against a live database or a browser. The sweep, the queue read and the console are verified by types, unit tests and compilation only.
+> **Run for real 2026-08-30.** All 26 migrations applied from empty against Postgres 16; the service booted against it and the vendor routes were exercised end to end (queue scoping, 401 without a token, accept, the second tablet returning `changed:false`, an idempotency-key retry replaying `changed:true`, cross-vendor 404, 400 on a bad ready window and a blank reason, ready, 409 on a real conflict, served, reject). `EXPLAIN ANALYZE` at 40k legs confirms `idx_leg_vendor_open` serves both the queue read and the sweep, sub-millisecond. The `ready_in_minutes` bound was probed at 0/-5/241/9999 (rejected) and 1/240 (accepted).
+>
+> **Running it found three defects that types and unit tests could not** — see commit `d4e28fb9`: the sweep re-escalated the same leg every 60 seconds; the courier manifest listed a refused stall as a stop; and the manifest had no way to express where a stop actually stood.
+>
+> Still not verified: **the console has never run in a browser.** Everything above is the API. Rendering, the poll loop, the alarm and the mute re-arm are verified by types and by reading only.
 
 - [ ] A leg unanswered for 2 minutes is re-alerted; one unanswered for 8 minutes escalates with the vendor named
 - [ ] The ladder never changes a leg's status — no auto-reject, verified by reading the sweep
