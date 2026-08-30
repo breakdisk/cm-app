@@ -118,6 +118,17 @@ impl LegRecoveryService {
                     }
                 }
 
+                LegRecovery::Escalate if leg.escalated_at.is_some() => {
+                    // Already raised. Found by running the sweep against a real
+                    // database: without this it re-raised the same leg on every
+                    // 60-second tick, so one kitchen nobody could reach wrote
+                    // sixty telemetry rows and paged ops sixty times in an hour.
+                    // An alert that repeats every minute is an alert nobody
+                    // reads. The leg stays `pending` and stays in the queue —
+                    // it is the *notification* that fires once, not the problem
+                    // that goes away.
+                }
+
                 LegRecovery::Escalate => {
                     escalated += 1;
                     // Loud, and with the vendor named: the ops question is
@@ -146,11 +157,178 @@ impl LegRecoveryService {
                         tracing::error!(err = %err, leg_id = %leg.leg_id,
                             "unanswered-leg telemetry failed");
                     }
+
+                    // Stamped last, and only after the alert has been raised: a
+                    // stamp written first would silence a leg whose telemetry
+                    // then failed to write, which is the one case where the
+                    // alert matters most.
+                    if let Err(err) = self.legs.mark_escalated(leg.tenant_id, leg.leg_id).await {
+                        tracing::error!(err = %err, leg_id = %leg.leg_id,
+                            "could not stamp leg as escalated — it will raise again next tick");
+                    }
                 }
             }
         }
 
         Ok(escalated)
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::*;
+    use crate::domain::repositories::{
+        AwaitingLeg, LegTransition, TransitionResponse, VendorLegRow,
+    };
+    use crate::domain::entities::TelemetryEvent;
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    /// Records what the sweep did, and lets a test say which legs are already
+    /// stamped without needing a database.
+    #[derive(Default)]
+    struct Legs {
+        rows:      Mutex<Vec<AwaitingLeg>>,
+        escalated: Mutex<Vec<Uuid>>,
+    }
+
+    #[async_trait::async_trait]
+    impl VendorLegRepository for Legs {
+        async fn find_awaiting_acceptance(&self) -> anyhow::Result<Vec<AwaitingLeg>> {
+            Ok(self.rows.lock().unwrap().clone())
+        }
+        async fn mark_escalated(&self, _t: Uuid, leg_id: Uuid) -> anyhow::Result<()> {
+            self.escalated.lock().unwrap().push(leg_id);
+            // Mirrors the real UPDATE: once stamped, later sweeps see it set.
+            for r in self.rows.lock().unwrap().iter_mut() {
+                if r.leg_id == leg_id {
+                    r.escalated_at = Some(Utc::now());
+                }
+            }
+            Ok(())
+        }
+        async fn transition(
+            &self, _t: Uuid, _v: Uuid, _l: Uuid, _to: LegStatus,
+            _r: Option<i32>, _rr: Option<&str>,
+        ) -> anyhow::Result<LegTransition> {
+            unreachable!("the ladder must never move a leg")
+        }
+        async fn list_open(&self, _t: Uuid, _v: Uuid) -> anyhow::Result<Vec<VendorLegRow>> {
+            Ok(vec![])
+        }
+        async fn find_idempotent_response(
+            &self, _t: Uuid, _v: Uuid, _k: &str,
+        ) -> anyhow::Result<Option<TransitionResponse>> {
+            Ok(None)
+        }
+        async fn record_idempotent_response(
+            &self, _t: Uuid, _v: Uuid, _k: &str, _l: Uuid, _a: &str, _resp: &TransitionResponse,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct Events {
+        realerts: Mutex<Vec<Uuid>>,
+    }
+
+    #[async_trait::async_trait]
+    impl VendorLegEvents for Events {
+        async fn leg_received(&self, leg: &LegRef) -> anyhow::Result<()> {
+            self.realerts.lock().unwrap().push(leg.leg_id);
+            Ok(())
+        }
+        async fn leg_accepted(&self, _l: &LegRef, _r: i32) -> anyhow::Result<()> { Ok(()) }
+        async fn leg_rejected(&self, _l: &LegRef, _r: &str) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    #[derive(Default)]
+    struct Telemetry {
+        appended: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::domain::repositories::TelemetryRepository for Telemetry {
+        async fn append(&self, e: &TelemetryEvent) -> anyhow::Result<()> {
+            self.appended.lock().unwrap().push(e.event_type.clone());
+            Ok(())
+        }
+        async fn timeline(
+            &self, _t: Uuid, _o: Uuid,
+        ) -> anyhow::Result<Vec<TelemetryEvent>> {
+            Ok(vec![])
+        }
+    }
+
+    fn leg(age_mins: i64, stamped: bool) -> AwaitingLeg {
+        AwaitingLeg {
+            leg_id:               Uuid::new_v4(),
+            order_id:             Uuid::new_v4(),
+            tenant_id:            Uuid::new_v4(),
+            vendor_id:            Uuid::new_v4(),
+            goods_subtotal_cents: 1_000,
+            created_at:           Utc::now() - Duration::minutes(age_mins),
+            escalated_at:         if stamped { Some(Utc::now()) } else { None },
+        }
+    }
+
+    fn service(rows: Vec<AwaitingLeg>) -> (LegRecoveryService, Arc<Legs>, Arc<Events>, Arc<Telemetry>) {
+        let legs = Arc::new(Legs { rows: Mutex::new(rows), escalated: Mutex::new(vec![]) });
+        let events = Arc::new(Events::default());
+        let telemetry = Arc::new(Telemetry::default());
+        let svc = LegRecoveryService::new(legs.clone(), events.clone(), telemetry.clone());
+        (svc, legs, events, telemetry)
+    }
+
+    #[tokio::test]
+    async fn an_old_unanswered_leg_is_raised_exactly_once_across_repeated_sweeps() {
+        // The defect this test exists for, found by running the sweep against a
+        // real database: it re-raised the same leg on every 60-second tick, so
+        // one unreachable kitchen paged ops sixty times in an hour.
+        let (svc, legs, _ev, tel) = service(vec![leg(30, false)]);
+
+        assert_eq!(svc.sweep().await.unwrap(), 1, "first pass raises it");
+        assert_eq!(svc.sweep().await.unwrap(), 0, "second pass must stay silent");
+        assert_eq!(svc.sweep().await.unwrap(), 0, "and every pass after");
+
+        assert_eq!(legs.escalated.lock().unwrap().len(), 1, "stamped once");
+        assert_eq!(
+            tel.appended.lock().unwrap().len(), 1,
+            "one telemetry row, not one per tick",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_leg_in_the_realert_window_is_re_published_and_not_escalated() {
+        let (svc, legs, ev, tel) = service(vec![leg(4, false)]);
+
+        assert_eq!(svc.sweep().await.unwrap(), 0, "not old enough to escalate");
+        assert_eq!(ev.realerts.lock().unwrap().len(), 1, "re-alerted instead");
+        assert!(legs.escalated.lock().unwrap().is_empty());
+        assert!(tel.appended.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_fresh_leg_is_left_entirely_alone() {
+        let (svc, legs, ev, tel) = service(vec![leg(1, false)]);
+
+        assert_eq!(svc.sweep().await.unwrap(), 0);
+        assert!(ev.realerts.lock().unwrap().is_empty(), "no chime inside the grace window");
+        assert!(legs.escalated.lock().unwrap().is_empty());
+        assert!(tel.appended.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_already_stamped_leg_is_silent_even_though_it_is_still_pending() {
+        // It stays in the queue and still blocks the order. It is the
+        // notification that fires once, not the problem that goes away.
+        let (svc, legs, ev, tel) = service(vec![leg(120, true)]);
+
+        assert_eq!(svc.sweep().await.unwrap(), 0);
+        assert!(legs.escalated.lock().unwrap().is_empty());
+        assert!(tel.appended.lock().unwrap().is_empty());
+        assert!(ev.realerts.lock().unwrap().is_empty());
     }
 }
 

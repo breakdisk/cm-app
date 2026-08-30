@@ -174,7 +174,7 @@ impl VendorLegRepository for PgVendorLegRepository {
         // nearest escalation are still handled when the cap bites.
         let rows = sqlx::query(
             r#"
-            SELECT id, order_id, tenant_id, vendor_id, goods_subtotal_cents, created_at
+            SELECT id, order_id, tenant_id, vendor_id, goods_subtotal_cents, created_at, escalated_at
               FROM omnideliv.order_vendor_legs
              WHERE status = 'pending'
              ORDER BY created_at ASC
@@ -193,8 +193,26 @@ impl VendorLegRepository for PgVendorLegRepository {
                 vendor_id:            r.get("vendor_id"),
                 goods_subtotal_cents: r.get("goods_subtotal_cents"),
                 created_at:           r.get("created_at"),
+                escalated_at:         r.get("escalated_at"),
             })
             .collect())
+    }
+
+    async fn mark_escalated(&self, tenant_id: Uuid, leg_id: Uuid) -> anyhow::Result<()> {
+        // Only stamps a leg that has not been stamped, so two replicas sweeping
+        // at once raise it once between them rather than once each.
+        sqlx::query(
+            r#"
+            UPDATE omnideliv.order_vendor_legs
+               SET escalated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2 AND escalated_at IS NULL
+            "#,
+        )
+        .bind(leg_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn find_idempotent_response(

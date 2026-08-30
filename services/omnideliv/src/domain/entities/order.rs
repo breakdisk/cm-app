@@ -255,6 +255,16 @@ pub struct VendorLeg {
     pub payout_cents:         i64,
     pub status:               LegStatus,
     pub picked_up_at:         Option<DateTime<Utc>>,
+    /// When the store accepted, and what it promised. Written only by the
+    /// guarded transition in `leg_repo` — `OrderRepository::save` deliberately
+    /// does not touch these, so a whole-order write can never clobber an
+    /// acceptance a tablet made a moment earlier.
+    pub accepted_at:          Option<DateTime<Utc>>,
+    pub ready_at:             Option<DateTime<Utc>>,
+    /// The store's own estimate, not `vendors.prep_time_minutes`. That is a
+    /// static per-store default nothing reconciles against reality; this is
+    /// what a person said about this order.
+    pub ready_in_minutes:     Option<i32>,
     pub created_at:           DateTime<Utc>,
 }
 
@@ -281,6 +291,9 @@ impl VendorLeg {
             payout_cents: goods_subtotal_cents - commission_cents,
             status: LegStatus::Pending,
             picked_up_at: None,
+            accepted_at: None,
+            ready_at: None,
+            ready_in_minutes: None,
             created_at: Utc::now(),
         }
     }

@@ -331,6 +331,10 @@ pub struct AwaitingLeg {
     pub vendor_id:            Uuid,
     pub goods_subtotal_cents: i64,
     pub created_at:           chrono::DateTime<chrono::Utc>,
+    /// Set once the sweep has raised this leg to a human. Present so the sweep
+    /// escalates once rather than on every tick — a leg unanswered for an hour
+    /// otherwise pages ops sixty times about one order.
+    pub escalated_at:         Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[async_trait]
@@ -342,6 +346,13 @@ pub trait VendorLegRepository: Send + Sync {
     /// the sweep only runs for tenants someone remembered to enumerate. Same
     /// reasoning as `OrderRepository::find_awaiting_courier`.
     async fn find_awaiting_acceptance(&self) -> anyhow::Result<Vec<AwaitingLeg>>;
+
+    /// Stamps a leg as raised, so it is not raised again on the next tick.
+    ///
+    /// Deliberately not a status change: the collection consumer refuses to
+    /// credit a leg that is not awaiting collection, so moving the status here
+    /// would stop a store being paid for food it actually cooked.
+    async fn mark_escalated(&self, tenant_id: Uuid, leg_id: Uuid) -> anyhow::Result<()>;
 
     /// Moves one leg to `to`, atomically, from whichever states legally precede
     /// it.
