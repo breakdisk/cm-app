@@ -1588,6 +1588,9 @@ git commit -m "feat(omnideliv): idempotency keys on vendor leg actions"
 
 ## Definition of done
 
+> **All items below verified 2026-08-30.** `cargo test -p logisticos-omnideliv -p logisticos-events`: 221 lib tests + every integration binary green. `cargo clippy --all-targets`: clean. Gateway routing test: 10 passed.
+
+
 - [ ] A vendor can `GET /v1/omnideliv/vendors/me/orders` and see only its own live legs
 - [ ] Accept, reject, ready and served each move exactly one leg, guarded against a concurrent tablet
 - [ ] A duplicate accept returns `200 changed:false`, not an error and not a second transition
@@ -1604,7 +1607,7 @@ git commit -m "feat(omnideliv): idempotency keys on vendor leg actions"
 
 Naming these so a reviewer does not read the gaps as oversights:
 
-- **No notification is sent.** The events publish; nothing consumes them yet. A vendor sees its queue by loading it. Plan 2 adds the console stream, FCM and WhatsApp.
+- **No notification is *delivered*.** The events publish — `leg_received` on checkout for COD and on payment authorization for online, `leg_accepted` / `leg_rejected` from the routes — but nothing consumes them yet, so no push, message or sound reaches a human. A vendor sees its queue by loading it. Plan 2 adds the console stream, FCM and WhatsApp.
 - **No recovery ladder.** A vendor who never answers leaves a leg `pending` forever. Plan 2 adds the sweep. Until then, do not enable acceptance as a gate on anything.
 - **No capture.** Acceptance moves no money. Plan 4 wires the barrier once `services/payments` can capture a partial amount.
 - **No merchant-portal UI.** The endpoints exist; nothing renders them. Plan 2 builds the console screen.
