@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::domain::entities::LegStatus;
 use crate::domain::repositories::{
-    LegTransition, TransitionResponse, VendorLegRepository, VendorLegRow,
+    AwaitingLeg, LegTransition, TransitionResponse, VendorLegRepository, VendorLegRow,
 };
 
 /// The statuses a queue read returns. A leg outside this set is history: the
@@ -163,6 +163,35 @@ impl VendorLegRepository for PgVendorLegRepository {
                 goods_subtotal_cents: r.get("goods_subtotal_cents"),
                 ready_in_minutes:     r.get("ready_in_minutes"),
                 accepted_at:          r.get("accepted_at"),
+                created_at:           r.get("created_at"),
+            })
+            .collect())
+    }
+
+    async fn find_awaiting_acceptance(&self) -> anyhow::Result<Vec<AwaitingLeg>> {
+        // Bounded like `find_awaiting_courier`: a sweep that returns everything
+        // turns one bad hour into an unbounded query. Oldest first, so the legs
+        // nearest escalation are still handled when the cap bites.
+        let rows = sqlx::query(
+            r#"
+            SELECT id, order_id, tenant_id, vendor_id, goods_subtotal_cents, created_at
+              FROM omnideliv.order_vendor_legs
+             WHERE status = 'pending'
+             ORDER BY created_at ASC
+             LIMIT 500
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| AwaitingLeg {
+                leg_id:               r.get("id"),
+                order_id:             r.get("order_id"),
+                tenant_id:            r.get("tenant_id"),
+                vendor_id:            r.get("vendor_id"),
+                goods_subtotal_cents: r.get("goods_subtotal_cents"),
                 created_at:           r.get("created_at"),
             })
             .collect())

@@ -318,8 +318,31 @@ pub struct VendorLegRow {
     pub created_at:           chrono::DateTime<chrono::Utc>,
 }
 
+/// A leg the sweep is considering.
+///
+/// Carries what an alert needs and nothing else. The sweep runs across every
+/// tenant, so it must not become proportional to basket size — the same reason
+/// `find_awaiting_courier` does not hydrate an order's legs.
+#[derive(Debug, Clone)]
+pub struct AwaitingLeg {
+    pub leg_id:               Uuid,
+    pub order_id:             Uuid,
+    pub tenant_id:            Uuid,
+    pub vendor_id:            Uuid,
+    pub goods_subtotal_cents: i64,
+    pub created_at:           chrono::DateTime<chrono::Utc>,
+}
+
 #[async_trait]
 pub trait VendorLegRepository: Send + Sync {
+    /// Legs still waiting for their store to answer, oldest first.
+    ///
+    /// Deliberately across all tenants: an unanswered order is an operator
+    /// concern, not a customer request, and scoping it per tenant would mean
+    /// the sweep only runs for tenants someone remembered to enumerate. Same
+    /// reasoning as `OrderRepository::find_awaiting_courier`.
+    async fn find_awaiting_acceptance(&self) -> anyhow::Result<Vec<AwaitingLeg>>;
+
     /// Moves one leg to `to`, atomically, from whichever states legally precede
     /// it.
     ///

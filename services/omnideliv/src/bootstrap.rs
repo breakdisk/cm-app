@@ -138,7 +138,8 @@ pub async fn run() -> anyhow::Result<()> {
         Ok(p) => Some(Arc::new(p)),
         Err(e) => {
             tracing::error!(err = %e, brokers = %cfg.kafka.brokers,
-                "Kafka unavailable — order confirmations, delivery notices and vendor                  order alerts will NOT be sent");
+                "Kafka unavailable — order confirmations, delivery notices and \
+                 vendor order alerts will NOT be sent");
             None
         }
     };
@@ -161,9 +162,13 @@ pub async fn run() -> anyhow::Result<()> {
     // Cloned before `vendor_events` is moved into AppState, for the
     // payment-authorized consumer that notifies stores on the online path.
     let vendor_events_for_payments = vendor_events.clone();
+    // And again for the unanswered-leg sweep, which re-alerts by republishing
+    // the same event checkout published.
+    let vendor_events_for_recovery = vendor_events.clone();
 
     let legs: Arc<dyn crate::domain::repositories::VendorLegRepository> =
         Arc::new(crate::infrastructure::db::PgVendorLegRepository::new(pool.clone()));
+    let legs_for_recovery = legs.clone();
 
     // Storage is optional. An environment with no STORAGE__* vars keeps
     // serving catalogs; only the photo routes go dark, and they say so.
@@ -327,6 +332,29 @@ pub async fn run() -> anyhow::Result<()> {
                 Ok(0) => {}
                 Ok(n) => tracing::warn!(escalated = n, "recovery sweep escalated stuck orders"),
                 Err(e) => tracing::error!(err = %e, "recovery sweep failed"),
+            }
+        }
+    });
+
+    // Legs nobody answered. A separate sweep from the stuck-order one above
+    // because it asks a different question on a different clock: that one asks
+    // whether a courier took the order, this one whether the store even looked.
+    let leg_recovery = Arc::new(crate::application::services::LegRecoveryService::new(
+        legs_for_recovery,
+        vendor_events_for_recovery,
+        telemetry.clone(),
+    ));
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        // Same skipped first tick as above: a sweep that fires at boot would
+        // re-alert every open leg every time a pod restarts.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match leg_recovery.sweep().await {
+                Ok(0) => {}
+                Ok(n) => tracing::warn!(escalated = n, "vendor legs still unanswered"),
+                Err(e) => tracing::error!(err = %e, "vendor leg sweep failed"),
             }
         }
     });
