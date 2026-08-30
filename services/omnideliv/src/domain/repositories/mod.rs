@@ -276,7 +276,14 @@ pub trait OrderRepository: Send + Sync {
 /// is true — rather than shown a failure for something that did happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LegTransition {
-    Applied { to: LegStatus },
+    /// Carries the leg's identifying context because the caller publishes an
+    /// event immediately afterwards and would otherwise have to read the row
+    /// back to learn which order it belonged to. The UPDATE returns it.
+    Applied {
+        to:                   LegStatus,
+        order_id:             Uuid,
+        goods_subtotal_cents: i64,
+    },
     NoOp { current: LegStatus },
 }
 

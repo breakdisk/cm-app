@@ -260,6 +260,14 @@ mod routing_tests {
             "/v1/omnideliv/baskets",
             "/v1/omnideliv/baskets/1e9f",
             "/v1/omnideliv/catalog/search",
+            // The vendor's own order queue and leg actions (ADR-0017). Covered
+            // by the same prefix, and pinned here so a future narrowing of that
+            // prefix cannot silently strand a kitchen's tablet.
+            "/v1/omnideliv/vendors/me/orders",
+            "/v1/omnideliv/vendors/me/legs/1e9f/accept",
+            "/v1/omnideliv/vendors/me/legs/1e9f/reject",
+            "/v1/omnideliv/vendors/me/legs/1e9f/ready",
+            "/v1/omnideliv/vendors/me/legs/1e9f/served",
         ] {
             assert_eq!(
                 resolve(path).as_deref(),

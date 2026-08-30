@@ -65,7 +65,12 @@ impl VendorLegRepository for PgVendorLegRepository {
         // this leg, `status = ANY($4)` no longer holds and zero rows update.
         // The timestamps are set here rather than by the caller so a retry
         // cannot rewrite when a store actually accepted.
-        let updated = sqlx::query(
+        //
+        // RETURNING rather than a follow-up SELECT: the caller publishes an
+        // event straight after this and needs the order it belongs to. Reading
+        // it back separately would also be a read of a row another writer may
+        // have moved in between.
+        let applied = sqlx::query(
             r#"
             UPDATE omnideliv.order_vendor_legs
                SET status           = $5,
@@ -78,6 +83,7 @@ impl VendorLegRepository for PgVendorLegRepository {
                AND tenant_id = $2
                AND vendor_id = $3
                AND status    = ANY($4)
+         RETURNING order_id, goods_subtotal_cents
             "#,
         )
         .bind(leg_id)
@@ -87,12 +93,15 @@ impl VendorLegRepository for PgVendorLegRepository {
         .bind(to.as_str())
         .bind(ready_in_minutes)
         .bind(rejected_reason)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        .fetch_optional(&self.pool)
+        .await?;
 
-        if updated == 1 {
-            return Ok(LegTransition::Applied { to });
+        if let Some(r) = applied {
+            return Ok(LegTransition::Applied {
+                to,
+                order_id:             r.get("order_id"),
+                goods_subtotal_cents: r.get("goods_subtotal_cents"),
+            });
         }
 
         // Zero rows means one of two things and the caller must tell them

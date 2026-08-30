@@ -5,4 +5,4 @@ pub mod vendor_events;
 
 pub use courier_consumer::{CourierEvent, CourierMilestoneHandler, TOPIC_COURIER};
 pub use order_events::{KafkaOrderEvents, NoopOrderEvents, OrderEvents};
-pub use vendor_events::{KafkaVendorLegEvents, NoopVendorLegEvents, VendorLegEvents};
+pub use vendor_events::{KafkaVendorLegEvents, LegRef, NoopVendorLegEvents, VendorLegEvents};

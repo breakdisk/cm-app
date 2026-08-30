@@ -20,13 +20,42 @@ use async_trait::async_trait;
 use logisticos_events::topics;
 use uuid::Uuid;
 
-use crate::domain::entities::VendorLeg;
+use crate::domain::entities::{LegStatus, VendorLeg};
+
+/// The identifying context a vendor message carries.
+///
+/// Not `&VendorLeg`, because the two callers hold different things: checkout
+/// has the whole leg in memory, while a transition handler has only what the
+/// guarded UPDATE returned. Reading the leg back just to publish would be a
+/// second read of a row another writer may have moved in between.
+#[derive(Debug, Clone, Copy)]
+pub struct LegRef {
+    pub tenant_id:            Uuid,
+    pub vendor_id:            Uuid,
+    pub order_id:             Uuid,
+    pub leg_id:               Uuid,
+    pub goods_subtotal_cents: i64,
+    pub status:               LegStatus,
+}
+
+impl LegRef {
+    pub fn of(leg: &VendorLeg) -> Self {
+        Self {
+            tenant_id:            leg.tenant_id,
+            vendor_id:            leg.vendor_id,
+            order_id:             leg.order_id,
+            leg_id:               leg.id,
+            goods_subtotal_cents: leg.goods_subtotal_cents,
+            status:               leg.status,
+        }
+    }
+}
 
 #[async_trait]
 pub trait VendorLegEvents: Send + Sync {
-    async fn leg_received(&self, leg: &VendorLeg) -> anyhow::Result<()>;
-    async fn leg_accepted(&self, leg: &VendorLeg, ready_in_minutes: i32) -> anyhow::Result<()>;
-    async fn leg_rejected(&self, leg: &VendorLeg, reason: &str) -> anyhow::Result<()>;
+    async fn leg_received(&self, leg: &LegRef) -> anyhow::Result<()>;
+    async fn leg_accepted(&self, leg: &LegRef, ready_in_minutes: i32) -> anyhow::Result<()>;
+    async fn leg_rejected(&self, leg: &LegRef, reason: &str) -> anyhow::Result<()>;
 }
 
 pub struct KafkaVendorLegEvents {
@@ -43,12 +72,12 @@ impl KafkaVendorLegEvents {
     /// Deliberately no customer, no address, and no sibling legs: a stall has no
     /// reason to hold a delivery address, and in a foodcourt the neighbouring
     /// stall has no reason to learn what this one was asked to make.
-    fn payload(leg: &VendorLeg, extra: serde_json::Value) -> serde_json::Value {
+    fn payload(leg: &LegRef, extra: serde_json::Value) -> serde_json::Value {
         let mut base = serde_json::json!({
             "tenant_id":            leg.tenant_id,
             "vendor_id":            leg.vendor_id,
             "order_id":             leg.order_id,
-            "leg_id":               leg.id,
+            "leg_id":               leg.leg_id,
             "goods_subtotal_cents": leg.goods_subtotal_cents,
             "status":               leg.status.as_str(),
         });
@@ -69,7 +98,7 @@ impl KafkaVendorLegEvents {
 
 #[async_trait]
 impl VendorLegEvents for KafkaVendorLegEvents {
-    async fn leg_received(&self, leg: &VendorLeg) -> anyhow::Result<()> {
+    async fn leg_received(&self, leg: &LegRef) -> anyhow::Result<()> {
         self.emit(
             topics::OMNIDELIV_VENDOR_LEG_RECEIVED,
             leg.vendor_id,
@@ -78,7 +107,7 @@ impl VendorLegEvents for KafkaVendorLegEvents {
         .await
     }
 
-    async fn leg_accepted(&self, leg: &VendorLeg, ready_in_minutes: i32) -> anyhow::Result<()> {
+    async fn leg_accepted(&self, leg: &LegRef, ready_in_minutes: i32) -> anyhow::Result<()> {
         self.emit(
             topics::OMNIDELIV_VENDOR_LEG_ACCEPTED,
             leg.vendor_id,
@@ -87,7 +116,7 @@ impl VendorLegEvents for KafkaVendorLegEvents {
         .await
     }
 
-    async fn leg_rejected(&self, leg: &VendorLeg, reason: &str) -> anyhow::Result<()> {
+    async fn leg_rejected(&self, leg: &LegRef, reason: &str) -> anyhow::Result<()> {
         self.emit(
             topics::OMNIDELIV_VENDOR_LEG_REJECTED,
             leg.vendor_id,
@@ -105,13 +134,13 @@ pub struct NoopVendorLegEvents;
 
 #[async_trait]
 impl VendorLegEvents for NoopVendorLegEvents {
-    async fn leg_received(&self, _leg: &VendorLeg) -> anyhow::Result<()> {
+    async fn leg_received(&self, _leg: &LegRef) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn leg_accepted(&self, _leg: &VendorLeg, _ready_in_minutes: i32) -> anyhow::Result<()> {
+    async fn leg_accepted(&self, _leg: &LegRef, _ready_in_minutes: i32) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn leg_rejected(&self, _leg: &VendorLeg, _reason: &str) -> anyhow::Result<()> {
+    async fn leg_rejected(&self, _leg: &LegRef, _reason: &str) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -119,19 +148,18 @@ impl VendorLegEvents for NoopVendorLegEvents {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::LegStatus;
 
-    fn leg() -> VendorLeg {
+    fn leg_ref() -> LegRef {
         let mut l = VendorLeg::settle(Uuid::new_v4(), Uuid::new_v4(), 12_500, 1_500);
         l.order_id = Uuid::new_v4();
-        l
+        LegRef::of(&l)
     }
 
     #[test]
     fn the_payload_carries_the_recipient() {
         // The vendor is who this message is for. Without it the message is
         // undeliverable and the partition key is meaningless.
-        let l = leg();
+        let l = leg_ref();
         let p = KafkaVendorLegEvents::payload(&l, serde_json::json!({}));
 
         assert_eq!(p["vendor_id"], serde_json::json!(l.vendor_id));
@@ -140,10 +168,10 @@ mod tests {
 
     #[test]
     fn the_payload_carries_what_the_store_needs_to_act() {
-        let l = leg();
+        let l = leg_ref();
         let p = KafkaVendorLegEvents::payload(&l, serde_json::json!({}));
 
-        assert_eq!(p["leg_id"], serde_json::json!(l.id));
+        assert_eq!(p["leg_id"], serde_json::json!(l.leg_id));
         assert_eq!(p["order_id"], serde_json::json!(l.order_id));
         assert_eq!(p["goods_subtotal_cents"], serde_json::json!(12_500));
         assert_eq!(p["status"], serde_json::json!("pending"));
@@ -153,7 +181,7 @@ mod tests {
     fn the_payload_discloses_nothing_about_the_customer_or_the_money_split() {
         // A stall is told what it must make, not who ordered it, where it is
         // going, or what the platform's cut was.
-        let l = leg();
+        let l = leg_ref();
         let p = KafkaVendorLegEvents::payload(&l, serde_json::json!({}));
 
         for leaked in [
@@ -167,21 +195,34 @@ mod tests {
 
     #[test]
     fn extra_fields_are_merged_without_displacing_the_base() {
-        let l = leg();
+        let l = leg_ref();
         let p = KafkaVendorLegEvents::payload(&l, serde_json::json!({ "ready_in_minutes": 20 }));
 
         assert_eq!(p["ready_in_minutes"], serde_json::json!(20));
-        assert_eq!(p["leg_id"], serde_json::json!(l.id), "base field survived the merge");
+        assert_eq!(p["leg_id"], serde_json::json!(l.leg_id), "base field survived the merge");
     }
 
     #[test]
     fn the_status_travels_with_the_leg_rather_than_being_implied_by_the_topic() {
         // A consumer that inferred status from the topic name would be wrong
         // the moment a message is redelivered out of order.
-        let mut l = leg();
+        let mut l = leg_ref();
         l.status = LegStatus::Accepted;
         let p = KafkaVendorLegEvents::payload(&l, serde_json::json!({}));
 
         assert_eq!(p["status"], serde_json::json!("accepted"));
+    }
+
+    #[test]
+    fn a_leg_ref_preserves_the_legs_identity() {
+        let mut l = VendorLeg::settle(Uuid::new_v4(), Uuid::new_v4(), 900, 1_000);
+        l.order_id = Uuid::new_v4();
+        let r = LegRef::of(&l);
+
+        assert_eq!(r.leg_id, l.id);
+        assert_eq!(r.order_id, l.order_id);
+        assert_eq!(r.tenant_id, l.tenant_id);
+        assert_eq!(r.vendor_id, l.vendor_id);
+        assert_eq!(r.goods_subtotal_cents, 900);
     }
 }

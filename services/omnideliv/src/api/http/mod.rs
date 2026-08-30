@@ -5,6 +5,7 @@ pub mod health;
 pub mod mesh;
 pub mod orders;
 pub mod tracking;
+pub mod vendor_orders;
 pub mod vendors;
 
 use std::sync::Arc;
@@ -12,7 +13,8 @@ use axum::Router;
 
 use crate::application::services::{BasketService, CatalogService, CheckoutService};
 use crate::domain::repositories::{
-    OrderRepository, TelemetryRepository, VendorLedgerRepository, VendorRepository,
+    OrderRepository, TelemetryRepository, VendorLedgerRepository, VendorLegRepository,
+    VendorRepository,
 };
 use omnideliv_mesh::MeshRunner;
 
@@ -34,6 +36,11 @@ pub struct AppState {
     /// order event log.
     pub courier_telemetry: Arc<dyn crate::application::services::CourierTelemetry>,
     pub vendors:           Arc<dyn VendorRepository>,
+    /// One leg, moved conditionally. Distinct from `orders` above, which writes
+    /// a whole order last-write-wins — correct for a checkout, wrong for a
+    /// transition two tablets may attempt at once.
+    pub legs:              Arc<dyn VendorLegRepository>,
+    pub vendor_events:     Arc<dyn crate::infrastructure::messaging::VendorLegEvents>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -59,6 +66,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .merge(orders::routes())
                 .merge(tracking::routes())
                 .merge(vendors::routes())
+                .merge(vendor_orders::routes())
                 .merge(courier_jobs::routes())
                 .layer(auth_layer)
                 .with_state(state),
