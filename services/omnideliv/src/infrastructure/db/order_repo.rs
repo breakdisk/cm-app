@@ -43,13 +43,7 @@ fn payment_status(s: &str) -> anyhow::Result<PaymentStatus> {
 }
 
 fn leg_status(s: &str) -> anyhow::Result<LegStatus> {
-    Ok(match s {
-        "pending"   => LegStatus::Pending,
-        "picked_up" => LegStatus::PickedUp,
-        "failed"    => LegStatus::Failed,
-        "settled"   => LegStatus::Settled,
-        other => anyhow::bail!("unknown leg status in database: {other}"),
-    })
+    LegStatus::from_wire(s).ok_or_else(|| anyhow::anyhow!("unknown leg status: {s}"))
 }
 
 #[async_trait]

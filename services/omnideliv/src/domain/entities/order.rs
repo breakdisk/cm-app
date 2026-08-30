@@ -32,11 +32,21 @@ impl OrderStatus {
     }
 }
 
+/// Where one vendor's half of an order stands.
+///
+/// `Rejected` is distinct from `Failed` on purpose: a store refusing an order
+/// and a pickup going wrong are different events with different money
+/// consequences, and collapsing them makes "why did this die" unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LegStatus {
     Pending,
+    Accepted,
+    Preparing,
+    Ready,
     PickedUp,
+    Served,
+    Rejected,
     Failed,
     Settled,
 }
@@ -44,11 +54,66 @@ pub enum LegStatus {
 impl LegStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            LegStatus::Pending  => "pending",
-            LegStatus::PickedUp => "picked_up",
-            LegStatus::Failed   => "failed",
-            LegStatus::Settled  => "settled",
+            LegStatus::Pending   => "pending",
+            LegStatus::Accepted  => "accepted",
+            LegStatus::Preparing => "preparing",
+            LegStatus::Ready     => "ready",
+            LegStatus::PickedUp  => "picked_up",
+            LegStatus::Served    => "served",
+            LegStatus::Rejected  => "rejected",
+            LegStatus::Failed    => "failed",
+            LegStatus::Settled   => "settled",
         }
+    }
+
+    /// Parses the wire/database form. `None` for anything unrecognised, so a
+    /// row written by a newer deploy fails loudly instead of silently
+    /// decoding as `Pending` and re-offering work that is already underway.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending"   => LegStatus::Pending,
+            "accepted"  => LegStatus::Accepted,
+            "preparing" => LegStatus::Preparing,
+            "ready"     => LegStatus::Ready,
+            "picked_up" => LegStatus::PickedUp,
+            "served"    => LegStatus::Served,
+            "rejected"  => LegStatus::Rejected,
+            "failed"    => LegStatus::Failed,
+            "settled"   => LegStatus::Settled,
+            _ => return None,
+        })
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, LegStatus::Rejected | LegStatus::Failed | LegStatus::Settled)
+    }
+
+    /// Whether this leg has answered the acceptance question at all. Drives the
+    /// acceptance barrier — see `Order::acceptance_state`.
+    pub fn has_answered(self) -> bool {
+        self != LegStatus::Pending
+    }
+
+    /// The legal transition graph. Enforced here rather than only in SQL so the
+    /// rule is testable without a database and stated in exactly one place.
+    pub fn can_transition_to(self, next: LegStatus) -> bool {
+        use LegStatus::*;
+        if self.is_terminal() {
+            return false;
+        }
+        // An operator can fail any live leg; there is no single legal
+        // predecessor for a pickup that went wrong.
+        if next == Failed {
+            return true;
+        }
+        matches!(
+            (self, next),
+            (Pending,   Accepted)  | (Pending,   Rejected)
+          | (Accepted,  Preparing) | (Accepted,  Ready)
+          | (Preparing, Ready)
+          | (Ready,     PickedUp)  | (Ready,     Served)
+          | (PickedUp,  Settled)   | (Served,    Settled)
+        )
     }
 }
 
