@@ -1774,6 +1774,7 @@ mod milestone_authorization {
                 CourierEvent::Arrived   { .. } => "arrived",
                 CourierEvent::Collected { .. } => "collected",
                 CourierEvent::Delivered { .. } => "delivered",
+                CourierEvent::ExceptionRaised { .. } => "exception_raised",
             });
             Ok(())
         }
