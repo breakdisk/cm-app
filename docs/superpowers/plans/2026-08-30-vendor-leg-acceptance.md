@@ -505,6 +505,66 @@ In `services/omnideliv/src/domain/entities/order.rs`, inside `impl LegStatus`:
     }
 ```
 
+- [ ] **Step 3b: Hoist the "declined" rule onto the enum**
+
+> Added after Task 2's code review. `Order::acceptance_state` tests "not `Rejected` and not `Failed`" with a local closure, but Task 1 established that leg-status rules are named methods on `LegStatus` (`is_terminal`, `has_answered`). Plan 4's acceptance barrier needs the identical predicate to compute the void amount, so leaving it as a closure guarantees it gets re-derived somewhere else.
+
+Add to `impl LegStatus`:
+
+```rust
+    /// Whether this leg will not be fulfilled — refused by the store, or
+    /// broken later. The acceptance barrier excludes exactly these from the
+    /// amount it captures, so the rule lives here rather than in a closure
+    /// that Plan 4 would have to re-derive.
+    pub fn declined(self) -> bool {
+        matches!(self, LegStatus::Rejected | LegStatus::Failed)
+    }
+```
+
+Then replace the local closure in `Order::acceptance_state` so it reads:
+
+```rust
+        let survived = |l: &&VendorLeg| !l.status.declined();
+```
+
+Leave the rest of `acceptance_state` exactly as it is. Add this test:
+
+```rust
+#[test]
+fn a_failed_leg_is_neither_accepted_nor_rejected() {
+    // `Failed` means the leg passed acceptance and broke afterwards, so it is
+    // not a vendor refusal — conflating the two would send an ops team down
+    // the wrong remediation path. The consequence, which is easy to misread
+    // on a dashboard, is that `accepted + rejected` does NOT equal the leg
+    // count when any leg failed.
+    let o = order_with(&[LegStatus::Accepted, LegStatus::Failed]);
+    assert_eq!(
+        o.acceptance_state(),
+        AcceptanceState::Resolved { accepted: 1, rejected: 0, accepted_subtotal_cents: 1_000 },
+    );
+}
+
+#[test]
+fn an_order_with_no_legs_is_resolved_and_owed_nothing() {
+    let o = order_with(&[]);
+    assert_eq!(
+        o.acceptance_state(),
+        AcceptanceState::Resolved { accepted: 0, rejected: 0, accepted_subtotal_cents: 0 },
+    );
+}
+```
+
+Also add one line to the `AcceptanceState::Resolved` doc comment, so the counts are not misread:
+
+```rust
+    /// Every leg has answered. `accepted_subtotal_cents` is the amount that may
+    /// be captured; the rest of the authorization is voided.
+    ///
+    /// `accepted + rejected` does not necessarily equal the leg count: a
+    /// `Failed` leg is in neither bucket, because it was not refused.
+    Resolved { accepted: usize, rejected: usize, accepted_subtotal_cents: i64 },
+```
+
 - [ ] **Step 4: Fix `all_legs_collected`**
 
 Replace the `pending` count in `Order::all_legs_collected` (~line 820). Keep the rest of the method and its `advance` call as they are:
