@@ -24,8 +24,8 @@ pub use order::{
 };
 pub use telemetry::TelemetryEvent;
 pub use venue::{
-    orderable_now, NotOrderable, OpeningWindow, Table, TableSession, TableStatus, Venue,
-    VenueKind, VenueStatus,
+    new_table_token, orderable_now, NotOrderable, OpeningWindow, Table, TableSession,
+    TableStatus, Venue, VenueKind, VenueStatus,
 };
 pub use vendor::{Vendor, VendorStatus, Vertical};
 pub use vendor_ledger::{current_period,EntryKind, LedgerEntry, LedgerStatus, VendorLedger};

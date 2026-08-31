@@ -193,6 +193,19 @@ pub struct Table {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A fresh printed secret for a table.
+///
+/// A v4 UUID with the hyphens stripped: 122 bits from the OS CSPRNG, which is
+/// far beyond guessing, and 32 URL-safe characters that a QR encodes compactly.
+///
+/// Deliberately not `rand`: adding that crate to this service changes
+/// `Cargo.lock`, and a `Cargo.lock` change rebuilds every service image in CI
+/// — a heavy price for randomness `uuid`'s `v4` feature already sources from
+/// `getrandom`.
+pub fn new_table_token() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
 /// An open party at a table.
 ///
 /// `id` doubles as the synthetic `user_id` on the minted token, which is what

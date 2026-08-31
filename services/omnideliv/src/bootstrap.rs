@@ -166,6 +166,9 @@ pub async fn run() -> anyhow::Result<()> {
     // the same event checkout published.
     let vendor_events_for_recovery = vendor_events.clone();
 
+    let venues: Arc<dyn crate::domain::repositories::VenueRepository> =
+        Arc::new(crate::infrastructure::db::PgVenueRepository::new(pool.clone()));
+
     let legs: Arc<dyn crate::domain::repositories::VendorLegRepository> =
         Arc::new(crate::infrastructure::db::PgVendorLegRepository::new(pool.clone()));
     let legs_for_recovery = legs.clone();
@@ -208,6 +211,10 @@ pub async fn run() -> anyhow::Result<()> {
         vendors:           vendors.clone(),
         legs,
         vendor_events,
+        venues,
+        table_session_mins:  cfg.table_session_mins,
+        table_session_cap:   cfg.table_session_cap,
+        table_scan_base_url: cfg.table_scan_base_url.clone(),
     });
 
     // Courier milestones. Spawned rather than awaited so the HTTP surface comes

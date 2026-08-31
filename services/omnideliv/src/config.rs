@@ -62,6 +62,29 @@ pub struct Config {
     #[serde(default = "default_stock_freshness_mins")]
     pub stock_freshness_mins: i64,
 
+    /// How long a scanned table session stays valid.
+    ///
+    /// Minutes, not hours. The credential that mints it is printed on vinyl in
+    /// a public room, so the blast radius of a photographed code is bounded
+    /// mostly by how quickly what it mints stops working. Long enough for a
+    /// meal, short enough that a code photographed at lunch is useless by
+    /// dinner.
+    #[serde(default = "default_table_session_mins")]
+    pub table_session_mins: i64,
+
+    /// How many parties may hold a live session at one table at once.
+    ///
+    /// A four-top does not need fifty. Without a cap, one photographed code is
+    /// an unbounded session factory. Above one so a table of friends can each
+    /// order from their own phone, which is the normal case this exists for.
+    #[serde(default = "default_table_session_cap")]
+    pub table_session_cap: i64,
+
+    /// Base URL the printed QR code points at, e.g. `https://eat.example.com`.
+    /// The code encodes `{base}/t/{token}`.
+    #[serde(default = "default_table_scan_base_url")]
+    pub table_scan_base_url: String,
+
     /// See the KNOWN LIMITATION in bootstrap: the mesh tool box is built once
     /// at startup, so these stand in for per-run request context until it is
     /// built per run.
@@ -143,6 +166,10 @@ fn default_claude_model() -> String { "claude-opus-4-6".to_string() }
 fn default_claude_max_tokens() -> u32 { 8192 }
 
 fn default_stock_freshness_mins() -> i64 { 30 }
+
+fn default_table_session_mins() -> i64 { 120 }
+fn default_table_session_cap() -> i64 { 8 }
+fn default_table_scan_base_url() -> String { "https://order.cargomarket.net".to_string() }
 
 impl Config {
     pub fn load() -> anyhow::Result<Self> {
