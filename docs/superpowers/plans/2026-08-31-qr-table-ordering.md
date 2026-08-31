@@ -91,6 +91,12 @@ Operator-authenticated. Returns each table's label and its scan URL so a venue c
 
 ## Definition of done
 
+> **Run against a real database and a live service 2026-08-31.** All 27 migrations applied from empty; all four tables created. Verified: a valid code at an open table mints a token; an unknown token, a closed table and a venue narrowed to 03:00-04:00 are **all three indistinguishable 404s** while the log still distinguishes them; the session cap refuses the third scan at cap 2; the minted token carries `table_session: true`, no permissions, no roles, an empty email and a synthetic `user_id` equal to the session id; the print sheet needs auth (401 without) and returns scan URLs; **rotation kills the old printed code** (404) while the new one works (200); and a second tenant's operator cannot rotate this tenant's table (404).
+>
+> Venue local time read as Mon 10:09 against 02:09 UTC, which is what proves the UTC+8 offset is genuinely applied rather than the UTC wall clock.
+>
+> Unlike the previous subsystem's live run, this one surfaced **no defects** — the gates behaved as specified.
+
 - [ ] Scanning a valid token at an open table returns a short-lived narrow token
 - [ ] The same scan outside venue hours is refused, and refused indistinguishably from an unknown token
 - [ ] A minted token carries no permissions and is marked `table_session`
