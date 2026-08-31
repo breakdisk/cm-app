@@ -217,6 +217,47 @@ create_topic "logisticos.carrier.marketplace.booking.accepted"
 create_topic "logisticos.carrier.marketplace.booking.rejected"
 create_topic "logisticos.carrier.marketplace.pickup.recorded"
 
+# ---------------------------------------------------------------------------
+# Found 2026-08-31, all by the same defect in check-kafka-topics.sh.
+#
+# That guard matched `subscribe(&[...])` WITHOUT `-z`, so it only ever saw a
+# single-line call -- and every real subscribe in this repo spans lines. It also
+# required a literal `topics::` prefix, so a bare imported constant was
+# invisible. Between them it was reading almost nothing while reporting a clean
+# bill of health. Both holes are closed; these are the topics that were hiding
+# behind them, twelve of which did not exist on the live broker either.
+#
+# Each line below is a feature that was inert with no symptom past one startup
+# line, exactly as in the 2026-08-09 sweep.
+
+# Proof of Pickup. Published by pod; subscribed by payments (Track A driver
+# ledger debit -- money), order-intake and delivery-experience (the canonical
+# chain-of-custody transition to picked_up).
+create_topic "logisticos.pod.pickup.captured"
+
+# Money out. COD remittance and wallet withdrawal settlement.
+create_topic "logisticos.payments.cod.remitted"
+create_topic "logisticos.payments.wallet.withdrawal_disbursed"
+create_topic "logisticos.payments.wallet.withdrawal_rejected"
+
+# Hub: consolidation, inbound piece scans, and the cross-border customs legs.
+create_topic "logisticos.hub.consolidation.plan_loaded"
+create_topic "logisticos.hub.piece.scanned_inbound"
+create_topic "logisticos.hub.container.arrived_at_port"
+create_topic "logisticos.hub.container.customs_hold"
+create_topic "logisticos.hub.container.deconsolidated"
+
+# Support tickets and the AI escalation loop that closes them.
+create_topic "logisticos.support.ticket.opened"
+create_topic "logisticos.support.ticket.closed"
+create_topic "logisticos.ai.escalation.resolved"
+
+# Identity. Both of these DID exist on the broker -- auto-created because a
+# publish happened to land before the consumer subscribed. That is the coin
+# flip this script exists to remove, not a reprieve.
+create_topic "logisticos.identity.otp.requested"
+create_topic "logisticos.identity.tenant.finalized"
+
 echo ""
 echo "=== Done. Verify with: ==="
 echo "docker exec $KAFKA_CONTAINER $KAFKA_BIN --bootstrap-server localhost:9092 --list"
