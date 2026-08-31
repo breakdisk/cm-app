@@ -440,6 +440,31 @@ pub trait VenueRepository: Send + Sync {
     /// Every table at a venue, for the operator printing them.
     async fn list_tables(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<Vec<Table>>;
 
+    /// The live session behind a diner's token, if it is still live.
+    ///
+    /// The token's `user_id` IS the session id, so this is a primary-key read.
+    /// Returns `None` for an ended or expired session even though the JWT may
+    /// still verify — the row is the record, and a token outliving its session
+    /// must not still order.
+    async fn find_live_session(
+        &self,
+        tenant_id: Uuid,
+        session_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<TableSession>>;
+
+    /// Does this vendor sell at this venue?
+    ///
+    /// The guard that makes a table order a VENUE order. Without it a diner at
+    /// one restaurant could add items from a vendor across town, because the
+    /// basket takes `vendor_id` from the client.
+    async fn vendor_is_at_venue(
+        &self,
+        tenant_id: Uuid,
+        venue_id: Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool>;
+
     /// Replace a table's printed code, invalidating the one on the wall.
     ///
     /// The answer to a leaked code: rotation is an operator action taking

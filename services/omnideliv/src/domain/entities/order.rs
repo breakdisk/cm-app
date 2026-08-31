@@ -192,6 +192,50 @@ impl PaymentMethod {
     }
 }
 
+/// How the food reaches the person who ordered it.
+///
+/// `DineIn` is an order with N vendor legs and ZERO courier legs — the food
+/// crosses a room, not a city. Nothing dispatches and no delivery fee is
+/// charged.
+///
+/// Recorded rather than inferred from "has no courier task": an absent courier
+/// task also describes a delivery order nobody has accepted yet, and code that
+/// could not tell those apart would chase couriers for food already on a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Fulfilment {
+    /// Every order this service placed before QR table ordering existed.
+    #[default]
+    Delivery,
+    DineIn,
+}
+
+impl Fulfilment {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Fulfilment::Delivery => "delivery",
+            Fulfilment::DineIn => "dine_in",
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "delivery" => Some(Fulfilment::Delivery),
+            "dine_in" => Some(Fulfilment::DineIn),
+            _ => None,
+        }
+    }
+
+    /// Whether a courier is ever offered this order.
+    ///
+    /// The single question every dispatch-shaped code path should ask, rather
+    /// than each one re-deriving it from the enum and one of them getting it
+    /// backwards.
+    pub fn needs_a_courier(&self) -> bool {
+        matches!(self, Fulfilment::Delivery)
+    }
+}
+
 /// Where an `Online` order's authorization hold stands. Meaningless for `Cod`
 /// orders — cash never touches a gateway, so this simply never leaves
 /// `Pending` for one, and nothing reads it for a `Cod` order.
@@ -376,6 +420,8 @@ pub struct Order {
     pub basket_id:          Uuid,
     pub plan_id:            Uuid,
     pub status:             OrderStatus,
+    /// See `Fulfilment`. `Delivery` for every order placed before dine-in.
+    pub fulfilment:         Fulfilment,
     pub goods_total_cents:  i64,
     pub delivery_fee_cents: i64,
     pub tip_cents:          i64,
@@ -662,6 +708,8 @@ impl Order {
             basket_id,
             plan_id,
             status: OrderStatus::Placed,
+            // Delivery unless a caller says otherwise — `for_dine_in()` below.
+            fulfilment: Fulfilment::Delivery,
             goods_total_cents,
             delivery_fee_cents,
             tip_cents,
@@ -878,6 +926,24 @@ impl Order {
     ///
     /// A failed or rejected leg is resolved; a leg still being prepared is
     /// not.
+    /// Rebuilds this order as dine-in: no courier, and therefore no delivery
+    /// economics.
+    ///
+    /// One method rather than letting a caller set the enum, because the
+    /// migration's CHECK refuses a `dine_in` row that still carries a delivery
+    /// fee or a courier trip cost. Setting the flag alone would produce a row
+    /// the database rejects at the very end of checkout, after money has
+    /// already moved.
+    #[must_use]
+    pub fn for_dine_in(mut self) -> Self {
+        self.fulfilment = Fulfilment::DineIn;
+        // Recompute rather than assume the caller passed zeroes.
+        self.grand_total_cents -= self.delivery_fee_cents;
+        self.delivery_fee_cents = 0;
+        self.courier_trip_cents = 0;
+        self
+    }
+
     pub fn all_legs_collected(&mut self) -> Result<(), TransitionError> {
         // Was: a count of `Pending` legs. That was equivalent to "unresolved"
         // only while `Pending | PickedUp | Failed | Settled` were the only

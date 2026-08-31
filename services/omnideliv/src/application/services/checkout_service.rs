@@ -9,7 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::services::order_payments::OrderPayments;
-use crate::domain::entities::{
+use crate::domain::entities::{Fulfilment, 
     Basket, ConsolidationPlan, Order, PaymentMethod, PendingStop, TemperatureClass, VendorLeg,
 };
 use crate::domain::repositories::{BasketRepository, VendorRepository};
@@ -209,6 +209,7 @@ impl CheckoutService {
         customer_phone_claim: Option<&str>,
         delivery_note: Option<&str>,
         payment_method: PaymentMethod,
+        fulfilment: Fulfilment,
     ) -> Result<PlaceOutcome, CheckoutError> {
         let basket: Basket = self
             .baskets
@@ -302,6 +303,14 @@ impl CheckoutService {
         // than trusted: it reaches a courier's screen verbatim.
         .with_delivery_note(crate::domain::entities::order::clean_delivery_note(delivery_note));
 
+        // Applied before anything irreversible: `for_dine_in` also strips the
+        // delivery economics, and the database CHECK refuses a dine-in row that
+        // still carries them. Doing it after the payment branch would fail the
+        // save at the very end of checkout, with money already moved.
+        if !fulfilment.needs_a_courier() {
+            order = order.for_dine_in();
+        }
+
         // Only now does anything irreversible happen.
         // The longest prep time is the earliest the courier can expect to leave
         // the last pickup, which is the only deadline signal available before a
@@ -309,6 +318,13 @@ impl CheckoutService {
         let deadline_hint_mins =
             plan.stops.iter().map(|s| s.prep_time_minutes as i64).max().unwrap_or(0);
         let card = build_offer_card(&card_stops, plan.total_distance_m as i64, deadline_hint_mins);
+
+        // A dine-in order has no courier leg at all: the food crosses a room.
+        // Nothing is offered, so there is no NoCourier failure to handle and
+        // the order simply stands placed, waiting on the kitchen.
+        if !fulfilment.needs_a_courier() {
+            return Ok(PlaceOutcome { order, checkout_url: None });
+        }
 
         match payment_method {
             PaymentMethod::Cod => {
@@ -611,7 +627,7 @@ mod place_tests {
 
         let outcome = svc
             .place(tenant_id, b.id, 4_000, 14.5995, 120.9842, "customer@demo.com", None, None,
-                   PaymentMethod::Cod)
+                   PaymentMethod::Cod, Fulfilment::Delivery)
             .await
             .expect("cod checkout succeeds");
 
@@ -647,7 +663,7 @@ mod place_tests {
 
         let outcome = svc
             .place(tenant_id, b.id, 4_000, 14.5995, 120.9842, "customer@demo.com", None, None,
-                   PaymentMethod::Online)
+                   PaymentMethod::Online, Fulfilment::Delivery)
             .await
             .expect("online checkout succeeds");
 

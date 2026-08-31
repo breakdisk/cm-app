@@ -84,9 +84,33 @@ pub fn routes() -> Router<Arc<AppState>> {
 /// table 12" needs the answer even though the diner must not get it.
 async fn scan(
     State(st): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Path(token): Path<String>,
 ) -> Result<Json<ScanResponse>, StatusCode> {
     let now = Utc::now();
+
+    // Before any database work: an unauthenticated endpoint must not let an
+    // unbounded caller spend queries. The gateway's limiter cannot cover this
+    // one — it keys on tenant and tier, and a scan carries neither.
+    //
+    // The client address comes from X-Forwarded-For, which the gateway appends
+    // to. Absent (a direct call, or a misconfigured hop) the token key still
+    // applies, so the limit degrades rather than disappearing.
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if !st.scan_limiter.check(&token, client_ip, now) {
+        tracing::warn!(?client_ip, "scan rate limit exceeded");
+        // 429, not the blanket 404 the other refusals use: a rate limit is a
+        // "come back shortly", and telling a real diner's phone to retry is
+        // strictly better than telling it the table does not exist. It leaks
+        // nothing a prober did not already know by having been throttled.
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
 
     let Some((table, venue)) = st.venues.find_table_by_token(&token).await.map_err(|e| {
         tracing::error!(err = %e, "table token lookup failed");

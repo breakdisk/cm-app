@@ -215,5 +215,73 @@ def main():
             print("     gateway_order_ref fallback is what makes capture work.")
 
 
+def verify_partial_capture(order_ref, payment_ref, authorized_value, api_key):
+    """Ask NI the one question ADR-0017's foodcourt case turns on.
+
+    A foodcourt basket authorizes the whole table, then some stalls accept and
+    some refuse, so only the accepted subtotal may be taken. Our adapter can
+    already express that -- `PaymentGateway::capture` has always carried an
+    amount and posts it to NI's captures endpoint -- but whether NI ACCEPTS a
+    value below the authorization, and what becomes of the untaken remainder,
+    has never been observed.
+
+    Two outcomes, and they mean different things:
+
+      * accepted -> the acceptance barrier is buildable as designed, and the
+        only open question is whether the remainder auto-releases or needs an
+        explicit void (which the response body below should hint at).
+      * rejected -> partial capture is NOT available on this account, and the
+        foodcourt needs the fallback ADR-0017 names: per-leg authorization at
+        checkout, N holds captured or voided independently.
+
+    Requires an order that has actually been PAID through the hosted page --
+    an authorization hold cannot be captured before it exists.
+    """
+    partial = max(1, authorized_value // 2)
+    url = (
+        BASE_URL
+        + "/transactions/outlets/"
+        + OUTLET_REF
+        + "/orders/"
+        + order_ref
+        + "/payments/"
+        + payment_ref
+        + "/captures"
+    )
+    print("\n== partial capture probe ==")
+    print("  authorized: " + str(authorized_value))
+    print("  capturing:  " + str(partial) + "  (deliberately less)")
+
+    status, body = post_json(url, {"amount": {"value": partial}}, api_key)
+    print("  HTTP " + str(status))
+    print("  " + (json.dumps(body)[:900] if isinstance(body, dict) else str(body)[:900]))
+
+    if 200 <= status < 300:
+        print("\n  -> NI ACCEPTED a capture below the authorization.")
+        print("     The acceptance barrier is buildable as designed.")
+        print("     Now read the body above for the remainder: does it show the")
+        print("     order settled at the partial amount, or still holding the")
+        print("     difference? That decides whether an explicit void is needed.")
+    else:
+        print("\n  -> NI REFUSED the partial capture.")
+        print("     Partial capture is not available on this account, so the")
+        print("     foodcourt needs the per-leg-authorization fallback instead:")
+        print("     N holds opened at checkout, each captured or voided alone.")
+        print("     Do NOT ship the acceptance barrier against this account.")
+
+
 if __name__ == "__main__":
     main()
+
+    # Opt-in, because it needs a real PAID order and it moves sandbox money.
+    #
+    #   NI_VERIFY_CAPTURE=<orderRef>:<paymentRef>:<authorizedValue>     #       python scripts/ni-sandbox-verify.py
+    #
+    # Get the two references by completing the hosted payment page that step 1
+    # printed, then reading them from the order in NI's portal.
+    probe = os.environ.get("NI_VERIFY_CAPTURE", "")
+    if probe:
+        parts = probe.split(":")
+        if len(parts) != 3 or not parts[2].isdigit():
+            die("NI_VERIFY_CAPTURE must be <orderRef>:<paymentRef>:<authorizedValue>")
+        verify_partial_capture(parts[0], parts[1], int(parts[2]), API_KEY)

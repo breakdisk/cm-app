@@ -4,6 +4,7 @@ pub mod courier_jobs;
 pub mod health;
 pub mod mesh;
 pub mod orders;
+pub mod scan_limit;
 pub mod tables;
 pub mod tracking;
 pub mod vendor_orders;
@@ -50,6 +51,9 @@ pub struct AppState {
     /// an unbounded session factory.
     pub table_session_cap:  i64,
     pub table_scan_base_url: String,
+    /// Bounds the unauthenticated scan endpoint. Per-process — see the
+    /// module docs for what that does and does not buy.
+    pub scan_limiter:        Arc<scan_limit::ScanLimiter>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {

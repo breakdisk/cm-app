@@ -60,7 +60,15 @@ async fn checkout(
         .checkout
         .place(claims.tenant_id, req.basket_id, req.tip_cents, req.delivery_lat, req.delivery_lng,
                &claims.email, claims.phone.as_deref(), req.delivery_note.as_deref(),
-               req.payment_method)
+               req.payment_method,
+               // Derived from the principal, never from the request body. A
+               // client-supplied fulfilment would let any caller declare their
+               // delivery order dine-in and skip the delivery fee.
+               if claims.table_session {
+                   crate::domain::entities::Fulfilment::DineIn
+               } else {
+                   crate::domain::entities::Fulfilment::Delivery
+               })
         .await
         .map_err(|e| match e {
             // A basket awaiting review is the client's cue to show Screen C,

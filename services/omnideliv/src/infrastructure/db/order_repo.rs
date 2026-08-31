@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::domain::entities::{LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus, VendorLeg};
+use crate::domain::entities::{Fulfilment, LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus, VendorLeg};
 use crate::domain::repositories::OrderRepository;
 
 pub struct PgOrderRepository { pool: PgPool }
@@ -42,6 +42,14 @@ fn payment_status(s: &str) -> anyhow::Result<PaymentStatus> {
     })
 }
 
+/// Reads `orders.fulfilment`, defaulting to `Delivery` for a row written before
+/// the column existed. `try_get` rather than `get`, so a pre-migration read is
+/// a default rather than a panic.
+fn fulfilment_of(r: &sqlx::postgres::PgRow) -> anyhow::Result<Fulfilment> {
+    let raw: String = r.try_get("fulfilment").unwrap_or_else(|_| "delivery".into());
+    Fulfilment::from_wire(&raw).ok_or_else(|| anyhow::anyhow!("unknown order fulfilment: {raw}"))
+}
+
 fn leg_status(s: &str) -> anyhow::Result<LegStatus> {
     LegStatus::from_wire(s).ok_or_else(|| anyhow::anyhow!("unknown leg status: {s}"))
 }
@@ -62,9 +70,9 @@ impl OrderRepository for PgOrderRepository {
                 delivery_lat, delivery_lng, customer_name, customer_phone, courier_user_id,
                 delivery_note, payment_method, payment_status, payment_intent_id,
                 prepaid_amount_cents, payment_authorized_at, pending_offer_card,
-                payment_checkout_url
+                payment_checkout_url, fulfilment
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,$25,$26,$27)
+                      $21,$22,$23,$24,$25,$26,$27,$28)
             ON CONFLICT (id) DO UPDATE SET
                 status          = EXCLUDED.status,
                 courier_task_id = EXCLUDED.courier_task_id,
@@ -105,6 +113,7 @@ impl OrderRepository for PgOrderRepository {
         .bind(o.payment_intent_id).bind(o.prepaid_amount_cents).bind(o.payment_authorized_at)
         .bind(&o.pending_offer_card)
         .bind(&o.payment_checkout_url)
+        .bind(o.fulfilment.as_str())
         .execute(&mut *tx).await?;
 
         for l in &o.legs {
@@ -136,8 +145,14 @@ impl OrderRepository for PgOrderRepository {
         // fetching every leg for every stuck order would make an operational
         // sweep proportional to basket size for no benefit.
         let rows = sqlx::query(
+            // `fulfilment = 'delivery'` is load-bearing, not a tidy-up: a
+            // dine-in order is never awaiting a courier, and without this the
+            // recovery sweep would re-offer couriers for food already sitting
+            // on a table — and eventually escalate or void it for never being
+            // collected.
             "SELECT * FROM omnideliv.orders
-              WHERE status IN ('placed', 'awaiting_courier')
+              WHERE fulfilment = 'delivery'
+                AND status IN ('placed', 'awaiting_courier')
               ORDER BY placed_at ASC
               LIMIT 500",
         )
@@ -156,6 +171,7 @@ impl OrderRepository for PgOrderRepository {
                 basket_id:          r.get("basket_id"),
                 plan_id:            r.get("plan_id"),
                 status:             order_status(&status)?,
+                fulfilment:         fulfilment_of(r)?,
                 delivery_lat:       r.get("delivery_lat"),
                 delivery_lng:       r.get("delivery_lng"),
                 courier_user_id:    r.get("courier_user_id"),
@@ -291,6 +307,7 @@ impl OrderRepository for PgOrderRepository {
             basket_id:          r.get("basket_id"),
             plan_id:            r.get("plan_id"),
             status:             order_status(&status)?,
+            fulfilment:         fulfilment_of(&r)?,
             delivery_lat:       r.get("delivery_lat"),
             delivery_lng:       r.get("delivery_lng"),
             courier_user_id:    r.get("courier_user_id"),

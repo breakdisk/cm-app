@@ -155,6 +155,32 @@ async fn proxy_handler(
         match state.jwt.validate_access_token(&token) {
             Ok(token_data) => {
                 let claims = token_data.claims;
+
+                // An anonymous diner is bounded here, at the one place that sees
+                // every request before it is routed. The token is minted from a
+                // code printed on vinyl in a public room, and it is signed with
+                // the shared platform secret — so it is structurally valid at
+                // EVERY service, not just the one that minted it.
+                //
+                // It carries no permissions, but that alone is not a control:
+                // most handlers on this platform are gated by `require_auth`
+                // only, so "no permissions" still reaches every route that never
+                // checks one. Deny by default, allowlist the dine-in path.
+                if claims.table_session
+                    && !crate::proxy::diner_may_reach(req.method().as_str(), path)
+                {
+                    tracing::warn!(
+                        %path, method = %req.method(),
+                        tenant_id = %claims.tenant_id,
+                        "table-session principal refused a path outside the dine-in allowlist",
+                    );
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"error": "This session cannot access that resource"})),
+                    )
+                        .into_response();
+                }
+
                 (claims.tenant_id.to_string(), claims.subscription_tier.clone())
             },
             Err(_) => {

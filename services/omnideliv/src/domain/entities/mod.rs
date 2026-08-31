@@ -18,7 +18,7 @@ pub use catalog::{
     ModifierError, ModifierGroup, ModifierOption, SelectedModifier,
 };
 pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
-pub use order::{
+pub use order::{Fulfilment,
     AcceptanceState, FundingSource, LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus,
     PaymentTransitionError, Settlement, VendorLeg,
 };

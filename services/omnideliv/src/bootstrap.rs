@@ -166,6 +166,11 @@ pub async fn run() -> anyhow::Result<()> {
     // the same event checkout published.
     let vendor_events_for_recovery = vendor_events.clone();
 
+    // Bounds the unauthenticated scan endpoint. Per-process, so N replicas
+    // allow N times the rate — see the module docs for why that trade was made
+    // over adding Redis to this service.
+    let scan_limiter = Arc::new(crate::api::http::scan_limit::ScanLimiter::new());
+
     let venues: Arc<dyn crate::domain::repositories::VenueRepository> =
         Arc::new(crate::infrastructure::db::PgVenueRepository::new(pool.clone()));
 
@@ -215,6 +220,7 @@ pub async fn run() -> anyhow::Result<()> {
         table_session_mins:  cfg.table_session_mins,
         table_session_cap:   cfg.table_session_cap,
         table_scan_base_url: cfg.table_scan_base_url.clone(),
+        scan_limiter:        scan_limiter.clone(),
     });
 
     // Courier milestones. Spawned rather than awaited so the HTTP surface comes
@@ -362,6 +368,22 @@ pub async fn run() -> anyhow::Result<()> {
                 Ok(0) => {}
                 Ok(n) => tracing::warn!(escalated = n, "vendor legs still unanswered"),
                 Err(e) => tracing::error!(err = %e, "vendor leg sweep failed"),
+            }
+        }
+    });
+
+    // Evicting on a timer rather than inline: sweeping per request would make
+    // one request's cost proportional to how many keys exist, which is exactly
+    // what an attacker would drive up.
+    let limiter_for_sweep = scan_limiter.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let dropped = limiter_for_sweep.evict_stale(chrono::Utc::now());
+            if dropped > 0 {
+                tracing::debug!(dropped, "evicted stale scan rate-limit buckets");
             }
         }
     });
