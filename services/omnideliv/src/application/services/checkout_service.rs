@@ -209,7 +209,7 @@ impl CheckoutService {
         customer_phone_claim: Option<&str>,
         delivery_note: Option<&str>,
         payment_method: PaymentMethod,
-        fulfilment: crate::domain::entities::Fulfilment,
+        fulfilment: Fulfilment,
     ) -> Result<PlaceOutcome, CheckoutError> {
         let basket: Basket = self
             .baskets
