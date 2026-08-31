@@ -163,6 +163,59 @@ impl VenueRepository for PgVenueRepository {
         rows.iter().map(table_from_row).collect()
     }
 
+    async fn find_live_session(
+        &self,
+        tenant_id: Uuid,
+        session_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<TableSession>> {
+        // Liveness is in the predicate, not checked afterwards: an expired row
+        // must read as absent, so a token that outlived its session cannot
+        // still order.
+        let row = sqlx::query(
+            r#"
+            SELECT id, table_id, venue_id, tenant_id, created_at, expires_at, ended_at
+              FROM omnideliv.table_sessions
+             WHERE id = $1 AND tenant_id = $2 AND ended_at IS NULL AND expires_at > $3
+            "#,
+        )
+        .bind(session_id)
+        .bind(tenant_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| TableSession {
+            id: r.get("id"),
+            table_id: r.get("table_id"),
+            venue_id: r.get("venue_id"),
+            tenant_id: r.get("tenant_id"),
+            created_at: r.get("created_at"),
+            expires_at: r.get("expires_at"),
+            ended_at: r.get("ended_at"),
+        }))
+    }
+
+    async fn vendor_is_at_venue(
+        &self,
+        tenant_id: Uuid,
+        venue_id: Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let row = sqlx::query(
+            r#"
+            SELECT 1 AS ok FROM omnideliv.venue_vendors
+             WHERE tenant_id = $1 AND venue_id = $2 AND vendor_id = $3
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(venue_id)
+        .bind(vendor_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
     async fn rotate_token(
         &self,
         tenant_id: Uuid,
