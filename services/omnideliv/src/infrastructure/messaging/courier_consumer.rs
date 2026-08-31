@@ -187,9 +187,20 @@ impl CourierMilestoneHandler {
                     return Ok(());
                 };
 
-                // The idempotence that matters: a redelivered event must not
-                // credit the vendor a second time.
+                // Routine: a redelivered event must not credit the vendor twice.
                 if leg.status == LegStatus::PickedUp {
+                    return Ok(());
+                }
+
+                // Anything that is not still awaiting the courier has no
+                // collection to record: it was refused, it broke, it was
+                // served at a table, or it is already settled. Crediting any
+                // of those pays for goods that never passed to a courier.
+                if !leg.status.blocks_collection() {
+                    tracing::warn!(
+                        %order_id, %vendor_id, status = leg.status.as_str(),
+                        "collection event for a leg not awaiting collection — not crediting",
+                    );
                     return Ok(());
                 }
 
@@ -466,6 +477,22 @@ mod capture_on_acceptance {
         async fn save(&self, _l: &VendorLedger) -> anyhow::Result<()> { Ok(()) }
     }
 
+    /// Unlike `NoopLedgers`, records every `save` so a test can assert a
+    /// vendor was — or, more importantly, was not — credited at all.
+    #[derive(Default)]
+    struct Ledgers {
+        credit_calls: Mutex<Vec<Uuid>>,
+    }
+    #[async_trait::async_trait]
+    impl VendorLedgerRepository for Ledgers {
+        async fn find_open(&self, _t: Uuid, _v: Uuid, _p: &str) -> anyhow::Result<Option<VendorLedger>> { Ok(None) }
+        async fn list_recent(&self, _t: Uuid, _v: Uuid, _l: i64) -> anyhow::Result<Vec<LedgerPeriod>> { Ok(vec![]) }
+        async fn save(&self, l: &VendorLedger) -> anyhow::Result<()> {
+            self.credit_calls.lock().unwrap().push(l.vendor_id);
+            Ok(())
+        }
+    }
+
     struct NoopTelemetry;
     #[async_trait::async_trait]
     impl TelemetryRepository for NoopTelemetry {
@@ -585,5 +612,43 @@ mod capture_on_acceptance {
         assert!(payments.capture_calls.lock().unwrap().is_empty(), "COD must never call the gateway");
         let saved = orders.0.lock().unwrap().iter().find(|o| o.id == order_id).cloned().unwrap();
         assert_eq!(saved.status, OrderStatus::Collecting, "the courier claim itself is unaffected");
+    }
+
+    /// The guard `Collected` relies on: a late or out-of-order collection
+    /// event for a leg the vendor already `Rejected` must not resurrect it as
+    /// `PickedUp` and must not credit the vendor's ledger. This is the
+    /// highest-stakes assertion in the file — a regression here is a store
+    /// paid for goods it refused to hand over.
+    #[tokio::test]
+    async fn a_collection_event_for_a_rejected_leg_is_not_credited() {
+        let vendor_id = Uuid::new_v4();
+        let mut leg = VendorLeg::settle(TENANT, vendor_id, 1_000, 1_500);
+        leg.status = LegStatus::Rejected;
+        let order = Order::place(
+            TENANT, Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(),
+            vec![leg], 0, 0, 0, 14.5995, 120.9842,
+        );
+        let order_id = order.id;
+        let orders = Arc::new(Orders(Mutex::new(vec![order])));
+        let ledgers = Arc::new(Ledgers::default());
+        let h = CourierMilestoneHandler::new(
+            orders.clone(), ledgers.clone(), Arc::new(NoopTelemetry),
+            Arc::new(NoopEvents), Arc::new(Payments::default()),
+        );
+
+        h.handle(CourierEvent::Collected {
+            tenant_id: TENANT, product: "omnideliv".into(), external_ref: order_id,
+            courier_id: Uuid::new_v4(), vendor_id, device_timestamp: None,
+        }).await.unwrap();
+
+        assert!(
+            ledgers.credit_calls.lock().unwrap().is_empty(),
+            "a rejected leg must never be credited",
+        );
+        let saved = orders.0.lock().unwrap().iter().find(|o| o.id == order_id).cloned().unwrap();
+        assert_eq!(
+            saved.legs[0].status, LegStatus::Rejected,
+            "the leg status must not be overwritten by a stray collection event",
+        );
     }
 }

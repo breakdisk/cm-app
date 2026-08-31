@@ -24,7 +24,7 @@ import {
   X,
   Users,
   Users2,
-  GitBranch, ShoppingBag } from "lucide-react";
+  GitBranch, ShoppingBag, ClipboardList } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { useBranding } from "@/lib/branding";
 import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
@@ -57,6 +57,11 @@ const NAV_ITEMS: NavItem[] = [
   // Only the second kind has a catalog, and showing the tab to the first only
   // ever produced "this login is not linked to a store".
   { label: "Storefront",   href: "/storefront",  icon: ShoppingBag, requiresStorefront: true },
+  // The live order queue. Same gate as Storefront: only a vendor has one.
+  // Its own entry rather than a tab inside Storefront because a kitchen
+  // leaves this open all service, and burying it one click deep is how a
+  // store ends up not watching it.
+  { label: "Orders",       href: "/storefront/orders", icon: ClipboardList, requiresStorefront: true },
   // The same page, before there is a store to manage. Gating "Storefront" on
   // owning one was right, but it left no way in at all: applying is the only
   // route to a vendor record, and the application form lived behind the tab
@@ -82,6 +87,7 @@ const NAV_ITEMS: NavItem[] = [
 const PAGE_TITLE_MAP: Record<string, string> = {
   "/":             "Overview",
   "/shipments":    "Shipments",
+  "/storefront/orders": "Orders",
   "/marketplace":  "Marketplace",
   "/storefront":   "Storefront",
   "/customers":    "Customers",

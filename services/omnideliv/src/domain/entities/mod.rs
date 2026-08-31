@@ -18,7 +18,7 @@ pub use catalog::{
 };
 pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
 pub use order::{
-    FundingSource, LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus,
+    AcceptanceState, FundingSource, LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus,
     PaymentTransitionError, Settlement, VendorLeg,
 };
 pub use telemetry::TelemetryEvent;

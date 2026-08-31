@@ -43,13 +43,7 @@ fn payment_status(s: &str) -> anyhow::Result<PaymentStatus> {
 }
 
 fn leg_status(s: &str) -> anyhow::Result<LegStatus> {
-    Ok(match s {
-        "pending"   => LegStatus::Pending,
-        "picked_up" => LegStatus::PickedUp,
-        "failed"    => LegStatus::Failed,
-        "settled"   => LegStatus::Settled,
-        other => anyhow::bail!("unknown leg status in database: {other}"),
-    })
+    LegStatus::from_wire(s).ok_or_else(|| anyhow::anyhow!("unknown leg status: {s}"))
 }
 
 #[async_trait]
@@ -280,6 +274,9 @@ impl OrderRepository for PgOrderRepository {
                 payout_cents:         lr.get("payout_cents"),
                 status:               leg_status(&st)?,
                 picked_up_at:         lr.get("picked_up_at"),
+                accepted_at:          lr.get("accepted_at"),
+                ready_at:             lr.get("ready_at"),
+                ready_in_minutes:     lr.get("ready_in_minutes"),
                 created_at:           lr.get("created_at"),
             });
         }

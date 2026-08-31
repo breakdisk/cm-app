@@ -100,6 +100,31 @@ async fn checkout(
         tracing::error!(err = %e, order_id = %order.id, "order.placed publish failed");
     }
 
+    // Tell each store about its own leg — the thing that, before ADR-0017, never
+    // happened at all: a restaurant found out it had an order when a courier
+    // walked in.
+    //
+    // COD only. An `Online` order has an authorization hold and nothing more
+    // until the customer finishes the hosted checkout page, and a kitchen told
+    // to start cooking then would be cooking for an order that may never be
+    // paid. That branch publishes from the `payment.intent.authorized`
+    // consumer instead — the same place, and for the same reason, that the
+    // courier offer is deferred to.
+    if order.payment_method == PaymentMethod::Cod {
+        for leg in &order.legs {
+            if let Err(e) = st
+                .vendor_events
+                .leg_received(&crate::infrastructure::messaging::LegRef::of(leg))
+                .await
+            {
+                // The queue endpoint is the record, so a store still sees this
+                // order on its next read. Losing the nudge is not losing the work.
+                tracing::warn!(err = %e, order_id = %order.id, vendor_id = %leg.vendor_id,
+                    "vendor.leg.received publish failed — the queue is still correct");
+            }
+        }
+    }
+
     Ok(Json(CheckoutResponse {
         order_id:          order.id,
         grand_total_cents: order.grand_total_cents,

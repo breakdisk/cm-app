@@ -55,6 +55,7 @@ pub async fn handle(
     orders: &Arc<dyn OrderRepository>,
     telemetry: &Arc<dyn TelemetryRepository>,
     dispatch: &Arc<dyn CourierDispatch>,
+    vendor_events: &Arc<dyn super::VendorLegEvents>,
 ) -> anyhow::Result<()> {
     match topic {
         topics::PAYMENT_INTENT_AUTHORIZED => {
@@ -63,7 +64,7 @@ pub async fn handle(
             if evt.data.purpose != OMNIDELIV_ORDER_PURPOSE {
                 return Ok(());
             }
-            handle_authorized(evt.tenant_id, evt.data.reference_id, evt.data.intent_id, orders, telemetry, dispatch).await
+            handle_authorized(evt.tenant_id, evt.data.reference_id, evt.data.intent_id, orders, telemetry, dispatch, vendor_events).await
         }
         topics::PAYMENT_INTENT_FAILED => {
             let evt: Event<PaymentIntentFailed> = serde_json::from_value(json)
@@ -89,6 +90,7 @@ async fn handle_authorized(
     orders: &Arc<dyn OrderRepository>,
     telemetry: &Arc<dyn TelemetryRepository>,
     dispatch: &Arc<dyn CourierDispatch>,
+    vendor_events: &Arc<dyn super::VendorLegEvents>,
 ) -> anyhow::Result<()> {
     let Some(mut order) = orders.find_by_id(tenant_id, order_id).await? else {
         // Not an error: the order may have been purged, or this is a replay
@@ -137,6 +139,20 @@ async fn handle_authorized(
     }
 
     orders.save(&order).await?;
+
+    // Now the stores are told, and not before. Until the hold landed, this
+    // order was a checkout page the customer might still abandon; a kitchen
+    // told to start cooking then would be cooking for nothing.
+    //
+    // Reached only on the first delivery of this event — an order already past
+    // `Placed` returned above — so a redelivery does not re-notify a store that
+    // is already cooking.
+    for leg in &order.legs {
+        if let Err(err) = vendor_events.leg_received(&super::LegRef::of(leg)).await {
+            tracing::warn!(err = %err, %order_id, vendor_id = %leg.vendor_id,
+                "vendor.leg.received publish failed — the queue is still correct");
+        }
+    }
 
     let e = TelemetryEvent::new(
         tenant_id, order_id, event_type::PAYMENT_AUTHORIZED, None, None,
@@ -307,10 +323,14 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         let intent = Uuid::new_v4();
         handle(topics::PAYMENT_INTENT_AUTHORIZED, authorized_event(order_id, intent),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
 
         assert_eq!(dispatch.calls.lock().unwrap().len(), 1, "the courier must be offered exactly once");
         let saved = orders.find_by_id(TENANT, order_id).await.unwrap().unwrap();
@@ -329,12 +349,16 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         let intent = Uuid::new_v4();
         handle(topics::PAYMENT_INTENT_AUTHORIZED, authorized_event(order_id, intent),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
         handle(topics::PAYMENT_INTENT_AUTHORIZED, authorized_event(order_id, intent),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
 
         assert_eq!(dispatch.calls.lock().unwrap().len(), 1, "a redelivery must not offer a second time");
     }
@@ -349,9 +373,13 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         handle(topics::PAYMENT_INTENT_FAILED, failed_event(order_id, "card_declined"),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
 
         assert!(dispatch.calls.lock().unwrap().is_empty(), "a failed payment must never offer a courier");
         let saved = orders.find_by_id(TENANT, order_id).await.unwrap().unwrap();
@@ -367,6 +395,10 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         let evt = serde_json::to_value(Event::new(
             "logisticos/payments", "payment.intent.authorized", TENANT,
@@ -377,7 +409,7 @@ mod tests {
             },
         )).unwrap();
 
-        handle(topics::PAYMENT_INTENT_AUTHORIZED, evt, &orders, &telemetry, &dispatch_trait)
+        handle(topics::PAYMENT_INTENT_AUTHORIZED, evt, &orders, &telemetry, &dispatch_trait, &vendor_events)
             .await.unwrap();
 
         assert!(dispatch.calls.lock().unwrap().is_empty());

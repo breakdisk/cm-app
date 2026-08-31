@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Availability, Basket, BasketConflict, CatalogItem, CatalogSource, LedgerStatus, Order,
-    TelemetryEvent, Vendor, VendorLedger, Vertical,
+    Availability, Basket, BasketConflict, CatalogItem, CatalogSource, LedgerStatus, LegStatus,
+    Order, TelemetryEvent, Vendor, VendorLedger, Vertical,
 };
 
 /// One period's headline figures, without its entries.
@@ -267,6 +267,139 @@ pub trait OrderRepository: Send + Sync {
         customer_id: Uuid,
         limit:       i64,
     ) -> anyhow::Result<Vec<OrderSummary>>;
+}
+
+/// The outcome of asking a leg to move.
+///
+/// `NoOp` is not an error. A tablet that retried, or a second member of staff
+/// who tapped Accept a moment later, should be told the leg is accepted — which
+/// is true — rather than shown a failure for something that did happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegTransition {
+    /// Carries the leg's identifying context because the caller publishes an
+    /// event immediately afterwards and would otherwise have to read the row
+    /// back to learn which order it belonged to. The UPDATE returns it.
+    Applied {
+        to:                   LegStatus,
+        order_id:             Uuid,
+        goods_subtotal_cents: i64,
+    },
+    NoOp { current: LegStatus },
+}
+
+/// What a vendor action returns, and what a replayed idempotency key returns
+/// verbatim on a retry.
+///
+/// Lives here rather than in the HTTP module because the repository stores it:
+/// the stored response and the live response must be the same shape, or a
+/// retried request would answer differently from the original.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransitionResponse {
+    pub leg_id: Uuid,
+    pub status: String,
+    /// False when the leg was already in the target state — a retry from a
+    /// tablet that lost its connection, or a second member of staff.
+    pub changed: bool,
+}
+
+/// A queue row.
+///
+/// Carries the order context a store needs to cook and nothing about the
+/// customer: a stall has no reason to hold a delivery address, and a foodcourt
+/// neighbour has no reason to learn what this one is making.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VendorLegRow {
+    pub leg_id:               Uuid,
+    pub order_id:             Uuid,
+    pub status:               String,
+    pub goods_subtotal_cents: i64,
+    pub ready_in_minutes:     Option<i32>,
+    pub accepted_at:          Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at:           chrono::DateTime<chrono::Utc>,
+}
+
+/// A leg the sweep is considering.
+///
+/// Carries what an alert needs and nothing else. The sweep runs across every
+/// tenant, so it must not become proportional to basket size — the same reason
+/// `find_awaiting_courier` does not hydrate an order's legs.
+#[derive(Debug, Clone)]
+pub struct AwaitingLeg {
+    pub leg_id:               Uuid,
+    pub order_id:             Uuid,
+    pub tenant_id:            Uuid,
+    pub vendor_id:            Uuid,
+    pub goods_subtotal_cents: i64,
+    pub created_at:           chrono::DateTime<chrono::Utc>,
+    /// Set once the sweep has raised this leg to a human. Present so the sweep
+    /// escalates once rather than on every tick — a leg unanswered for an hour
+    /// otherwise pages ops sixty times about one order.
+    pub escalated_at:         Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[async_trait]
+pub trait VendorLegRepository: Send + Sync {
+    /// Legs still waiting for their store to answer, oldest first.
+    ///
+    /// Deliberately across all tenants: an unanswered order is an operator
+    /// concern, not a customer request, and scoping it per tenant would mean
+    /// the sweep only runs for tenants someone remembered to enumerate. Same
+    /// reasoning as `OrderRepository::find_awaiting_courier`.
+    async fn find_awaiting_acceptance(&self) -> anyhow::Result<Vec<AwaitingLeg>>;
+
+    /// Stamps a leg as raised, so it is not raised again on the next tick.
+    ///
+    /// Deliberately not a status change: the collection consumer refuses to
+    /// credit a leg that is not awaiting collection, so moving the status here
+    /// would stop a store being paid for food it actually cooked.
+    async fn mark_escalated(&self, tenant_id: Uuid, leg_id: Uuid) -> anyhow::Result<()>;
+
+    /// Moves one leg to `to`, atomically, from whichever states legally precede
+    /// it.
+    ///
+    /// The caller does not pass a predecessor list. It is derived from
+    /// `LegStatus::can_transition_to`, so the transition graph is stated in the
+    /// domain exactly once instead of being re-hand-written at every call site
+    /// where the two could silently drift apart.
+    ///
+    /// Scoped by `vendor_id` as well as `tenant_id` so a store cannot transition
+    /// another store's leg by guessing an id — the same reason the HTTP surface
+    /// resolves the vendor from claims rather than from the path.
+    ///
+    /// No network I/O happens inside this call. Publishing the event is the
+    /// caller's job, after the write has committed — the same rule dispatch's
+    /// claim transaction follows.
+    async fn transition(
+        &self,
+        tenant_id:        Uuid,
+        vendor_id:        Uuid,
+        leg_id:           Uuid,
+        to:               LegStatus,
+        ready_in_minutes: Option<i32>,
+        rejected_reason:  Option<&str>,
+    ) -> anyhow::Result<LegTransition>;
+
+    /// This vendor's live legs, oldest first. The queue.
+    async fn list_open(&self, tenant_id: Uuid, vendor_id: Uuid)
+        -> anyhow::Result<Vec<VendorLegRow>>;
+
+    /// A previously stored response for this key, if the request is a replay.
+    async fn find_idempotent_response(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        key:       &str,
+    ) -> anyhow::Result<Option<TransitionResponse>>;
+
+    async fn record_idempotent_response(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        key:       &str,
+        leg_id:    Uuid,
+        action:    &str,
+        response:  &TransitionResponse,
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait]
