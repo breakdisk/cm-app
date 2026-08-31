@@ -18,6 +18,7 @@ impl ProxyClient {
         Self { client, services }
     }
 
+
     /// Resolve the base URL for a service given the request path prefix.
     pub fn resolve_upstream(&self, path: &str) -> Option<&str> {
         // Internal-only routes (e.g. Firebase → LogisticOS JWT exchange) must
@@ -157,6 +158,63 @@ impl ProxyClient {
     }
 }
 
+/// May an anonymous diner — a `table_session` principal — reach this path?
+///
+/// **Deny by default.** A diner token is minted from a code printed on vinyl in
+/// a public room, so anyone who can photograph a table holds one. It carries no
+/// permissions, but that is not enough on its own: most handlers on this
+/// platform are gated only by `require_auth`, so "no permissions" still reaches
+/// every route that never checks one.
+///
+/// The JWT is signed with the shared platform secret, so a diner token is
+/// structurally valid at EVERY service, not just omnideliv. That is why this
+/// lives at the gateway: it is the one place that sees every request before it
+/// is routed anywhere.
+///
+/// A route added later is denied unless someone adds it here deliberately,
+/// which is the property this function exists for.
+pub fn diner_may_reach(method: &str, path: &str) -> bool {
+    // Scanning the code itself. Unauthenticated in practice, listed so a client
+    // that retries a scan while already holding a session is not surprised.
+    if path.starts_with("/v1/omnideliv/tables/") && path.ends_with("/session") {
+        return true;
+    }
+
+    // Browsing what the venue sells.
+    if path == "/v1/omnideliv/catalog/search" {
+        return method == "GET";
+    }
+
+    // Building and reading a basket.
+    if path == "/v1/omnideliv/baskets" {
+        return method == "POST";
+    }
+    if path.starts_with("/v1/omnideliv/baskets/") {
+        return matches!(method, "GET" | "POST" | "PATCH" | "DELETE");
+    }
+
+    // Ordering, and watching the order afterwards.
+    if path == "/v1/omnideliv/orders/checkout" {
+        return method == "POST";
+    }
+    if path == "/v1/omnideliv/orders" {
+        return method == "GET";
+    }
+    if path.starts_with("/v1/omnideliv/orders/") && path.ends_with("/track") {
+        return method == "GET";
+    }
+
+    // Everything else, including:
+    //
+    // - `/v1/omnideliv/mesh/run`, which calls the Claude API and therefore
+    //   spends real money per request. Reachable from a sticker, that is
+    //   unbounded cost. Opening it to diners needs its own rate limit first.
+    // - `/v1/omnideliv/vendors/apply`, which would let a photographed table
+    //   create vendor applications.
+    // - every other service on the platform.
+    false
+}
+
 #[cfg(test)]
 mod routing_tests {
     use super::*;
@@ -252,6 +310,88 @@ mod routing_tests {
             resolve("/v1/shipments").as_deref(),
             Some("http://order-intake:8004")
         );
+    }
+
+    // ── the anonymous diner allowlist ────────────────────────────────────
+
+    #[test]
+    fn a_diner_cannot_spend_money_on_the_agent_mesh() {
+        // The single most expensive thing a photographed sticker could reach:
+        // /mesh/run calls the Claude API, so every request costs real money.
+        assert!(!diner_may_reach("POST", "/v1/omnideliv/mesh/run"));
+    }
+
+    #[test]
+    fn a_diner_cannot_apply_as_a_vendor() {
+        // Otherwise a photographed table can create vendor applications.
+        assert!(!diner_may_reach("POST", "/v1/omnideliv/vendors/apply"));
+    }
+
+    #[test]
+    fn a_diner_cannot_reach_any_other_service() {
+        // The token is signed with the shared platform secret, so it is
+        // structurally valid everywhere. Only the gateway can stop that.
+        for p in [
+            "/v1/users/me",
+            "/v1/tenants/me",
+            "/v1/shipments",
+            "/v1/drivers",
+            "/v1/carriers",
+            "/v1/fleet",
+            "/v1/payments/intents",
+            "/v1/field-ops/couriers/me",
+        ] {
+            assert!(!diner_may_reach("GET", p), "{p} must be closed to a diner");
+            assert!(!diner_may_reach("POST", p), "{p} must be closed to a diner");
+        }
+    }
+
+    #[test]
+    fn a_diner_cannot_reach_the_vendor_or_operator_surfaces() {
+        for p in [
+            "/v1/omnideliv/vendors/me",
+            "/v1/omnideliv/vendors/me/earnings",
+            "/v1/omnideliv/vendors/me/orders",
+            "/v1/omnideliv/vendors/me/legs/1e9f/accept",
+            "/v1/omnideliv/admin/vendors",
+            "/v1/omnideliv/catalog/items",
+            "/v1/omnideliv/catalog/confirm-all",
+            "/v1/omnideliv/courier/jobs/1e9f",
+            "/v1/omnideliv/venues/1e9f/tables",
+            "/v1/omnideliv/venues/tables/1e9f/rotate",
+        ] {
+            assert!(!diner_may_reach("GET", p), "{p} must be closed to a diner");
+            assert!(!diner_may_reach("POST", p), "{p} must be closed to a diner");
+        }
+    }
+
+    #[test]
+    fn a_diner_can_do_exactly_what_dining_needs() {
+        assert!(diner_may_reach("GET", "/v1/omnideliv/catalog/search"));
+        assert!(diner_may_reach("POST", "/v1/omnideliv/baskets"));
+        assert!(diner_may_reach("GET", "/v1/omnideliv/baskets/1e9f"));
+        assert!(diner_may_reach("POST", "/v1/omnideliv/baskets/1e9f/lines"));
+        assert!(diner_may_reach("POST", "/v1/omnideliv/orders/checkout"));
+        assert!(diner_may_reach("GET", "/v1/omnideliv/orders"));
+        assert!(diner_may_reach("GET", "/v1/omnideliv/orders/1e9f/track"));
+        assert!(diner_may_reach("POST", "/v1/omnideliv/tables/abc123/session"));
+    }
+
+    #[test]
+    fn the_method_is_part_of_the_rule_not_just_the_path() {
+        // Reading the catalog is browsing; writing to it is being a vendor.
+        assert!(diner_may_reach("GET", "/v1/omnideliv/catalog/search"));
+        assert!(!diner_may_reach("POST", "/v1/omnideliv/catalog/search"));
+        assert!(!diner_may_reach("DELETE", "/v1/omnideliv/orders"));
+    }
+
+    #[test]
+    fn an_unlisted_route_is_denied_by_default() {
+        // The property this function exists for: a route added next year is
+        // closed to diners until somebody opens it deliberately.
+        assert!(!diner_may_reach("GET", "/v1/omnideliv/some/future/route"));
+        assert!(!diner_may_reach("POST", "/v1/omnideliv"));
+        assert!(!diner_may_reach("GET", "/"));
     }
 
     #[test]
