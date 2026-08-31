@@ -4,6 +4,7 @@ pub mod consolidation;
 pub mod eta;
 pub mod order;
 pub mod telemetry;
+pub mod venue;
 pub mod vendor;
 pub mod vendor_ledger;
 
@@ -22,5 +23,9 @@ pub use order::{
     PaymentTransitionError, Settlement, VendorLeg,
 };
 pub use telemetry::TelemetryEvent;
+pub use venue::{
+    new_table_token, orderable_now, NotOrderable, OpeningWindow, Table, TableSession,
+    TableStatus, Venue, VenueKind, VenueStatus,
+};
 pub use vendor::{Vendor, VendorStatus, Vertical};
 pub use vendor_ledger::{current_period,EntryKind, LedgerEntry, LedgerStatus, VendorLedger};

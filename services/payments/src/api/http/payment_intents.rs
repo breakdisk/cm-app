@@ -79,9 +79,22 @@ pub async fn create_intent(
 /// `POST /v1/internal/payments/intents/:id/capture` — captures funds
 /// previously ring-fenced by an `action: "authorize"` intent. Mesh-internal
 /// only, same as `create_intent` above.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct CaptureRequest {
+    /// Omit to capture the whole authorization — what every caller did before
+    /// partial capture existed, and still right for a single-vendor order.
+    /// Present to take less: ADR-0017's acceptance barrier captures only the
+    /// subtotal of the stalls that accepted.
+    #[serde(default)]
+    pub amount_cents: Option<i64>,
+}
+
 pub async fn capture_intent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
+    // Optional body: a bare POST with no body at all still means "capture it
+    // all", so an existing caller does not have to learn a new shape.
+    body: Option<Json<CaptureRequest>>,
 ) -> Result<StatusCode, AppError> {
     let payment_intent_service = state.payment_intent_service.as_ref().ok_or_else(|| {
         AppError::ServiceUnavailable(
@@ -90,7 +103,8 @@ pub async fn capture_intent(
                 .into(),
         )
     })?;
-    payment_intent_service.capture_intent(id).await?;
+    let amount_cents = body.and_then(|Json(b)| b.amount_cents);
+    payment_intent_service.capture_intent(id, amount_cents).await?;
     Ok(StatusCode::OK)
 }
 

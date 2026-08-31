@@ -3,13 +3,24 @@
 //! TENANCY: every method takes `tenant_id` first. There is no database-level
 //! policy in this schema (see migration 0001), so the signature is the
 //! enforcement point.
+//!
+//! ONE EXCEPTION, and it is deliberate: `VenueRepository::find_table_by_token`.
+//! A diner scanning a printed QR code is unauthenticated and carries no tenant,
+//! so the tenant is an *output* of that lookup rather than an input. It is the
+//! only method here that resolves across tenants, its key is unique
+//! platform-wide to make that unambiguous, and every caller re-scopes on the
+//! tenant it returns. If a second such method is ever added, say why in the
+//! same breath — an unnoticed second one is how the rule quietly stops being a
+//! rule.
 
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use chrono::{DateTime, Utc};
+
 use crate::domain::entities::{
     Availability, Basket, BasketConflict, CatalogItem, CatalogSource, LedgerStatus, LegStatus,
-    Order, TelemetryEvent, Vendor, VendorLedger, Vertical,
+    Order, Table, TableSession, TelemetryEvent, Vendor, VendorLedger, Venue, Vertical,
 };
 
 /// One period's headline figures, without its entries.
@@ -400,6 +411,46 @@ pub trait VendorLegRepository: Send + Sync {
         action:    &str,
         response:  &TransitionResponse,
     ) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait VenueRepository: Send + Sync {
+    /// Resolve a printed table code.
+    ///
+    /// **The one method in this file that does not take `tenant_id`, and it
+    /// cannot.** A diner scanning a code is unauthenticated and carries no
+    /// tenant; the tenant is an OUTPUT of this lookup, not an input. That is
+    /// why `tables.token` is UNIQUE platform-wide rather than per venue — a
+    /// per-venue unique would make this query ambiguous.
+    ///
+    /// Everything downstream re-scopes on the tenant this returns. The token
+    /// itself is the only credential, which is why `orderable_now` and the
+    /// session cap exist: holding it must not be enough.
+    async fn find_table_by_token(&self, token: &str) -> anyhow::Result<Option<(Table, Venue)>>;
+
+    /// How many sessions are live at this table right now.
+    ///
+    /// Bounds how many parties one printed code can open at once. A four-top
+    /// does not need fifty, and without this a photographed code is an
+    /// unbounded session factory.
+    async fn count_live_sessions(&self, table_id: Uuid, now: DateTime<Utc>) -> anyhow::Result<i64>;
+
+    async fn create_session(&self, session: &TableSession) -> anyhow::Result<()>;
+
+    /// Every table at a venue, for the operator printing them.
+    async fn list_tables(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<Vec<Table>>;
+
+    /// Replace a table's printed code, invalidating the one on the wall.
+    ///
+    /// The answer to a leaked code: rotation is an operator action taking
+    /// minutes, not an incident. Returns false when the table is not this
+    /// tenant's, so a caller cannot rotate someone else's code by guessing.
+    async fn rotate_token(
+        &self,
+        tenant_id: Uuid,
+        table_id: Uuid,
+        new_token: &str,
+    ) -> anyhow::Result<bool>;
 }
 
 #[async_trait]

@@ -4,6 +4,7 @@ pub mod courier_jobs;
 pub mod health;
 pub mod mesh;
 pub mod orders;
+pub mod tables;
 pub mod tracking;
 pub mod vendor_orders;
 pub mod vendors;
@@ -41,6 +42,14 @@ pub struct AppState {
     /// transition two tablets may attempt at once.
     pub legs:              Arc<dyn VendorLegRepository>,
     pub vendor_events:     Arc<dyn crate::infrastructure::messaging::VendorLegEvents>,
+    pub venues:            Arc<dyn crate::domain::repositories::VenueRepository>,
+    /// How long a scanned table session lives. Minutes, not hours — the
+    /// credential that mints it is printed on vinyl in a public room.
+    pub table_session_mins: i64,
+    /// Live sessions one table may hold at once, so a photographed code is not
+    /// an unbounded session factory.
+    pub table_session_cap:  i64,
+    pub table_scan_base_url: String,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -59,6 +68,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         // see catalog::public_routes. Mounted before the auth layer for the
         // same reason health is.
         .merge(catalog::public_routes().with_state(Arc::clone(&state)))
+        // A diner scanning a table has no account and never will —
+        // mounted outside the auth layer for the same reason as the two above.
+        .merge(tables::public_routes().with_state(Arc::clone(&state)))
         .merge(
             catalog::routes()
                 .merge(baskets::routes())
@@ -67,6 +79,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .merge(tracking::routes())
                 .merge(vendors::routes())
                 .merge(vendor_orders::routes())
+                .merge(tables::routes())
                 .merge(courier_jobs::routes())
                 .layer(auth_layer)
                 .with_state(state),

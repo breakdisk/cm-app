@@ -35,6 +35,7 @@ struct PaymentIntentRow {
     updated_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     refund_requested_at: Option<DateTime<Utc>>,
+    captured_amount_cents: Option<i64>,
 }
 
 impl TryFrom<PaymentIntentRow> for PaymentIntent {
@@ -59,13 +60,14 @@ impl TryFrom<PaymentIntentRow> for PaymentIntent {
             updated_at: row.updated_at,
             expires_at: row.expires_at,
             refund_requested_at: row.refund_requested_at,
+            captured_amount_cents: row.captured_amount_cents,
         })
     }
 }
 
 const INTENT_COLS: &str = "id, tenant_id, purpose, reference_type, reference_id, \
     amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref, \
-    created_at, updated_at, expires_at, refund_requested_at";
+    created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents";
 
 #[async_trait]
 impl PaymentIntentRepository for PgPaymentIntentRepository {
@@ -101,14 +103,15 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             r#"INSERT INTO payments.payment_intents (
                 id, tenant_id, purpose, reference_type, reference_id,
                 amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref,
-                created_at, updated_at, expires_at, refund_requested_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
             ON CONFLICT (id) DO UPDATE SET
                 status               = EXCLUDED.status,
                 gateway_order_ref    = EXCLUDED.gateway_order_ref,
                 gateway_payment_ref  = EXCLUDED.gateway_payment_ref,
                 updated_at           = EXCLUDED.updated_at,
-                refund_requested_at  = EXCLUDED.refund_requested_at"#,
+                refund_requested_at  = EXCLUDED.refund_requested_at,
+                captured_amount_cents = EXCLUDED.captured_amount_cents"#,
         )
         .bind(intent.id)
         .bind(intent.tenant_id)
@@ -125,6 +128,7 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         .bind(intent.updated_at)
         .bind(intent.expires_at)
         .bind(intent.refund_requested_at)
+        .bind(intent.captured_amount_cents)
         .execute(&self.pool)
         .await?;
         Ok(())
