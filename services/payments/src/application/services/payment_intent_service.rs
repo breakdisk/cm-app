@@ -451,11 +451,41 @@ impl PaymentIntentService {
     /// (`POST /v1/internal/payments/intents/:id/capture`) and its own
     /// retry/alerting story to close, since nothing in this task's scope
     /// asked for a capture-retry sweep.
-    pub async fn capture_intent(&self, intent_id: Uuid) -> anyhow::Result<()> {
+    /// Captures a ring-fenced hold, in full or in part.
+    ///
+    /// `amount_cents` of `None` captures the whole authorization — the
+    /// behaviour every caller had before partial capture existed, and still
+    /// the right one for a single-vendor order.
+    ///
+    /// A partial capture exists for ADR-0017's acceptance barrier: a foodcourt
+    /// basket authorizes the whole table, then some stalls accept and some
+    /// refuse. Taking the full amount would charge for food nobody is making;
+    /// taking nothing would refuse the whole table because one stall was shut.
+    ///
+    /// The amount is validated BEFORE the gateway is called. A rejected amount
+    /// must cost a round trip to nobody, and must never leave a gateway capture
+    /// that the domain then refuses to record.
+    pub async fn capture_intent(
+        &self,
+        intent_id: Uuid,
+        amount_cents: Option<i64>,
+    ) -> anyhow::Result<()> {
         let mut intent = self.repo.find_by_id(intent_id).await?
             .ok_or_else(|| anyhow::anyhow!("no payment_intent {intent_id}"))?;
         if intent.status != PaymentIntentStatus::Authorized {
             anyhow::bail!("Only an authorized intent can be captured");
+        }
+        let to_capture = amount_cents.unwrap_or(intent.amount_cents);
+        if to_capture <= 0 {
+            anyhow::bail!(
+                "A capture must take a positive amount; void the hold instead of capturing zero"
+            );
+        }
+        if to_capture > intent.amount_cents {
+            anyhow::bail!(
+                "cannot capture {to_capture} against an authorization of {}",
+                intent.amount_cents
+            );
         }
         let gateway_order_ref = intent.gateway_order_ref.clone()
             .ok_or_else(|| anyhow::anyhow!("intent {intent_id} has no gateway order reference"))?;
@@ -468,14 +498,14 @@ impl PaymentIntentService {
 
         // `intent` is the pre-claim, still-`Authorized` snapshot (never
         // mutated on the failure branch below) — same trick `refund()` uses.
-        match self.gateway.capture(&gateway_order_ref, &gateway_payment_ref, intent.amount_cents).await {
+        match self.gateway.capture(&gateway_order_ref, &gateway_payment_ref, to_capture).await {
             Ok(capture_ref) => {
                 tracing::info!(
                     intent_id = %intent_id,
                     capture_ref = %capture_ref,
                     "capture_intent: gateway capture succeeded",
                 );
-                intent.capture_authorized().map_err(|e| anyhow::anyhow!("{e}"))?;
+                intent.capture_authorized(to_capture).map_err(|e| anyhow::anyhow!("{e}"))?;
                 self.repo.save(&intent).await?;
 
                 let evt = Event::new(
@@ -487,7 +517,10 @@ impl PaymentIntentService {
                         purpose: intent.purpose.clone(),
                         reference_type: intent.reference_type.clone(),
                         reference_id: intent.reference_id,
-                        amount_cents: intent.amount_cents,
+                        // What was TAKEN, not what was held. On a partial
+                        // capture these differ, and a consumer reconciling the
+                        // authorized figure against the bank would be short.
+                        amount_cents: intent.captured_or_full(),
                         currency: intent.currency.clone(),
                     },
                 );
@@ -803,6 +836,10 @@ mod tests {
         refund_calls: Mutex<u32>,
         capture_should_fail: bool,
         capture_calls: Mutex<u32>,
+        /// What the gateway was actually asked to take. A partial capture that
+        /// counted a call but sent the full amount would pass a call-count
+        /// assertion and still charge the customer for the whole table.
+        capture_amounts: Mutex<Vec<i64>>,
         void_should_fail: bool,
         void_calls: Mutex<u32>,
     }
@@ -816,6 +853,7 @@ mod tests {
                 refund_calls: Mutex::new(0),
                 capture_should_fail: false,
                 capture_calls: Mutex::new(0),
+                capture_amounts: Mutex::new(Vec::new()),
                 void_should_fail: false,
                 void_calls: Mutex::new(0),
             }
@@ -847,6 +885,10 @@ mod tests {
 
         fn capture_calls(&self) -> u32 {
             *self.capture_calls.lock().unwrap()
+        }
+
+        fn capture_amounts(&self) -> Vec<i64> {
+            self.capture_amounts.lock().unwrap().clone()
         }
 
         fn void_calls(&self) -> u32 {
@@ -893,6 +935,7 @@ mod tests {
         }
 
         async fn capture(&self, _gateway_order_ref: &str, _gateway_payment_ref: &str, _amount_cents: i64) -> anyhow::Result<String> {
+            self.capture_amounts.lock().unwrap().push(_amount_cents);
             *self.capture_calls.lock().unwrap() += 1;
             if self.capture_should_fail {
                 anyhow::bail!("gateway capture failed");
@@ -1754,7 +1797,8 @@ mod tests {
         let tenant_id = Uuid::new_v4();
         let mut intent = make_intent(tenant_id).with_gateway_order_ref("order-ref-late".into());
         intent.authorize("ni-late-1".into()).unwrap();
-        intent.capture_authorized().unwrap();
+        let amt = intent.amount_cents;
+        intent.capture_authorized(amt).unwrap();
         assert_eq!(intent.status, PaymentIntentStatus::Captured);
         let intent_id = intent.id;
         repo.seed(intent);
@@ -1774,6 +1818,89 @@ mod tests {
     // ── capture_intent ───────────────────────────────────────────────────────
 
     #[tokio::test]
+    async fn a_partial_capture_takes_only_what_was_asked_for() {
+        // ADR-0017's acceptance barrier: the table authorized the whole basket,
+        // one stall refused, and only the accepted subtotal may be taken.
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        let authorized = intent.amount_cents;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        let partial = authorized - 1;
+        svc.capture_intent(intent_id, Some(partial)).await.expect("a partial capture must succeed");
+
+        assert_eq!(
+            gateway.capture_amounts(), vec![partial],
+            "the gateway must be asked for the partial amount, not the authorization",
+        );
+        let stored = repo.get(intent_id);
+        assert_eq!(stored.captured_amount_cents, Some(partial), "what was taken is recorded");
+        assert_eq!(stored.amount_cents, authorized, "what was authorized is never rewritten");
+        assert_eq!(stored.uncaptured_remainder_cents(), 1, "the untaken remainder is answerable");
+    }
+
+    #[tokio::test]
+    async fn capturing_more_than_was_authorized_never_reaches_the_gateway() {
+        // Validated before the call: a rejected amount must cost a round trip
+        // to nobody, and must never leave a gateway capture the domain then
+        // refuses to record.
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        let over = intent.amount_cents + 1;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.capture_intent(intent_id, Some(over)).await.expect_err("must refuse to over-capture");
+
+        assert_eq!(gateway.capture_calls(), 0, "the gateway must not have been called");
+        assert_eq!(
+            repo.get(intent_id).status, PaymentIntentStatus::Authorized,
+            "the hold must be left intact for a later, valid capture",
+        );
+    }
+
+    #[tokio::test]
+    async fn capturing_zero_is_refused_rather_than_treated_as_a_void() {
+        // They are different events downstream and different things to a
+        // customer, so the caller has to say which one they meant.
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.capture_intent(intent_id, Some(0)).await.expect_err("a zero capture must be refused");
+        assert_eq!(gateway.capture_calls(), 0);
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Authorized);
+    }
+
+    #[tokio::test]
+    async fn a_full_capture_is_still_the_default_for_a_caller_that_names_no_amount() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        let authorized = intent.amount_cents;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.capture_intent(intent_id, None).await.expect("a full capture must succeed");
+
+        assert_eq!(gateway.capture_amounts(), vec![authorized]);
+        assert_eq!(repo.get(intent_id).uncaptured_remainder_cents(), 0, "nothing left holding");
+    }
+
+    #[tokio::test]
     async fn capture_intent_on_an_authorized_intent_captures_and_publishes_the_captured_event() {
         let repo = Arc::new(FakeRepo::default());
         let tenant_id = Uuid::new_v4();
@@ -1784,7 +1911,7 @@ mod tests {
         let gateway = Arc::new(FakeGateway::new());
         let svc = service(repo.clone(), gateway.clone());
 
-        svc.capture_intent(intent_id).await.expect("capture of an authorized intent must succeed");
+        svc.capture_intent(intent_id, None).await.expect("capture of an authorized intent must succeed");
 
         assert_eq!(gateway.capture_calls(), 1, "gateway must be called exactly once");
         let stored = repo.get(intent_id);
@@ -1804,7 +1931,7 @@ mod tests {
         let gateway = Arc::new(FakeGateway::new());
         let svc = service(repo.clone(), gateway.clone());
 
-        let err = svc.capture_intent(intent_id).await.expect_err("must reject a non-authorized intent");
+        let err = svc.capture_intent(intent_id, None).await.expect_err("must reject a non-authorized intent");
         assert!(err.to_string().contains("Only an authorized intent can be captured"));
         assert_eq!(gateway.capture_calls(), 0, "gateway must never be called for a non-authorized intent");
     }
@@ -1820,7 +1947,7 @@ mod tests {
         let gateway = Arc::new(FakeGateway::new().with_capture_failure());
         let svc = service(repo.clone(), gateway.clone());
 
-        let err = svc.capture_intent(intent_id).await.expect_err("gateway failure must propagate");
+        let err = svc.capture_intent(intent_id, None).await.expect_err("gateway failure must propagate");
         assert!(err.to_string().contains("gateway capture failed"));
 
         let stored = repo.get(intent_id);
@@ -1844,7 +1971,7 @@ mod tests {
         let gateway = Arc::new(FakeGateway::new());
         let svc = service(repo.clone(), gateway.clone());
 
-        svc.capture_intent(intent_id).await.expect_err("the loser of the claim race must not proceed");
+        svc.capture_intent(intent_id, None).await.expect_err("the loser of the claim race must not proceed");
         assert_eq!(gateway.capture_calls(), 0, "gateway must never be called by the caller that lost the claim race");
 
         let stored = repo.get(intent_id);
@@ -1927,7 +2054,7 @@ mod tests {
         svc.void_intent(intent_id).await.expect("void must succeed");
         assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Voided);
 
-        let capture_err = svc.capture_intent(intent_id).await.expect_err("a voided intent must never be capturable");
+        let capture_err = svc.capture_intent(intent_id, None).await.expect_err("a voided intent must never be capturable");
         assert!(capture_err.to_string().contains("Only an authorized intent can be captured"));
 
         let refund_err = svc.refund(intent_id).await.expect_err("a voided intent must never be refundable");

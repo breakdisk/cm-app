@@ -94,6 +94,17 @@ pub struct PaymentIntent {
     /// ever asked to refund. Read by `PaymentIntentService::sweep_pending_refunds`
     /// to find `Captured` intents with an outstanding, unfulfilled obligation.
     pub refund_requested_at: Option<DateTime<Utc>>,
+    /// What was actually taken, when that differs from what was ring-fenced.
+    ///
+    /// `amount_cents` above stays the AUTHORIZED amount and is never
+    /// rewritten — `refund()` and every reconciliation read it, and an
+    /// authorized figure that shifted after the fact would make a hold
+    /// impossible to match against its own capture.
+    ///
+    /// `None` on a `Captured` intent means captured in full (including every
+    /// intent captured before partial capture existed). Read it as
+    /// `amount_cents` — see `captured_or_full()`.
+    pub captured_amount_cents: Option<i64>,
 }
 
 impl PaymentIntent {
@@ -129,6 +140,7 @@ impl PaymentIntent {
             updated_at: now,
             expires_at: now + ttl,
             refund_requested_at: None,
+            captured_amount_cents: None,
         }
     }
 
@@ -266,15 +278,48 @@ impl PaymentIntent {
     /// or sold, which is exactly the ambiguity the caller must be able to
     /// rule out before ever calling the gateway. Idempotent for the same
     /// replay reason as `capture()`.
-    pub fn capture_authorized(&mut self) -> Result<(), &'static str> {
+    pub fn capture_authorized(&mut self, amount_cents: i64) -> Result<(), &'static str> {
         match self.status {
-            PaymentIntentStatus::Captured => return Ok(()), // idempotent replay
+            // Idempotent replay. Deliberately does NOT re-record the amount: a
+            // redelivered capture carrying a different figure must not rewrite
+            // what was actually taken the first time.
+            PaymentIntentStatus::Captured => return Ok(()),
             PaymentIntentStatus::Authorized => {}
             _ => return Err("Only an authorized intent can be captured via capture_authorized"),
         }
+        if amount_cents <= 0 {
+            // A zero capture is a void wearing a capture's name. The caller has
+            // to say which it meant, because they are not the same event
+            // downstream and they are not the same thing to a customer.
+            return Err("A capture must take a positive amount; use void() to release a hold");
+        }
+        if amount_cents > self.amount_cents {
+            return Err("Cannot capture more than was authorized");
+        }
+        self.captured_amount_cents = Some(amount_cents);
         self.status = PaymentIntentStatus::Captured;
         self.updated_at = Utc::now();
         Ok(())
+    }
+
+    /// What was taken, for an intent that was captured.
+    ///
+    /// Folds the pre-partial-capture `None` into the full amount so callers
+    /// never have to remember that a null means "all of it".
+    pub fn captured_or_full(&self) -> i64 {
+        self.captured_amount_cents.unwrap_or(self.amount_cents)
+    }
+
+    /// What is left ring-fenced but not taken, after a partial capture.
+    ///
+    /// The gateway does not necessarily release this on its own — see the
+    /// unverified `void` note in `network_international.rs`. Reconciliation
+    /// needs to be able to ask.
+    pub fn uncaptured_remainder_cents(&self) -> i64 {
+        match self.status {
+            PaymentIntentStatus::Captured => self.amount_cents - self.captured_or_full(),
+            _ => 0,
+        }
     }
 
     /// Releases a hold that was never captured — the no-courier path in
@@ -422,7 +467,8 @@ mod tests {
     fn capture_authorized_transitions_an_authorized_intent_to_captured() {
         let mut intent = make_intent();
         intent.authorize("ni-auth-123".into()).unwrap();
-        intent.capture_authorized().unwrap();
+        let amt = intent.amount_cents;
+        intent.capture_authorized(amt).unwrap();
         assert_eq!(intent.status, PaymentIntentStatus::Captured);
         // The authorization's own payment reference is preserved unchanged —
         // capture_authorized() must not overwrite it, since refund() later
@@ -434,15 +480,17 @@ mod tests {
     fn capture_authorized_is_idempotent_on_replay() {
         let mut intent = make_intent();
         intent.authorize("ni-auth-123".into()).unwrap();
-        intent.capture_authorized().unwrap();
-        intent.capture_authorized().unwrap();
+        let amt = intent.amount_cents;
+        intent.capture_authorized(amt).unwrap();
+        let amt = intent.amount_cents;
+        intent.capture_authorized(amt).unwrap();
         assert_eq!(intent.status, PaymentIntentStatus::Captured);
     }
 
     #[test]
     fn capture_authorized_rejects_an_intent_that_was_never_authorized() {
         let mut intent = make_intent(); // still Created
-        assert!(intent.capture_authorized().is_err());
+        assert!(intent.capture_authorized(1).is_err());
     }
 
     #[test]
@@ -473,7 +521,7 @@ mod tests {
         let mut intent = make_intent();
         intent.authorize("ni-auth-123".into()).unwrap();
         intent.void().unwrap();
-        assert!(intent.capture_authorized().is_err());
+        assert!(intent.capture_authorized(1).is_err());
         assert_eq!(intent.status, PaymentIntentStatus::Voided, "must remain Voided");
     }
 

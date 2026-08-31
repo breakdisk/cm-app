@@ -580,7 +580,7 @@ mod place_tests {
                 checkout_url: format!("https://pay.test/{order_id}?amount={amount_cents}"),
             })
         }
-        async fn capture(&self, _intent_id: Uuid) -> anyhow::Result<()> { Ok(()) }
+        async fn capture(&self, _intent_id: Uuid, _amount_cents: Option<i64>) -> anyhow::Result<()> { Ok(()) }
         async fn void(&self, _intent_id: Uuid) -> anyhow::Result<()> { Ok(()) }
     }
 

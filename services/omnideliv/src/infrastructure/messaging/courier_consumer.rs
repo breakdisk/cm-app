@@ -161,7 +161,9 @@ impl CourierMilestoneHandler {
                             "order {order_id} is authorized with no payment_intent_id — cannot capture"
                         )
                     })?;
-                    self.payments.capture(intent_id).await?;
+                    // The whole basket. A courier accepting the job commits every leg;
+                    // the partial path is the acceptance barrier, not this one.
+                    self.payments.capture(intent_id, None).await?;
                     order.payment_captured()?;
                     self.append(tenant_id, order_id, event_type::PAYMENT_CAPTURED, None, None,
                                 serde_json::json!({ "intent_id": intent_id })).await;
@@ -517,7 +519,7 @@ mod capture_on_acceptance {
             -> anyhow::Result<crate::application::services::order_payments::AuthorizedIntent> {
             unreachable!("this handler never opens a new authorization")
         }
-        async fn capture(&self, intent_id: Uuid) -> anyhow::Result<()> {
+        async fn capture(&self, intent_id: Uuid, _amount_cents: Option<i64>) -> anyhow::Result<()> {
             self.capture_calls.lock().unwrap().push(intent_id);
             Ok(())
         }
