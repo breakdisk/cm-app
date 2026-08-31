@@ -36,6 +36,23 @@ pub struct Claims {
     #[serde(default)]
     pub onboarding: bool,
 
+    /// Anonymous table-session flag. When `true`, the subject is a diner who
+    /// scanned a QR code on a restaurant table and has no account at all — the
+    /// token was minted by `services/omnideliv` against a `table_sessions` row,
+    /// carries a synthetic `user_id` (the session id), an empty `email`, no
+    /// permissions, and a short expiry.
+    ///
+    /// It is NOT an identity-service user and never becomes one. Services can
+    /// use this as a belt-and-suspenders check alongside permission gating: any
+    /// route that would be wrong to expose to an unauthenticated diner should
+    /// refuse on this flag even if a permission were somehow granted. Exactly
+    /// the role `onboarding` above plays for draft tenants.
+    ///
+    /// `#[serde(default)]` keeps every existing token deserializable — old JWTs
+    /// without the field decode as `table_session: false`.
+    #[serde(default)]
+    pub table_session: bool,
+
     /// Feature keys enabled for this tenant's tier, populated at JWT mint time
     /// from the platform-wide `identity.pricing_features` matrix. Old tokens
     /// that lack this field decode as an empty vec; callers should fall back to
@@ -95,10 +112,44 @@ impl Claims {
             roles,
             permissions,
             onboarding: false,
+            table_session: false,
             enabled_features: Vec::new(),
             phone: None,
             currency: None,
         }
+    }
+
+    /// Mints the anonymous principal for a diner who scanned a table QR code.
+    ///
+    /// A dedicated constructor rather than `new(..)` plus a flag, because the
+    /// scope is the whole point: no roles, no permissions, an empty email, and
+    /// a synthetic `user_id` that is the `table_sessions` row id. Someone
+    /// copying `new` and remembering to set `table_session` but forgetting to
+    /// blank the permissions would mint a diner token that can act as a
+    /// merchant, and that is exactly the mistake this signature removes.
+    ///
+    /// `expiry_seconds` should be minutes, not hours: the code that mints this
+    /// is printed on vinyl in a public room.
+    #[must_use]
+    pub fn for_table_session(
+        session_id: Uuid,
+        tenant_id: Uuid,
+        tenant_slug: String,
+        subscription_tier: String,
+        expiry_seconds: i64,
+    ) -> Self {
+        let mut c = Self::new(
+            session_id,
+            tenant_id,
+            tenant_slug,
+            subscription_tier,
+            String::new(),
+            Vec::new(),
+            Vec::new(),
+            expiry_seconds,
+        );
+        c.table_session = true;
+        c
     }
 
     /// Attach the caller's enabled feature keys (from the pricing feature matrix)
@@ -203,6 +254,70 @@ impl RefreshClaims {
             iat: now.timestamp(),
             exp: (now + Duration::seconds(expiry_seconds)).timestamp(),
         }
+    }
+}
+
+#[cfg(test)]
+mod table_session_tests {
+    use super::*;
+
+    fn diner() -> Claims {
+        Claims::for_table_session(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "demo".into(),
+            "growth".into(),
+            600,
+        )
+    }
+
+    #[test]
+    fn a_table_session_principal_can_do_nothing_by_permission() {
+        // The load-bearing assertion. This token is minted from a code printed
+        // on vinyl in a public room; anything it can do by permission, a
+        // stranger photographing the table can do.
+        let c = diner();
+        assert!(c.permissions.is_empty(), "a diner must hold no permissions");
+        assert!(c.roles.is_empty(), "and no roles");
+        assert!(c.email.is_empty(), "there is no person to name");
+        assert!(c.table_session, "and it must be marked as what it is");
+        assert!(!c.onboarding, "it is not a draft-tenant principal");
+    }
+
+    #[test]
+    fn the_synthetic_user_id_is_the_session_id() {
+        // This is what lets `orders.customer_id` stay non-null for a diner with
+        // no account, so nothing downstream has to learn anonymity exists.
+        let session_id = Uuid::new_v4();
+        let c = Claims::for_table_session(session_id, Uuid::new_v4(), "d".into(), "growth".into(), 600);
+        assert_eq!(c.user_id, session_id);
+        assert_eq!(c.sub, session_id.to_string());
+    }
+
+    #[test]
+    fn an_ordinary_token_is_not_a_table_session() {
+        let c = Claims::new(
+            Uuid::new_v4(), Uuid::new_v4(), "demo".into(), "growth".into(),
+            "a@b.com".into(), vec!["merchant".into()], vec!["shipments:create".into()], 3600,
+        );
+        assert!(!c.table_session, "a normal principal must never read as anonymous");
+    }
+
+    #[test]
+    fn a_token_minted_before_this_field_existed_still_decodes() {
+        // Same compatibility rule every other added claim follows.
+        let json = r#"{
+            "sub": "11111111-1111-1111-1111-111111111111",
+            "iat": 0, "exp": 0, "jti": "x",
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "tenant_slug": "acme",
+            "subscription_tier": "starter",
+            "user_id": "11111111-1111-1111-1111-111111111111",
+            "email": "a@b.com",
+            "roles": [], "permissions": []
+        }"#;
+        let c: Claims = serde_json::from_str(json).expect("an old token must still decode");
+        assert!(!c.table_session);
     }
 }
 
