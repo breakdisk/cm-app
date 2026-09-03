@@ -103,6 +103,43 @@ export const venuesApi = {
     utc_offset_minutes: number;
   }) => req<VenueRow>("/v1/omnideliv/venues", json("POST", body)),
 
+  /**
+   * Edit a venue, or stop it trading.
+   *
+   * `status: "paused"` is the kill switch: the server refuses every scan at
+   * this venue while it is not active, so this is how table ordering stops
+   * across the whole building at once. Before it existed the only recourse was
+   * rotating every table's code one at a time, which permanently kills every
+   * printed sticker.
+   */
+  update: (
+    venueId: string,
+    patch: {
+      name?: string;
+      hours?: OpeningWindow[];
+      utc_offset_minutes?: number;
+      status?: VenueRow["status"];
+    },
+  ) => req<VenueRow>(`/v1/omnideliv/venues/${venueId}`, json("PATCH", patch)),
+
+  /** Refused by the server while the venue still has tables. */
+  remove: (venueId: string) =>
+    req<void>(`/v1/omnideliv/venues/${venueId}`, { method: "DELETE" }),
+
+  /**
+   * Open or close one table. The printed code stays valid either way, so
+   * reopening is a click rather than a reprint.
+   */
+  setTableStatus: (tableId: string, status: TableRow["status"]) =>
+    req<void>(
+      `/v1/omnideliv/venues/tables/${tableId}`,
+      json("PATCH", { status }),
+    ),
+
+  /** Refused by the server while a diner session is open at that table. */
+  removeTable: (tableId: string) =>
+    req<void>(`/v1/omnideliv/venues/tables/${tableId}`, { method: "DELETE" }),
+
   tables: (venueId: string) =>
     req<TableRow[]>(`/v1/omnideliv/venues/${venueId}/tables`),
 

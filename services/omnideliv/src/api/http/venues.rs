@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use crate::api::http::AppState;
 use crate::domain::entities::{
-    NotOrderable, OpeningWindow, Table, Venue, VenueKind,
+    NotOrderable, OpeningWindow, Table, TableStatus, Venue, VenueKind, VenueStatus,
 };
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +54,30 @@ pub struct CreateTablesRequest {
     /// One or more labels. Batch, because a restaurant sets up twenty tables
     /// at once and twenty round trips is not a setup flow.
     pub labels: Vec<String>,
+}
+
+/// A partial update. Every field is optional; `None` leaves it alone.
+#[derive(Debug, Deserialize)]
+pub struct UpdateVenueRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub hours: Option<Vec<OpeningWindow>>,
+    #[serde(default)]
+    pub utc_offset_minutes: Option<i32>,
+    /// `"active"` | `"paused"` | `"closed"`.
+    ///
+    /// **This is the kill switch.** `orderable_now` refuses every scan at this
+    /// venue while it is not `active`, so pausing stops table ordering across
+    /// the whole building at once.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateTableRequest {
+    /// `"open"` | `"closed"`. Closing stops new scans at this table only.
+    pub status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,8 +116,15 @@ pub struct VendorRow {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/omnideliv/venues", get(list_venues).post(create_venue))
-        .route("/v1/omnideliv/venues/:venue_id", get(get_venue))
+        .route(
+            "/v1/omnideliv/venues/:venue_id",
+            get(get_venue).patch(update_venue).delete(delete_venue),
+        )
         .route("/v1/omnideliv/venues/:venue_id/tables", post(create_tables))
+        .route(
+            "/v1/omnideliv/venues/tables/:table_id",
+            axum::routing::patch(update_table).delete(delete_table),
+        )
         .route(
             "/v1/omnideliv/venues/:venue_id/vendors",
             get(list_vendors).post(link_vendor),
@@ -340,4 +371,219 @@ async fn list_vendors(
             .map(|(vendor_id, name)| VendorRow { vendor_id, name })
             .collect(),
     ))
+}
+
+/// `PATCH /v1/omnideliv/venues/:venue_id` -- edit a venue, or stop it trading.
+///
+/// Before this existed a venue was immutable from the moment it was created: a
+/// mistyped name was permanent, hours could never change, and above all there
+/// was **no way to stop table ordering**. `VenueStatus::Paused` gates every
+/// scan in `orderable_now` and nothing on the platform could set it, so the
+/// only way to shut a leaked or overwhelmed venue down was rotating every
+/// table's token one at a time -- N operations, each permanently killing a
+/// printed sticker.
+async fn update_venue(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(venue_id): Path<Uuid>,
+    Json(req): Json<UpdateVenueRequest>,
+) -> Result<Json<VenueRow>, (StatusCode, String)> {
+    if !claims.has_permission(VENDORS_MANAGE) {
+        return Err((StatusCode::FORBIDDEN, "not permitted".into()));
+    }
+
+    let status = match req.status.as_deref() {
+        None => None,
+        Some(v) => Some(
+            VenueStatus::from_wire(v)
+                .ok_or((StatusCode::BAD_REQUEST, format!("unknown venue status: {v}")))?,
+        ),
+    };
+
+    let mut venue = st
+        .venues
+        .find_venue(claims.tenant_id, venue_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "venue read failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "venue read failed".to_string())
+        })?
+        .ok_or((StatusCode::NOT_FOUND, "venue not found".to_string()))?;
+
+    let now = Utc::now();
+    let was = venue.status;
+    venue
+        .apply(req.name.as_deref(), req.hours, req.utc_offset_minutes, status, now)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    if !st.venues.update_venue(&venue).await.map_err(|e| {
+        tracing::error!(err = %e, "venue update failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "venue update failed".to_string())
+    })? {
+        return Err((StatusCode::NOT_FOUND, "venue not found".to_string()));
+    }
+
+    if was != venue.status {
+        // Logged at info because it is the answer to "why did every table here
+        // stop working at 7pm", which is otherwise unanswerable: the scan
+        // refusal a diner sees is the same indistinguishable 404 as everything
+        // else.
+        tracing::info!(
+            %venue_id, tenant_id = %claims.tenant_id,
+            from = was.as_str(), to = venue.status.as_str(),
+            "venue trading status changed",
+        );
+    }
+
+    Ok(Json(row_of(&venue, now)))
+}
+
+/// `DELETE /v1/omnideliv/venues/:venue_id`
+///
+/// **Refuses while the venue still has tables.** The schema cascades, so an
+/// unguarded delete would take every table, vendor link and live session with
+/// it -- silently destroying every printed code in the building. Making the
+/// caller remove the tables first turns that into an itemised, deliberate act.
+async fn delete_venue(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(venue_id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !claims.has_permission(VENDORS_MANAGE) {
+        return Err((StatusCode::FORBIDDEN, "not permitted".into()));
+    }
+
+    let tables = st
+        .venues
+        .count_tables(claims.tenant_id, venue_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "table count failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not delete the venue".to_string(),
+            )
+        })?;
+
+    if tables > 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "This venue still has {tables} table(s). Remove them first: deleting the venue would invalidate every printed code at once."
+            ),
+        ));
+    }
+
+    if !st
+        .venues
+        .delete_venue(claims.tenant_id, venue_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "venue delete failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not delete the venue".to_string(),
+            )
+        })?
+    {
+        return Err((StatusCode::NOT_FOUND, "venue not found".to_string()));
+    }
+
+    tracing::info!(%venue_id, tenant_id = %claims.tenant_id, "venue deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /v1/omnideliv/venues/tables/:table_id` -- open or close one table.
+///
+/// Closing stops new scans at that table and leaves sessions already open
+/// alone. That split is the whole point: a table being cleared, repaired or
+/// re-laid stops taking orders without cancelling the meal in progress on it.
+/// The printed code stays valid, so reopening is one click and not a reprint.
+async fn update_table(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(table_id): Path<Uuid>,
+    Json(req): Json<UpdateTableRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !claims.has_permission(VENDORS_MANAGE) {
+        return Err((StatusCode::FORBIDDEN, "not permitted".into()));
+    }
+    let status = TableStatus::from_wire(&req.status).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("unknown table status: {}", req.status),
+    ))?;
+
+    if !st
+        .venues
+        .set_table_status(claims.tenant_id, table_id, status)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "table status update failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not update the table".to_string(),
+            )
+        })?
+    {
+        return Err((StatusCode::NOT_FOUND, "table not found".to_string()));
+    }
+
+    tracing::info!(%table_id, tenant_id = %claims.tenant_id, status = status.as_str(),
+                   "table trading status changed");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /v1/omnideliv/venues/tables/:table_id`
+///
+/// **Refuses while a session is live at that table.** Someone is sitting there
+/// mid-meal; deleting cascades their session away and their basket stops
+/// resolving. Closing the table is the answer for "stop using this one" --
+/// deleting is for a table that no longer exists.
+async fn delete_table(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(table_id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !claims.has_permission(VENDORS_MANAGE) {
+        return Err((StatusCode::FORBIDDEN, "not permitted".into()));
+    }
+
+    let live = st
+        .venues
+        .count_live_sessions(table_id, Utc::now())
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "live session count failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not delete the table".to_string(),
+            )
+        })?;
+
+    if live > 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "{live} diner session(s) are open at this table. Close the table instead: that stops new scans and lets the people sitting there finish."
+            ),
+        ));
+    }
+
+    if !st
+        .venues
+        .delete_table(claims.tenant_id, table_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "table delete failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not delete the table".to_string(),
+            )
+        })?
+    {
+        return Err((StatusCode::NOT_FOUND, "table not found".to_string()));
+    }
+
+    tracing::info!(%table_id, tenant_id = %claims.tenant_id, "table deleted");
+    Ok(StatusCode::NO_CONTENT)
 }

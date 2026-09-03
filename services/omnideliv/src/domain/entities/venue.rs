@@ -284,24 +284,13 @@ impl Venue {
         utc_offset_minutes: i32,
         now:                DateTime<Utc>,
     ) -> Result<Self, VenueInvalid> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(VenueInvalid::NameEmpty);
-        }
-        if name.chars().count() > 120 {
-            return Err(VenueInvalid::NameTooLong);
-        }
-        // -12:00 .. +14:00 covers every offset in use, Kiribati included.
-        if !(-720..=840).contains(&utc_offset_minutes) {
-            return Err(VenueInvalid::OffsetOutOfRange(utc_offset_minutes));
-        }
-        for w in &hours {
-            w.validate()?;
-        }
+        let name = Self::check_name(name)?;
+        Self::check_offset(utc_offset_minutes)?;
+        Self::check_hours(&hours)?;
         Ok(Self {
             id: Uuid::new_v4(),
             tenant_id,
-            name: name.to_string(),
+            name,
             kind,
             hours,
             utc_offset_minutes,
@@ -309,6 +298,88 @@ impl Venue {
             created_at: now,
             updated_at: now,
         })
+    }
+
+    /// The three creation rules, stated once.
+    ///
+    /// `new` and `apply` both go through these. Re-checking them by hand in the
+    /// update path is how a venue ends up editable into a state it could never
+    /// have been created in -- an inverted window, or an offset from no
+    /// timezone on earth, neither of which surfaces as an error anywhere
+    /// downstream. It surfaces as codes that silently stop scanning.
+    fn check_name(name: &str) -> Result<String, VenueInvalid> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(VenueInvalid::NameEmpty);
+        }
+        if name.chars().count() > 120 {
+            return Err(VenueInvalid::NameTooLong);
+        }
+        Ok(name.to_string())
+    }
+
+    /// -12:00 .. +14:00 covers every offset in use, Kiribati included.
+    fn check_offset(minutes: i32) -> Result<(), VenueInvalid> {
+        if !(-720..=840).contains(&minutes) {
+            return Err(VenueInvalid::OffsetOutOfRange(minutes));
+        }
+        Ok(())
+    }
+
+    fn check_hours(hours: &[OpeningWindow]) -> Result<(), VenueInvalid> {
+        for w in hours {
+            w.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Apply a partial update. `None` leaves a field alone.
+    ///
+    /// **`status` is the kill switch for this venue's entire QR surface.**
+    /// `orderable_now` refuses every scan while the venue is not `Active`, so
+    /// pausing is how an operator stops table ordering at once -- for a leaked
+    /// code, a swamped kitchen, or a closure. Before this existed the only
+    /// recourse was rotating every table's token one at a time, which is N
+    /// operations and permanently kills every sticker on every table.
+    ///
+    /// Pausing does NOT end sessions already open: `find_live_session` does not
+    /// consult venue status, so diners mid-meal finish and order nothing new.
+    /// That is deliberate -- the alternative strands a paid-for half-eaten meal.
+    pub fn apply(
+        &mut self,
+        name:               Option<&str>,
+        hours:              Option<Vec<OpeningWindow>>,
+        utc_offset_minutes: Option<i32>,
+        status:             Option<VenueStatus>,
+        now:                DateTime<Utc>,
+    ) -> Result<(), VenueInvalid> {
+        // Everything is validated BEFORE anything is assigned, so a rejected
+        // update leaves the venue exactly as it was rather than half-changed.
+        let new_name = match name {
+            Some(n) => Some(Self::check_name(n)?),
+            None => None,
+        };
+        if let Some(m) = utc_offset_minutes {
+            Self::check_offset(m)?;
+        }
+        if let Some(h) = &hours {
+            Self::check_hours(h)?;
+        }
+
+        if let Some(n) = new_name {
+            self.name = n;
+        }
+        if let Some(h) = hours {
+            self.hours = h;
+        }
+        if let Some(m) = utc_offset_minutes {
+            self.utc_offset_minutes = m;
+        }
+        if let Some(st) = status {
+            self.status = st;
+        }
+        self.updated_at = now;
+        Ok(())
     }
 
     /// Whether a code printed for this venue would scan at all right now.

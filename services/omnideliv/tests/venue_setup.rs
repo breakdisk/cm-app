@@ -11,7 +11,8 @@
 
 use chrono::{TimeZone, Utc};
 use logisticos_omnideliv::domain::entities::{
-    NotOrderable, OpeningWindow, Table, Venue, VenueInvalid, VenueKind, VenueStatus,
+    orderable_now, NotOrderable, OpeningWindow, Table, TableStatus, Venue, VenueInvalid,
+    VenueKind, VenueStatus,
 };
 use uuid::Uuid;
 
@@ -160,4 +161,101 @@ fn a_table_needs_a_label() {
         Table::new(Uuid::new_v4(), Uuid::new_v4(), &long, now).unwrap_err(),
         VenueInvalid::LabelTooLong
     );
+}
+
+
+// ---------------------------------------------------------------------------
+// Editing a venue, and the kill switch.
+//
+// `orderable_now` refuses every scan while a venue is not Active, so
+// `VenueStatus` is the stop button for the whole QR surface at that venue --
+// and until now nothing on the platform could press it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pausing_a_venue_stops_every_scan_at_it() {
+    // Monday 12:00 UTC = 20:00 in a +480 venue, inside all-week hours.
+    let now = Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, 0).unwrap();
+    let mut v = Venue::new(Uuid::new_v4(), "Open", VenueKind::Standalone, all_week(), 480, now)
+        .expect("valid");
+    let t = Table::new(v.id, v.tenant_id, "1", now).expect("valid");
+
+    assert!(orderable_now(&v, &t, now).is_ok(), "open venue takes orders");
+
+    v.apply(None, None, None, Some(VenueStatus::Paused), now).expect("pause is valid");
+    assert_eq!(orderable_now(&v, &t, now), Err(NotOrderable::VenueNotActive));
+
+    // And back again -- pausing must be reversible, or it is not a stop button.
+    v.apply(None, None, None, Some(VenueStatus::Active), now).expect("resume is valid");
+    assert!(orderable_now(&v, &t, now).is_ok());
+}
+
+#[test]
+fn closing_one_table_leaves_the_rest_of_the_venue_trading() {
+    let now = Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, 0).unwrap();
+    let v = Venue::new(Uuid::new_v4(), "Open", VenueKind::Standalone, all_week(), 480, now)
+        .expect("valid");
+    let open = Table::new(v.id, v.tenant_id, "1", now).expect("valid");
+    let mut shut = Table::new(v.id, v.tenant_id, "2", now).expect("valid");
+    shut.status = TableStatus::Closed;
+
+    assert_eq!(orderable_now(&v, &shut, now), Err(NotOrderable::TableClosed));
+    assert!(orderable_now(&v, &open, now).is_ok(), "the other tables keep trading");
+}
+
+#[test]
+fn an_update_validates_by_the_same_rules_as_creation() {
+    let now = Utc::now();
+    let mut v = Venue::new(Uuid::new_v4(), "Fine", VenueKind::Standalone, all_week(), 480, now)
+        .expect("valid");
+
+    // Every rule that blocks creation must block an edit, or a venue becomes
+    // editable into a state it could never have been created in.
+    assert_eq!(v.apply(Some("  "), None, None, None, now).unwrap_err(), VenueInvalid::NameEmpty);
+    assert_eq!(
+        v.apply(None, None, Some(900), None, now).unwrap_err(),
+        VenueInvalid::OffsetOutOfRange(900)
+    );
+    assert_eq!(
+        v.apply(None, Some(vec![win(1, 1080, 540)]), None, None, now).unwrap_err(),
+        VenueInvalid::WindowInverted { open: 1080, close: 540 }
+    );
+    assert_eq!(
+        v.apply(None, Some(vec![win(9, 540, 1080)]), None, None, now).unwrap_err(),
+        VenueInvalid::DayOutOfRange(9)
+    );
+}
+
+#[test]
+fn a_rejected_update_changes_nothing_at_all() {
+    let now = Utc::now();
+    let mut v = Venue::new(Uuid::new_v4(), "Original", VenueKind::Standalone, all_week(), 480, now)
+        .expect("valid");
+
+    // A valid name alongside an invalid offset. Everything is checked before
+    // anything is assigned, so this must leave the venue untouched -- a
+    // half-applied edit is how a venue ends up renamed but still broken, with
+    // the operator believing the whole change failed.
+    let err = v.apply(Some("Renamed"), None, Some(-9999), None, now).unwrap_err();
+    assert_eq!(err, VenueInvalid::OffsetOutOfRange(-9999));
+    assert_eq!(v.name, "Original", "the name must not have been applied");
+    assert_eq!(v.utc_offset_minutes, 480);
+    assert_eq!(v.status, VenueStatus::Active);
+}
+
+#[test]
+fn an_update_touches_only_the_fields_it_is_given() {
+    let now = Utc::now();
+    let mut v = Venue::new(Uuid::new_v4(), "Before", VenueKind::Standalone, all_week(), 480, now)
+        .expect("valid");
+
+    v.apply(Some(" After "), None, None, None, now).expect("valid");
+    assert_eq!(v.name, "After", "trimmed, like creation");
+    assert_eq!(v.hours.len(), 7, "hours untouched");
+    assert_eq!(v.utc_offset_minutes, 480, "offset untouched");
+    assert_eq!(v.status, VenueStatus::Active, "status untouched");
+
+    v.apply(None, Some(vec![win(1, 540, 1080)]), None, None, now).expect("valid");
+    assert_eq!(v.hours.len(), 1);
+    assert_eq!(v.name, "After", "name survives an hours-only edit");
 }

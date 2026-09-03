@@ -20,7 +20,8 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::entities::{
     Availability, Basket, BasketConflict, CatalogItem, CatalogSource, LedgerStatus, LegStatus,
-    Order, Table, TableSession, TelemetryEvent, Vendor, VendorLedger, Venue, Vertical,
+    Order, Table, TableSession, TableStatus, TelemetryEvent, Vendor, VendorLedger, Venue,
+    Vertical,
 };
 
 /// One period's headline figures, without its entries.
@@ -533,6 +534,40 @@ pub trait VenueRepository: Send + Sync {
         tenant_id: Uuid,
         venue_id:  Uuid,
     ) -> anyhow::Result<Vec<(Uuid, String)>>;
+
+    /// Persist an edited venue. Returns false when it is not this tenant's.
+    ///
+    /// The write side of the kill switch: `status` is what `orderable_now`
+    /// checks, so this is how table ordering gets stopped and restarted.
+    async fn update_venue(&self, venue: &Venue) -> anyhow::Result<bool>;
+
+    /// Remove a venue. Returns false when it is not this tenant's.
+    ///
+    /// **The caller must confirm it has no tables first.** The schema cascades
+    /// -- tables, venue_vendors and table_sessions all go -- so an unguarded
+    /// delete silently destroys every printed code in the building. The guard
+    /// lives in the handler so the refusal can say how many.
+    async fn delete_venue(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<bool>;
+
+    /// How many tables a venue has, for that guard.
+    async fn count_tables(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<i64>;
+
+    /// Open or close one table.
+    ///
+    /// Closing stops NEW scans at that table and leaves sessions already open
+    /// alone -- `find_live_session` does not consult table status. That split
+    /// is the point: a table being cleared, repaired or re-laid should stop
+    /// taking orders without cancelling the meal in progress on it.
+    async fn set_table_status(
+        &self,
+        tenant_id: Uuid,
+        table_id:  Uuid,
+        status:    TableStatus,
+    ) -> anyhow::Result<bool>;
+
+    /// Remove a table and its printed code. Returns false when it is not this
+    /// tenant's. The caller must check for live sessions first.
+    async fn delete_table(&self, tenant_id: Uuid, table_id: Uuid) -> anyhow::Result<bool>;
 
     /// Stamp `printed_at` once the codes are actually on paper.
     ///
