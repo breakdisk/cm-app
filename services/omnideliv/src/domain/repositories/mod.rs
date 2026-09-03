@@ -476,6 +476,74 @@ pub trait VenueRepository: Send + Sync {
         table_id: Uuid,
         new_token: &str,
     ) -> anyhow::Result<bool>;
+
+    // ---- Setup. Without these the whole feature is unreachable: the schema
+    // ---- shipped with no way to put a row in it, so every venue and table on
+    // ---- the platform had to be inserted by hand in SQL.
+
+    /// Persist a new venue.
+    async fn create_venue(&self, venue: &Venue) -> anyhow::Result<()>;
+
+    /// Every venue this tenant runs, newest first.
+    async fn list_venues(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Venue>>;
+
+    /// One venue, scoped to the tenant so a guessed id reads as absent.
+    async fn find_venue(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<Option<Venue>>;
+
+    /// Persist new tables, all or none.
+    ///
+    /// **In one transaction on purpose.** `tables` has `UNIQUE (venue_id,
+    /// label)`, so one clash partway down a batch of twenty would otherwise
+    /// leave the earlier rows committed and the operator unable to tell which
+    /// of their labels landed.
+    ///
+    /// The caller must have already confirmed the venue is this tenant's --
+    /// `tables.venue_id` has a foreign key but no tenant check of its own, so
+    /// nothing at the database layer stops a table being hung off another
+    /// tenant's venue.
+    async fn create_tables(&self, tables: &[Table]) -> anyhow::Result<()>;
+
+    /// Let a vendor sell at a venue.
+    ///
+    /// The write side of `vendor_is_at_venue`, which is the guard that makes a
+    /// table order a venue order. With no rows here no vendor is orderable from
+    /// any table, which is exactly the state the platform shipped in.
+    ///
+    /// Idempotent: linking twice is not an error, because an operator clicking
+    /// twice is not one. Returns false when the venue or vendor is not this
+    /// tenant's.
+    async fn link_vendor(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool>;
+
+    /// Stop a vendor selling at a venue. Returns false when no link existed.
+    async fn unlink_vendor(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool>;
+
+    /// The vendors selling at a venue, as (id, name).
+    async fn list_venue_vendors(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+    ) -> anyhow::Result<Vec<(Uuid, String)>>;
+
+    /// Stamp `printed_at` once the codes are actually on paper.
+    ///
+    /// The counterpart to rotation clearing it. Together they answer "is what
+    /// is on the wall the current code", which is otherwise unknowable.
+    async fn mark_printed(
+        &self,
+        tenant_id: Uuid,
+        table_id:  Uuid,
+        now:       DateTime<Utc>,
+    ) -> anyhow::Result<bool>;
 }
 
 #[async_trait]

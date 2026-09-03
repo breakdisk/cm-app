@@ -193,6 +193,168 @@ pub struct Table {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Why a venue or table could not be created.
+///
+/// Creation is the one place these values are checked. Everything downstream --
+/// `is_open_at`, `orderable_now`, the scan endpoint -- trusts the row, so a
+/// window that could never match, or an offset from no timezone on earth, has
+/// to be refused here or it becomes a venue whose codes silently never scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VenueInvalid {
+    NameEmpty,
+    NameTooLong,
+    /// Outside UTC-12:00 .. UTC+14:00, which is every offset that exists.
+    OffsetOutOfRange(i32),
+    DayOutOfRange(u32),
+    /// `close_minute` at or before `open_minute` -- a window that can never match.
+    WindowInverted { open: u32, close: u32 },
+    /// An open past local midnight, or a close more than 24h past it.
+    WindowOutOfRange { open: u32, close: u32 },
+    LabelEmpty,
+    LabelTooLong,
+}
+
+impl std::fmt::Display for VenueInvalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VenueInvalid::NameEmpty => write!(f, "venue name is required"),
+            VenueInvalid::NameTooLong => write!(f, "venue name is too long (max 120)"),
+            VenueInvalid::OffsetOutOfRange(m) => {
+                write!(f, "utc_offset_minutes {m} is outside -720..=840")
+            }
+            VenueInvalid::DayOutOfRange(d) => {
+                write!(f, "dow {d} is outside 1..=7 (1 = Monday)")
+            }
+            VenueInvalid::WindowInverted { open, close } => write!(
+                f,
+                "opening window {open}..{close} closes at or before it opens, so it can never match"
+            ),
+            VenueInvalid::WindowOutOfRange { open, close } => write!(
+                f,
+                "opening window {open}..{close} is outside 0..1440 open / 0..2880 close"
+            ),
+            VenueInvalid::LabelEmpty => write!(f, "table label is required"),
+            VenueInvalid::LabelTooLong => write!(f, "table label is too long (max 40)"),
+        }
+    }
+}
+
+impl OpeningWindow {
+    /// Reject a window that could never match.
+    ///
+    /// `close_minute` may exceed 1440 -- that is how a kitchen open until 01:00
+    /// is expressed -- but not by more than a further day, and `open_minute`
+    /// must be inside its own day or `covers` can never fire.
+    pub fn validate(&self) -> Result<(), VenueInvalid> {
+        if !(1..=7).contains(&self.dow) {
+            return Err(VenueInvalid::DayOutOfRange(self.dow));
+        }
+        if self.open_minute >= 1440 || self.close_minute > 2880 {
+            return Err(VenueInvalid::WindowOutOfRange {
+                open:  self.open_minute,
+                close: self.close_minute,
+            });
+        }
+        if self.close_minute <= self.open_minute {
+            return Err(VenueInvalid::WindowInverted {
+                open:  self.open_minute,
+                close: self.close_minute,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Venue {
+    /// A new venue, active from creation.
+    ///
+    /// **An empty `hours` is allowed and means the venue is closed.** Setting a
+    /// place up before it opens is normal, and `is_open_at` already reads no
+    /// hours as closed. It is a trap rather than an error -- the operator gets
+    /// a venue whose every code refuses every scan with the deliberately
+    /// indistinguishable 404 -- so `orderable_now_hint` exists to say so on the
+    /// way out, and the portal surfaces it.
+    ///
+    /// `now` is a parameter for the same reason `is_open_at` takes one.
+    pub fn new(
+        tenant_id:          Uuid,
+        name:               &str,
+        kind:               VenueKind,
+        hours:              Vec<OpeningWindow>,
+        utc_offset_minutes: i32,
+        now:                DateTime<Utc>,
+    ) -> Result<Self, VenueInvalid> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(VenueInvalid::NameEmpty);
+        }
+        if name.chars().count() > 120 {
+            return Err(VenueInvalid::NameTooLong);
+        }
+        // -12:00 .. +14:00 covers every offset in use, Kiribati included.
+        if !(-720..=840).contains(&utc_offset_minutes) {
+            return Err(VenueInvalid::OffsetOutOfRange(utc_offset_minutes));
+        }
+        for w in &hours {
+            w.validate()?;
+        }
+        Ok(Self {
+            id: Uuid::new_v4(),
+            tenant_id,
+            name: name.to_string(),
+            kind,
+            hours,
+            utc_offset_minutes,
+            status: VenueStatus::Active,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Whether a code printed for this venue would scan at all right now.
+    ///
+    /// Only for telling an operator why nothing works. The scan path must keep
+    /// using `orderable_now`, whose refusals are indistinguishable on purpose.
+    pub fn orderable_now_hint(&self, now: DateTime<Utc>) -> Option<NotOrderable> {
+        if self.status != VenueStatus::Active {
+            return Some(NotOrderable::VenueNotActive);
+        }
+        if !self.is_open_at(now) {
+            return Some(NotOrderable::OutsideOpeningHours);
+        }
+        None
+    }
+}
+
+impl Table {
+    /// A new table, open, with a fresh unprinted code.
+    pub fn new(
+        venue_id:  Uuid,
+        tenant_id: Uuid,
+        label:     &str,
+        now:       DateTime<Utc>,
+    ) -> Result<Self, VenueInvalid> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(VenueInvalid::LabelEmpty);
+        }
+        if label.chars().count() > 40 {
+            return Err(VenueInvalid::LabelTooLong);
+        }
+        Ok(Self {
+            id: Uuid::new_v4(),
+            venue_id,
+            tenant_id,
+            label: label.to_string(),
+            token: new_table_token(),
+            status: TableStatus::Open,
+            printed_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+}
+
 /// A fresh printed secret for a table.
 ///
 /// A v4 UUID with the hyphens stripped: 122 bits from the OS CSPRNG, which is

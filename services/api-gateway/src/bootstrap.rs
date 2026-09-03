@@ -123,6 +123,16 @@ async fn proxy_handler(
         // customer app. The path carries only UUIDs and the response is image
         // bytes — no other item data is exposed.
         || path.starts_with("/v1/omnideliv/public/")
+        // Scanning a table QR. A diner has no account and never will, so this
+        // one write is reachable by anyone who can photograph a sticker -- the
+        // token in the path IS the credential, and the service bounds it with
+        // `orderable_now`, a live-session cap and a per-token/per-IP rate limit.
+        //
+        // Without this the whole feature is unreachable through the public
+        // entry point: `diner_may_reach` allowlists this same path, but it runs
+        // AFTER token validation, so a request carrying no token 401s here and
+        // never gets that far.
+        || (path.starts_with("/v1/omnideliv/tables/") && path.ends_with("/session"))
         || path == "/v1/auth/login"
         || path == "/v1/auth/register"
         || path == "/v1/auth/refresh"

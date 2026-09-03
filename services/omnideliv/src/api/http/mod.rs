@@ -9,6 +9,7 @@ pub mod tables;
 pub mod tracking;
 pub mod vendor_orders;
 pub mod vendors;
+pub mod venues;
 
 use std::sync::Arc;
 use axum::Router;
@@ -84,6 +85,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .merge(vendors::routes())
                 .merge(vendor_orders::routes())
                 .merge(tables::routes())
+                .merge(venues::routes())
                 .merge(courier_jobs::routes())
                 .layer(auth_layer)
                 .with_state(state),
