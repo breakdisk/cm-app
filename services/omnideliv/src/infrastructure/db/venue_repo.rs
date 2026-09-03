@@ -443,4 +443,89 @@ impl VenueRepository for PgVenueRepository {
         .rows_affected();
         Ok(n == 1)
     }
+
+    async fn update_venue(&self, v: &Venue) -> anyhow::Result<bool> {
+        // Scoped by tenant in the predicate, so editing another tenant's venue
+        // reads as "not found" rather than succeeding on a guessed id.
+        let n = sqlx::query(
+            r#"
+            UPDATE omnideliv.venues
+               SET name = $3, hours = $4, utc_offset_minutes = $5, status = $6,
+                   updated_at = $7
+             WHERE id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(v.id)
+        .bind(v.tenant_id)
+        .bind(&v.name)
+        .bind(serde_json::to_value(&v.hours)?)
+        .bind(v.utc_offset_minutes)
+        .bind(v.status.as_str())
+        .bind(v.updated_at)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
+
+    async fn delete_venue(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<bool> {
+        let n = sqlx::query(
+            "DELETE FROM omnideliv.venues WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(venue_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
+
+    async fn count_tables(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<i64> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM omnideliv.tables WHERE tenant_id = $1 AND venue_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(venue_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("n"))
+    }
+
+    async fn set_table_status(
+        &self,
+        tenant_id: Uuid,
+        table_id:  Uuid,
+        status:    TableStatus,
+    ) -> anyhow::Result<bool> {
+        // `printed_at` is deliberately untouched. The code on the wall is still
+        // the code in the database -- closing a table does not invalidate it,
+        // which is exactly what makes reopening a one-click action rather than
+        // a reprint.
+        let n = sqlx::query(
+            r#"
+            UPDATE omnideliv.tables
+               SET status = $3, updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(table_id)
+        .bind(tenant_id)
+        .bind(status.as_str())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
+
+    async fn delete_table(&self, tenant_id: Uuid, table_id: Uuid) -> anyhow::Result<bool> {
+        let n = sqlx::query(
+            "DELETE FROM omnideliv.tables WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(table_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
 }

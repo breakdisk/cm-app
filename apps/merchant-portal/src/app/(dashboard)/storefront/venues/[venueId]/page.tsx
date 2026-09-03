@@ -15,6 +15,8 @@ import {
   AlertTriangle,
   ArrowLeft,
   Loader2,
+  Pause,
+  Play,
   Plus,
   Store,
   Trash2,
@@ -79,6 +81,7 @@ export default function VenueDetailPage() {
   const [adding, setAdding] = useState(false);
   const [vendorToLink, setVendorToLink] = useState("");
   const [linking, setLinking] = useState(false);
+  const [trading, setTrading_] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -138,6 +141,52 @@ export default function VenueDetailPage() {
       setError(e instanceof Error ? e.message : "Could not link that vendor");
     } finally {
       setLinking(false);
+    }
+  };
+
+  /**
+   * The stop button for this venue's entire QR surface.
+   *
+   * Pausing makes the server refuse every scan here. Sessions already open are
+   * deliberately left alone, so people mid-meal finish and simply cannot add
+   * anything new -- the alternative strands a half-eaten paid-for order.
+   */
+  const setTrading = async (status: VenueRow["status"]) => {
+    if (
+      status !== "active" &&
+      !window.confirm(
+        `Stop taking orders at ${venue?.name}?\n\nEvery code in the building stops working immediately. Diners already ordering can finish. You can resume at any time and the printed codes stay valid.`,
+      )
+    ) {
+      return;
+    }
+    setTrading_(true);
+    setError(null);
+    try {
+      setVenue(await venuesApi.update(venueId, { status }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change trading status");
+    } finally {
+      setTrading_(false);
+    }
+  };
+
+  const removeVenue = async () => {
+    if (
+      !window.confirm(
+        `Delete ${venue?.name}?\n\nThis cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await venuesApi.remove(venueId);
+      window.location.href = "/storefront/venues";
+    } catch (e) {
+      // The server refuses while tables remain, and says how many. That message
+      // is more useful than anything this screen could invent.
+      setError(e instanceof Error ? e.message : "Could not delete this venue");
     }
   };
 
@@ -207,6 +256,37 @@ export default function VenueDetailPage() {
             </div>
           </div>
         </div>
+
+        <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-xl">
+          <div className="min-w-0">
+            <h2 className="font-heading text-base font-semibold text-white">
+              {venue.status === "active" ? "Taking orders" : "Not taking orders"}
+            </h2>
+            <p className="mt-0.5 text-xs text-white/40">
+              {venue.status === "active"
+                ? "Pausing stops every code in the building at once. Diners already ordering can finish."
+                : "Every code here is refusing scans. Printed codes stay valid — resuming needs no reprint."}
+            </p>
+          </div>
+          <button
+            onClick={() => setTrading(venue.status === "active" ? "paused" : "active")}
+            disabled={trading}
+            className={
+              venue.status === "active"
+                ? "inline-flex shrink-0 items-center gap-2 rounded-lg border border-amber-signal/40 bg-amber-signal/10 px-4 py-2 text-sm font-medium text-amber-signal transition hover:bg-amber-signal/20 disabled:opacity-40"
+                : "inline-flex shrink-0 items-center gap-2 rounded-lg border border-green-signal/40 bg-green-signal/10 px-4 py-2 text-sm font-medium text-green-signal transition hover:bg-green-signal/20 disabled:opacity-40"
+            }
+          >
+            {trading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : venue.status === "active" ? (
+              <Pause className="h-4 w-4" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )}
+            {venue.status === "active" ? "Pause ordering" : "Resume ordering"}
+          </button>
+        </section>
 
         {warning && (
           <p className="flex items-start gap-2 rounded-lg border border-amber-signal/30 bg-amber-signal/10 px-4 py-3 text-sm text-amber-signal">
@@ -361,6 +441,21 @@ export default function VenueDetailPage() {
               </p>
             )
           )}
+        </section>
+
+        <section className="rounded-xl border border-red-signal/20 bg-red-signal/[0.03] p-4">
+          <h2 className="font-heading text-base font-semibold text-white">Delete venue</h2>
+          <p className="mt-1 text-xs text-white/40">
+            Only possible once every table is removed — deleting a venue with tables
+            would invalidate all of its printed codes at once.
+          </p>
+          <button
+            onClick={removeVenue}
+            className="mt-3 inline-flex items-center gap-2 rounded-lg border border-red-signal/40 bg-red-signal/10 px-3 py-2 text-sm text-red-signal transition hover:bg-red-signal/20"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete this venue
+          </button>
         </section>
       </div>
 

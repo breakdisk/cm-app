@@ -17,7 +17,7 @@
  */
 import { useState } from "react";
 import QRCodeSVG from "react-qr-code";
-import { Check, Copy, Loader2, Printer, RotateCw } from "lucide-react";
+import { Ban, Check, Copy, Loader2, Printer, RotateCw, Trash2, Undo2 } from "lucide-react";
 
 import { venuesApi, type TableRow } from "@/lib/api/venues";
 
@@ -75,6 +75,49 @@ export function TablePrintSheet({
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not rotate that code");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Close or reopen one table.
+   *
+   * Closing stops new scans at this table only and leaves the venue trading.
+   * The printed code stays valid, so reopening is this same click rather than a
+   * reprint -- which is what makes it usable for a table being cleared or
+   * repaired, rather than a decision nobody wants to make twice.
+   */
+  const toggleStatus = async (t: TableRow) => {
+    setBusy(t.table_id);
+    setError(null);
+    try {
+      await venuesApi.setTableStatus(t.table_id, t.status === "open" ? "closed" : "open");
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change that table");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeTable = async (t: TableRow) => {
+    if (
+      !window.confirm(
+        `Delete table ${t.label}?\n\nIts printed code stops working for good. If you only want it to stop taking orders, close it instead.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(t.table_id);
+    setError(null);
+    try {
+      await venuesApi.removeTable(t.table_id);
+      onChanged();
+    } catch (e) {
+      // The server refuses while a diner is mid-meal at that table, and says
+      // how many -- more useful than anything invented here.
+      setError(e instanceof Error ? e.message : "Could not delete that table");
     } finally {
       setBusy(null);
     }
@@ -214,6 +257,23 @@ export function TablePrintSheet({
                 )}
               </button>
               <button
+                onClick={() => toggleStatus(t)}
+                disabled={busy === t.table_id}
+                title={
+                  t.status === "open"
+                    ? "Stop new orders at this table. The printed code stays valid."
+                    : "Take orders at this table again"
+                }
+                aria-label={`${t.status === "open" ? "Close" : "Reopen"} ${t.label}`}
+                className="rounded-md border border-white/10 bg-white/5 p-1.5 text-white/60 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+              >
+                {t.status === "open" ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <Undo2 className="h-3.5 w-3.5" />
+                )}
+              </button>
+              <button
                 onClick={() => rotate(t)}
                 disabled={busy === t.table_id}
                 title="Replace this code — the printed one stops working"
@@ -225,6 +285,15 @@ export function TablePrintSheet({
                 ) : (
                   <RotateCw className="h-3.5 w-3.5" />
                 )}
+              </button>
+              <button
+                onClick={() => removeTable(t)}
+                disabled={busy === t.table_id}
+                title="Delete this table"
+                aria-label={`Delete ${t.label}`}
+                className="rounded-md border border-white/10 bg-white/5 p-1.5 text-white/60 transition hover:bg-white/10 hover:text-red-signal disabled:opacity-40"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
