@@ -549,6 +549,17 @@ mod place_tests {
     struct FakeVendors(Vendor);
     #[async_trait::async_trait]
     impl VendorRepository for FakeVendors {
+        // Checkout never touches the public storefront; these exist so the
+        // fake still satisfies the trait.
+        async fn find_public_storefront(&self, _h: &str) -> anyhow::Result<Option<Vendor>> {
+            Ok(None)
+        }
+        async fn set_public_handle(
+            &self, _t: Uuid, _v: Uuid, _s: Option<&str>, _d: Option<&str>,
+            _tag: Option<&str>, _on: bool,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
         async fn find_by_id(&self, _t: Uuid, _id: Uuid) -> anyhow::Result<Option<Vendor>> {
             Ok(Some(self.0.clone()))
         }
