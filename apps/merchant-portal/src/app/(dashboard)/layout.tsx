@@ -24,7 +24,7 @@ import {
   X,
   Users,
   Users2,
-  GitBranch, ShoppingBag, ClipboardList } from "lucide-react";
+  GitBranch, ShoppingBag, ClipboardList, QrCode } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { useBranding } from "@/lib/branding";
 import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
@@ -62,6 +62,11 @@ const NAV_ITEMS: NavItem[] = [
   // leaves this open all service, and burying it one click deep is how a
   // store ends up not watching it.
   { label: "Orders",       href: "/storefront/orders", icon: ClipboardList, requiresStorefront: true },
+  // Table QR ordering. Same gate again -- only a vendor has a venue. Its own
+  // entry because setup is where this feature was unreachable: the API and the
+  // schema shipped with no screen at all, so every venue and table had to be
+  // inserted by hand in SQL.
+  { label: "Venues",       href: "/storefront/venues", icon: QrCode, requiresStorefront: true },
   // The same page, before there is a store to manage. Gating "Storefront" on
   // owning one was right, but it left no way in at all: applying is the only
   // route to a vendor record, and the application form lived behind the tab
@@ -88,6 +93,7 @@ const PAGE_TITLE_MAP: Record<string, string> = {
   "/":             "Overview",
   "/shipments":    "Shipments",
   "/storefront/orders": "Orders",
+  "/storefront/venues": "Venues",
   "/marketplace":  "Marketplace",
   "/storefront":   "Storefront",
   "/customers":    "Customers",

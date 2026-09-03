@@ -241,4 +241,206 @@ impl VenueRepository for PgVenueRepository {
         .rows_affected();
         Ok(n == 1)
     }
+
+    async fn create_venue(&self, v: &Venue) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO omnideliv.venues
+                (id, tenant_id, name, kind, hours, utc_offset_minutes, status,
+                 created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "#,
+        )
+        .bind(v.id)
+        .bind(v.tenant_id)
+        .bind(&v.name)
+        .bind(v.kind.as_str())
+        .bind(serde_json::to_value(&v.hours)?)
+        .bind(v.utc_offset_minutes)
+        .bind(v.status.as_str())
+        .bind(v.created_at)
+        .bind(v.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_venues(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Venue>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, tenant_id, name, kind, hours, utc_offset_minutes, status,
+                   created_at, updated_at
+              FROM omnideliv.venues
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+            "#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(venue_from_row).collect()
+    }
+
+    async fn find_venue(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<Option<Venue>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, tenant_id, name, kind, hours, utc_offset_minutes, status,
+                   created_at, updated_at
+              FROM omnideliv.venues
+             WHERE tenant_id = $1 AND id = $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(venue_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.as_ref().map(venue_from_row).transpose()
+    }
+
+    async fn create_tables(&self, tables: &[Table]) -> anyhow::Result<()> {
+        // One transaction: `UNIQUE (venue_id, label)` means a clash halfway
+        // through a batch must not leave the earlier tables created. The
+        // operator retries the whole list, not the part that failed.
+        let mut tx = self.pool.begin().await?;
+        for t in tables {
+            sqlx::query(
+                r#"
+                INSERT INTO omnideliv.tables
+                    (id, venue_id, tenant_id, label, token, status, printed_at,
+                     created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                "#,
+            )
+            .bind(t.id)
+            .bind(t.venue_id)
+            .bind(t.tenant_id)
+            .bind(&t.label)
+            .bind(&t.token)
+            .bind(t.status.as_str())
+            .bind(t.printed_at)
+            .bind(t.created_at)
+            .bind(t.updated_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn link_vendor(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        // Both sides are checked against the tenant BEFORE the insert. The
+        // foreign keys only prove the rows exist, not whose they are, so
+        // without this a caller could hang their own vendor off another
+        // tenant's venue and become orderable at that venue's tables.
+        let ok = sqlx::query(
+            r#"
+            SELECT 1 AS ok
+             WHERE EXISTS (SELECT 1 FROM omnideliv.venues  WHERE id = $2 AND tenant_id = $1)
+               AND EXISTS (SELECT 1 FROM omnideliv.vendors WHERE id = $3 AND tenant_id = $1)
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(venue_id)
+        .bind(vendor_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+
+        if !ok {
+            return Ok(false);
+        }
+
+        // Idempotent: an operator clicking twice is not an error, and the
+        // second click must still report success or the UI shows a failure for
+        // a state that is exactly what was asked for.
+        sqlx::query(
+            r#"
+            INSERT INTO omnideliv.venue_vendors (venue_id, vendor_id, tenant_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (venue_id, vendor_id) DO NOTHING
+            "#,
+        )
+        .bind(venue_id)
+        .bind(vendor_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(true)
+    }
+
+    async fn unlink_vendor(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let n = sqlx::query(
+            r#"
+            DELETE FROM omnideliv.venue_vendors
+             WHERE tenant_id = $1 AND venue_id = $2 AND vendor_id = $3
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(venue_id)
+        .bind(vendor_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
+
+    async fn list_venue_vendors(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+    ) -> anyhow::Result<Vec<(Uuid, String)>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT v.id AS vendor_id, v.name AS vendor_name
+              FROM omnideliv.venue_vendors vv
+              JOIN omnideliv.vendors v ON v.id = vv.vendor_id
+             WHERE vv.tenant_id = $1 AND vv.venue_id = $2
+             ORDER BY v.name ASC
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(venue_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("vendor_id"), r.get("vendor_name")))
+            .collect())
+    }
+
+    async fn mark_printed(
+        &self,
+        tenant_id: Uuid,
+        table_id:  Uuid,
+        now:       DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
+        let n = sqlx::query(
+            r#"
+            UPDATE omnideliv.tables
+               SET printed_at = $3, updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(table_id)
+        .bind(tenant_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
 }

@@ -41,6 +41,20 @@ pub struct ScanResponse {
     pub venue_id: Uuid,
     pub venue_name: String,
     pub table_label: String,
+    /// Who sells at this venue.
+    ///
+    /// Without this a diner cannot reach a menu at all: `catalog/search`
+    /// requires a `vendor_id`, and the only endpoint listing a venue's vendors
+    /// is operator-gated AND closed to diners by the gateway allowlist. So the
+    /// scan has to answer it, which is also what this response already claimed
+    /// to do -- "so the app can show a menu without a second round trip".
+    pub vendors: Vec<VendorBrief>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VendorBrief {
+    pub vendor_id: Uuid,
+    pub name:      String,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,6 +84,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/omnideliv/venues/:venue_id/tables", get(list_tables))
         .route("/v1/omnideliv/venues/tables/:table_id/rotate", post(rotate))
+        .route("/v1/omnideliv/venues/tables/:table_id/printed", post(mark_printed))
 }
 
 /// `POST /v1/omnideliv/tables/:token/session` — a diner scanned the code.
@@ -182,6 +197,25 @@ async fn scan(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // A venue with no vendors linked is a working table with nothing to order
+    // from. That is an operator mistake rather than a scan failure, so it is a
+    // logged warning and an empty list -- refusing the scan would tell the
+    // diner the table does not exist, which is worse and untrue.
+    let vendors = st
+        .venues
+        .list_venue_vendors(venue.tenant_id, venue.id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(err = %e, venue_id = %venue.id, "venue vendor list failed during scan");
+            Vec::new()
+        });
+    if vendors.is_empty() {
+        tracing::warn!(
+            venue_id = %venue.id, table_id = %table.id,
+            "scan succeeded but no vendors sell at this venue — nothing is orderable",
+        );
+    }
+
     Ok(Json(ScanResponse {
         session_id: session.id,
         access_token,
@@ -189,6 +223,10 @@ async fn scan(
         venue_id: venue.id,
         venue_name: venue.name,
         table_label: table.label,
+        vendors: vendors
+            .into_iter()
+            .map(|(vendor_id, name)| VendorBrief { vendor_id, name })
+            .collect(),
     }))
 }
 
@@ -261,4 +299,34 @@ async fn rotate(
         scan_url: format!("{}/t/{}", st.table_scan_base_url.trim_end_matches('/'), token),
         table_id,
     }))
+}
+
+/// `POST /v1/omnideliv/venues/tables/:table_id/printed` — the code is on paper.
+///
+/// The counterpart to rotation clearing `printed_at`. Together they answer the
+/// one question the print sheet cannot otherwise settle: is the sticker on that
+/// table the code the database will accept? An operator who rotates a leaked
+/// code and forgets to reprint has a table that refuses every scan and no way
+/// to see why.
+async fn mark_printed(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(table_id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    if !claims.has_permission(VENDORS_MANAGE) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let ok = st
+        .venues
+        .mark_printed(claims.tenant_id, table_id, Utc::now())
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "marking table printed failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !ok {
+        // Same reasoning as rotate: 404 rather than confirming the id exists.
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
