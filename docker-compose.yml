@@ -1424,6 +1424,14 @@ services:
       DEFAULT_TENANT_ID: ${OMNIDELIV_DEFAULT_TENANT_ID:-00000000-0000-0000-0000-000000000001}
       DEFAULT_LAT: "14.5995"
       DEFAULT_LNG: "120.9842"
+      # The origin printed into every table QR: the code encodes
+      # `{TABLE_SCAN_BASE_URL}/t/{token}`. It MUST be the host that serves
+      # `/t/:token`, which is the landing app.
+      #
+      # The compiled default is `https://order.cargomarket.net`, a host that
+      # does not resolve at all -- so every code printed before this line
+      # existed encoded a URL that could not even be reached, let alone 404.
+      TABLE_SCAN_BASE_URL: "${TABLE_SCAN_BASE_URL:-https://os.cargomarket.net}"
       RUST_LOG: info
     depends_on:
       postgres:

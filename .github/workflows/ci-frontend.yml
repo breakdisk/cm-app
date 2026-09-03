@@ -32,7 +32,15 @@ env:
 jobs:
   # ──────────────────────────────────────────────────────────────
   # JOB 1: lint-and-type-check
-  # Runs ESLint + TypeScript compiler (noEmit) per web portal.
+  # Runs ESLint + TypeScript compiler (noEmit) per web app.
+  #
+  # `landing` is in THIS matrix only. It has no `test` script, and its image is
+  # already built by build-images.yml, so it does not belong in the test, build
+  # or e2e matrices. But it was in none of them -- and it is the most public app
+  # on the platform (login, password reset, /track, and the /t/:token table-QR
+  # diner flow). Its only gate was `next build` inside build-images.yml, which
+  # runs on push to master: a type error surfaced as a broken master image
+  # build rather than a red PR.
   # ──────────────────────────────────────────────────────────────
   lint-and-type-check:
     name: Lint & Type Check (${{ matrix.app }})
@@ -48,6 +56,7 @@ jobs:
           - admin-portal
           - partner-portal
           - customer-portal
+          - landing
 
     defaults:
       run:
