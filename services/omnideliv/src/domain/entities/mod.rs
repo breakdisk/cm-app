@@ -27,5 +27,7 @@ pub use venue::{
     new_table_token, orderable_now, NotOrderable, OpeningWindow, Table, TableSession,
     TableStatus, Venue, VenueInvalid, VenueKind, VenueStatus,
 };
-pub use vendor::{Vendor, VendorStatus, Vertical};
+pub use vendor::{
+    check_custom_domain, check_slug, HandleInvalid, Vendor, VendorStatus, Vertical,
+};
 pub use vendor_ledger::{current_period,EntryKind, LedgerEntry, LedgerStatus, VendorLedger};

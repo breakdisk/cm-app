@@ -5,6 +5,7 @@ pub mod health;
 pub mod mesh;
 pub mod orders;
 pub mod scan_limit;
+pub mod storefront;
 pub mod tables;
 pub mod tracking;
 pub mod vendor_orders;
@@ -76,6 +77,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         // A diner scanning a table has no account and never will —
         // mounted outside the auth layer for the same reason as the two above.
         .merge(tables::public_routes().with_state(Arc::clone(&state)))
+        // A vendor's shareable public menu. Unauthenticated for the same
+        // reason as the three above: its whole purpose is to work for
+        // someone with no account who followed a link.
+        .merge(storefront::public_routes().with_state(Arc::clone(&state)))
         .merge(
             catalog::routes()
                 .merge(baskets::routes())

@@ -43,6 +43,7 @@ import {
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { ShopConnections } from "@/components/storefront/shop-connections";
+import { PublicStorefrontSettings } from "@/components/storefront/public-storefront-settings";
 import { UnconfirmedQueue } from "@/components/storefront/unconfirmed-queue";
 import { ModifierEditor, modifierProblems } from "@/components/storefront/modifier-editor";
 import { CsvFormat } from "@/components/storefront/csv-format";
@@ -352,6 +353,9 @@ export default function Storefront() {
       )}
 
       {catalog && <ShopConnections vendorId={catalog.vendor_id} />}
+      {/* Only for a vendor that actually has a catalog — a public menu
+          page with nothing on it is worse than no page. */}
+      {catalog && <PublicStorefrontSettings />}
 
       {rowErrors.length > 0 && (
         <GlassCard className="border-l-2 border-l-[#FFAB00] p-4">
