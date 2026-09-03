@@ -23,7 +23,7 @@
  * credential for a table someone is currently sitting at, and it should die
  * with the tab rather than linger on a phone that has left the building.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   AlertCircle,
@@ -31,12 +31,12 @@ import {
   ChefHat,
   Loader2,
   Minus,
-  Plus,
   ShoppingBag,
   UtensilsCrossed,
 } from "lucide-react";
 
 import { API_BASE } from "@/lib/api-base";
+import { MenuList, money, type MenuItem } from "@/components/menu-list";
 
 interface VendorBrief {
   vendor_id: string;
@@ -53,11 +53,8 @@ interface ScanResponse {
   vendors: VendorBrief[];
 }
 
-interface SearchHit {
-  item_id: string;
-  name: string;
-  price_cents: number;
-  category: string | null;
+/** The menu fields plus what only this page needs. */
+interface SearchHit extends MenuItem {
   availability: string;
 }
 
@@ -79,9 +76,6 @@ interface PlacedOrder {
   order_id: string;
   grand_total_cents: number;
 }
-
-const peso = (cents: number) =>
-  `₱${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
 
 export default function TableOrderPage() {
   const params = useParams<{ token: string }>();
@@ -209,7 +203,8 @@ export default function TableOrderPage() {
   }, [session, vendorId, call]);
 
   // --- 3. Basket ----------------------------------------------------------
-  const addItem = async (item: SearchHit) => {
+  // Takes the shared shape, not this page's: adding a line needs only the id.
+  const addItem = async (item: MenuItem) => {
     if (!vendorId) return;
     setBusyItem(item.item_id);
     setError(null);
@@ -273,16 +268,6 @@ export default function TableOrderPage() {
     }
   };
 
-  const grouped = useMemo(() => {
-    const by = new Map<string, SearchHit[]>();
-    for (const i of items) {
-      const k = i.category ?? "More";
-      if (!by.has(k)) by.set(k, []);
-      by.get(k)!.push(i);
-    }
-    return Array.from(by.entries());
-  }, [items]);
-
   // --- Render -------------------------------------------------------------
   if (scanning) {
     return (
@@ -321,7 +306,7 @@ export default function TableOrderPage() {
             {session.venue_name} · {session.table_label}
           </p>
           <p className="text-lg font-semibold text-white">
-            {peso(placed.grand_total_cents)}
+            {money(placed.grand_total_cents)}
           </p>
           <p className="max-w-sm text-sm text-white/40">
             Pay at the table when your food arrives. Staff can see this order now.
@@ -385,48 +370,13 @@ export default function TableOrderPage() {
             <div className="flex justify-center py-16">
               <Loader2 className="h-6 w-6 animate-spin text-white/30" />
             </div>
-          ) : items.length === 0 ? (
-            <p className="py-16 text-center text-sm text-white/40">
-              Nothing on the menu right now.
-            </p>
           ) : (
-            <div className="space-y-6 pb-40">
-              {grouped.map(([category, group]) => (
-                <section key={category}>
-                  <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-white/40">
-                    {category}
-                  </h2>
-                  <ul className="space-y-2">
-                    {group.map((item) => (
-                      <li
-                        key={item.item_id}
-                        className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-3"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-white">
-                            {item.name}
-                          </p>
-                          <p className="text-sm text-white/50">
-                            {peso(item.price_cents)}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => addItem(item)}
-                          disabled={busyItem === item.item_id}
-                          aria-label={`Add ${item.name}`}
-                          className="shrink-0 rounded-lg border border-cyan-400/40 bg-cyan-400/10 p-2 text-cyan-300 transition active:scale-95 disabled:opacity-40"
-                        >
-                          {busyItem === item.item_id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Plus className="h-4 w-4" />
-                          )}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ))}
+            // Same component the public storefront renders, so a menu looks
+            // the same whether you reached it from a table or from a link
+            // somebody forwarded. `pb-40` clears the fixed basket bar, which
+            // only exists on this page.
+            <div className="pb-40">
+              <MenuList items={items} onAdd={addItem} busyItemId={busyItem} />
             </div>
           )}
         </>
@@ -445,7 +395,7 @@ export default function TableOrderPage() {
                 >
                   <span className="text-white/40">{l.qty}×</span>
                   <span className="min-w-0 flex-1 truncate">{l.name}</span>
-                  <span>{peso(l.subtotal_cents)}</span>
+                  <span>{money(l.subtotal_cents)}</span>
                   <button
                     onClick={() => removeLine(l)}
                     disabled={busyItem === l.item_id}
@@ -468,7 +418,7 @@ export default function TableOrderPage() {
                 <ShoppingBag className="h-5 w-5" />
               )}
               Order {lineCount} {lineCount === 1 ? "item" : "items"} ·{" "}
-              {peso(basket.goods_total_cents)}
+              {money(basket.goods_total_cents)}
             </button>
             <p className="text-center text-xs text-white/30">
               Pay at the table. No delivery fee.

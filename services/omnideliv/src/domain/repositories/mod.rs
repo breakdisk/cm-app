@@ -44,6 +44,36 @@ pub trait VendorRepository: Send + Sync {
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Vendor>>;
     async fn save(&self, vendor: &Vendor) -> anyhow::Result<()>;
 
+    /// Resolve a public storefront by its slug or its custom domain.
+    ///
+    /// **The second method in this file that does not take `tenant_id`, and
+    /// like `find_table_by_token` it cannot.** A stranger opening
+    /// `/s/kanto-freestyle`, or a browser arriving with `Host: menu.kanto.ph`,
+    /// carries no tenant. The tenant is an OUTPUT of this lookup, which is why
+    /// `vendors.slug` and `vendors.custom_domain` are UNIQUE platform-wide
+    /// rather than per tenant.
+    ///
+    /// The rule that both exceptions share: a lookup keyed on something the
+    /// public types or DNS resolves cannot be tenant-scoped, because there is
+    /// no tenant yet. Everything downstream re-scopes on the tenant returned.
+    /// A third one needs the same justification or the rule quietly dies.
+    ///
+    /// Returns `None` unless `public_enabled` is true, so an unpublished
+    /// storefront is indistinguishable from one that does not exist.
+    async fn find_public_storefront(&self, handle: &str) -> anyhow::Result<Option<Vendor>>;
+
+    /// Claim or change a vendor's public handle. Returns false when the vendor
+    /// is not this tenant's, and errors on a slug or domain already taken.
+    async fn set_public_handle(
+        &self,
+        tenant_id:      Uuid,
+        vendor_id:      Uuid,
+        slug:           Option<&str>,
+        custom_domain:  Option<&str>,
+        tagline:        Option<&str>,
+        public_enabled: bool,
+    ) -> anyhow::Result<bool>;
+
     /// The vendor a portal user operates. `None` when the user runs no store —
     /// which is the answer for every customer, so it is not an error.
     async fn find_by_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Vendor>>;

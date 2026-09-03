@@ -47,6 +47,10 @@ fn map_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<Vendor> {
         payout_account:    r.get("payout_account"),
         hours:             r.get("hours"),
         status,
+        slug:              r.get("slug"),
+        custom_domain:     r.get("custom_domain"),
+        tagline:           r.get("tagline"),
+        public_enabled:    r.get("public_enabled"),
         created_at:        r.get("created_at"),
         updated_at:        r.get("updated_at"),
     })
@@ -54,6 +58,61 @@ fn map_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<Vendor> {
 
 #[async_trait]
 impl VendorRepository for PgVendorRepository {
+    async fn find_public_storefront(&self, handle: &str) -> anyhow::Result<Option<Vendor>> {
+        // No tenant predicate -- see the note on the trait. `public_enabled` is
+        // in the WHERE rather than checked afterwards, so an unpublished
+        // storefront reads as absent instead of as "exists but hidden", which
+        // is the difference between a 404 and a confirmation that a vendor is
+        // on this platform.
+        //
+        // One query for both keys: a Host header and a slug are the same kind
+        // of public handle, and splitting them would mean the caller has to
+        // know which it holds.
+        let h = handle.trim().to_ascii_lowercase();
+        let row = sqlx::query(
+            r#"
+            SELECT * FROM omnideliv.vendors
+             WHERE public_enabled = TRUE
+               AND (slug = $1 OR lower(custom_domain) = $1)
+             LIMIT 1
+            "#,
+        )
+        .bind(&h)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.as_ref().map(map_row).transpose()
+    }
+
+    async fn set_public_handle(
+        &self,
+        tenant_id:      Uuid,
+        vendor_id:      Uuid,
+        slug:           Option<&str>,
+        custom_domain:  Option<&str>,
+        tagline:        Option<&str>,
+        public_enabled: bool,
+    ) -> anyhow::Result<bool> {
+        let n = sqlx::query(
+            r#"
+            UPDATE omnideliv.vendors
+               SET slug = $3, custom_domain = $4, tagline = $5,
+                   public_enabled = $6, updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(vendor_id)
+        .bind(tenant_id)
+        .bind(slug)
+        .bind(custom_domain)
+        .bind(tagline)
+        .bind(public_enabled)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
+
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Vendor>> {
         let row = sqlx::query("SELECT * FROM omnideliv.vendors WHERE tenant_id = $1 AND id = $2")
             .bind(tenant_id).bind(id)

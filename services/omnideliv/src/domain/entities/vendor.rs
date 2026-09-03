@@ -64,6 +64,16 @@ pub struct Vendor {
     pub payout_account:    Option<String>,
     pub hours:             serde_json::Value,
     pub status:            VendorStatus,
+    /// Public handle, e.g. `kanto-freestyle` -> `/s/kanto-freestyle`.
+    /// `None` until the vendor claims one.
+    pub slug:              Option<String>,
+    /// A domain the vendor CNAMEs at us, e.g. `menu.kanto.ph`. Lowercase.
+    pub custom_domain:     Option<String>,
+    /// One line under the name; also the description on a social card.
+    pub tagline:           Option<String>,
+    /// **Opt-in.** False means the storefront 404s even with a slug set.
+    /// Publishing a catalog and its prices to the open internet is a decision.
+    pub public_enabled:    bool,
     pub created_at:        DateTime<Utc>,
     pub updated_at:        DateTime<Utc>,
 }
@@ -92,6 +102,12 @@ impl Vendor {
             payout_account: None,
             hours: serde_json::json!({}),
             status: VendorStatus::Onboarding,
+            // A new vendor is not on the public internet. Claiming a handle and
+            // switching the storefront on are both later, deliberate acts.
+            slug: None,
+            custom_domain: None,
+            tagline: None,
+            public_enabled: false,
             created_at: now,
             updated_at: now,
         }
@@ -182,4 +198,89 @@ mod tests {
         v.commission_bps = 0;
         assert_eq!(v.payout_on(12_345), 12_345);
     }
+}
+
+/// Why a public handle was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandleInvalid {
+    SlugShape,
+    DomainShape,
+    /// The vendor tried to claim a domain the platform itself serves.
+    DomainReserved(String),
+}
+
+impl std::fmt::Display for HandleInvalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HandleInvalid::SlugShape => write!(
+                f,
+                "a link name must be 3-50 characters of lowercase letters, numbers and hyphens, \
+                 starting and ending with a letter or number"
+            ),
+            HandleInvalid::DomainShape => {
+                write!(f, "that does not look like a domain name")
+            }
+            HandleInvalid::DomainReserved(d) => {
+                write!(f, "{d} is a platform domain and cannot be claimed")
+            }
+        }
+    }
+}
+
+/// Hosts the platform serves itself.
+///
+/// **Load-bearing.** Custom domains are resolved from the `Host` header, so a
+/// vendor who claimed `os.cargomarket.net` would have every request to the main
+/// site -- login included -- rewritten to their storefront. A suffix match, so
+/// no subdomain of ours can be claimed either.
+const RESERVED_DOMAIN_SUFFIXES: [&str; 3] =
+    ["cargomarket.net", "logisticos.io", "localhost"];
+
+/// `"  Kanto Freestyle! "` -> `Err(SlugShape)`; the caller suggests, we verify.
+///
+/// Deliberately does NOT slugify for the caller. A slug is a permanent public
+/// URL, so silently turning what someone typed into something else is how a
+/// vendor ends up printing a link they never chose.
+pub fn check_slug(raw: &str) -> Result<String, HandleInvalid> {
+    let s = raw.trim().to_ascii_lowercase();
+    let bytes = s.as_bytes();
+    if s.len() < 3 || s.len() > 50 {
+        return Err(HandleInvalid::SlugShape);
+    }
+    let ok_edge = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    if !ok_edge(bytes[0]) || !ok_edge(bytes[bytes.len() - 1]) {
+        return Err(HandleInvalid::SlugShape);
+    }
+    if !bytes.iter().all(|b| ok_edge(*b) || *b == b'-') {
+        return Err(HandleInvalid::SlugShape);
+    }
+    Ok(s)
+}
+
+/// Normalise and vet a CNAME target.
+pub fn check_custom_domain(raw: &str) -> Result<String, HandleInvalid> {
+    let d = raw
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+
+    if d.len() < 4 || d.len() > 253 || !d.contains('.') {
+        return Err(HandleInvalid::DomainShape);
+    }
+    if d.starts_with(['.', '-']) || d.ends_with(['.', '-']) || d.contains("..") {
+        return Err(HandleInvalid::DomainShape);
+    }
+    if !d
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+    {
+        return Err(HandleInvalid::DomainShape);
+    }
+    if RESERVED_DOMAIN_SUFFIXES
+        .iter()
+        .any(|r| d == *r || d.ends_with(&format!(".{r}")))
+    {
+        return Err(HandleInvalid::DomainReserved(d));
+    }
+    Ok(d)
 }
