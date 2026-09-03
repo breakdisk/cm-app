@@ -169,7 +169,17 @@ fn default_stock_freshness_mins() -> i64 { 30 }
 
 fn default_table_session_mins() -> i64 { 120 }
 fn default_table_session_cap() -> i64 { 8 }
-fn default_table_scan_base_url() -> String { "https://order.cargomarket.net".to_string() }
+/// The landing app's dev origin, because that app serves `/t/:token`.
+///
+/// Deliberately a localhost default. The previous one --
+/// `https://order.cargomarket.net` -- was a host that **does not resolve at
+/// all**, which is the worst shape a default can take: it looks configured, so
+/// nobody sets the variable, and every printed QR encodes a URL a phone cannot
+/// even reach. A localhost default is correct in dev and obviously wrong the
+/// moment it appears on a sticker, which is the failure you want.
+///
+/// Production sets `TABLE_SCAN_BASE_URL` in `docker-compose.yml`.
+fn default_table_scan_base_url() -> String { "http://localhost:3004".to_string() }
 
 impl Config {
     pub fn load() -> anyhow::Result<Self> {

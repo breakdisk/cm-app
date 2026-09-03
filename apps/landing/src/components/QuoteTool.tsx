@@ -414,7 +414,7 @@ export default function QuoteTool({ isOpen, onClose }: Props) {
                   Where in the Philippines?
                 </h2>
                 <p className="text-sm text-slate-400">
-                  Enter the recipient's province or city to include local delivery cost.
+                  Enter the recipient&apos;s province or city to include local delivery cost.
                 </p>
               </div>
 
