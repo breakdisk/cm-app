@@ -171,7 +171,12 @@ export default async function StorefrontPage({
         </header>
 
         <div className="py-6">
-          <MenuList items={s.items} />
+          <MenuList
+            items={s.items.map((i) => ({
+              ...i,
+              photo_url: i.has_photo ? photoUrl(s, i.item_id) : null,
+            }))}
+          />
         </div>
 
         <footer className="border-t border-white/10 py-6 text-center text-xs text-white/25">

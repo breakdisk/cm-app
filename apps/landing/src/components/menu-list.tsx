@@ -24,6 +24,15 @@ export interface MenuItem {
   name: string;
   price_cents: number;
   category: string | null;
+  /**
+   * Absolute URL of the item photo, or null/absent for no photo.
+   *
+   * Built by the caller rather than here: the public photo route is
+   * tenant-scoped, and the two pages hold the tenant in different places (per
+   * hit on the diner page, once at the top on the storefront). Passing the
+   * finished URL keeps this component from needing to know either.
+   */
+  photo_url?: string | null;
 }
 
 /**
@@ -80,6 +89,23 @@ export function MenuList({
                 key={item.item_id}
                 className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-3"
               >
+                {item.photo_url && (
+                  /* The photo route streams bytes from object storage on a
+                     different origin, which next/image cannot optimise without
+                     a remotePatterns entry per tenant. */
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={item.photo_url}
+                    alt=""
+                    loading="lazy"
+                    className="h-14 w-14 shrink-0 rounded-lg object-cover"
+                    // A broken photo must not leave a torn icon on a menu. If
+                    // the object is missing, the row simply reads as text.
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                )}
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-white">{item.name}</p>
                   <p className="text-sm text-white/50">{money(item.price_cents)}</p>

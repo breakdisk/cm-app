@@ -56,6 +56,22 @@ interface ScanResponse {
 /** The menu fields plus what only this page needs. */
 interface SearchHit extends MenuItem {
   availability: string;
+  /** Which tenant to build the public photo URL under. */
+  tenant_id: string;
+  has_photo: boolean;
+}
+
+/**
+ * The item photo, or null.
+ *
+ * Derived from (tenant, item) rather than stored, so a moved backing store
+ * cannot strand a URL. Unauthenticated on purpose — an `<img>` tag cannot send
+ * an Authorization header, which is why this route is public.
+ */
+function photoUrl(hit: SearchHit): string | null {
+  return hit.has_photo
+    ? `${API_BASE}/v1/omnideliv/public/catalog/${hit.tenant_id}/items/${hit.item_id}/photo`
+    : null;
 }
 
 interface BasketLine {
@@ -75,7 +91,12 @@ interface Basket {
 interface PlacedOrder {
   order_id: string;
   grand_total_cents: number;
+  /** Present only for `payment_method: "online"` — the hosted payment page. */
+  checkout_url?: string | null;
 }
+
+/** Pay on the phone now, or settle with staff at the table. */
+type PayHow = "online" | "cod";
 
 export default function TableOrderPage() {
   const params = useParams<{ token: string }>();
@@ -92,6 +113,7 @@ export default function TableOrderPage() {
   const [basket, setBasket] = useState<Basket | null>(null);
   const [busyItem, setBusyItem] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
+  const [payHow, setPayHow] = useState<PayHow>("cod");
   const [placed, setPlaced] = useState<PlacedOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -197,7 +219,13 @@ export default function TableOrderPage() {
     call<SearchHit[]>(
       `/v1/omnideliv/catalog/search?vendor_id=${vendorId}&q=&limit=100`,
     )
-      .then((hits) => setItems(hits.filter((h) => h.availability !== "out_of_stock")))
+      .then((hits) =>
+        setItems(
+          hits
+            .filter((h) => h.availability !== "out_of_stock")
+            .map((h) => ({ ...h, photo_url: photoUrl(h) })),
+        ),
+      )
       .catch((e) => setError(e instanceof Error ? e.message : "Could not load the menu"))
       .finally(() => setMenuLoading(false));
   }, [session, vendorId, call]);
@@ -257,8 +285,18 @@ export default function TableOrderPage() {
       // charged and no courier is dispatched.
       const order = await call<PlacedOrder>("/v1/omnideliv/orders/checkout", {
         method: "POST",
-        body: JSON.stringify({ basket_id: basket.id, payment_method: "cod" }),
+        body: JSON.stringify({ basket_id: basket.id, payment_method: payHow }),
       });
+
+      // Paying online means leaving this page for the hosted payment form.
+      // The kitchen is deliberately NOT told until the hold actually lands —
+      // until then this is a checkout page the diner might still abandon.
+      if (order.checkout_url) {
+        setBasket(null);
+        window.location.href = order.checkout_url;
+        return;
+      }
+
       setPlaced(order);
       setBasket(null);
     } catch (e) {
@@ -309,7 +347,8 @@ export default function TableOrderPage() {
             {money(placed.grand_total_cents)}
           </p>
           <p className="max-w-sm text-sm text-white/40">
-            Pay at the table when your food arrives. Staff can see this order now.
+            Pay staff at the table when your food arrives. They can see this
+            order now.
           </p>
         </div>
       </Shell>
@@ -407,6 +446,26 @@ export default function TableOrderPage() {
                 </li>
               ))}
             </ul>
+            <div className="flex gap-2">
+              {(
+                [
+                  ["cod", "Pay at the table"],
+                  ["online", "Pay now"],
+                ] as [PayHow, string][]
+              ).map(([how, label]) => (
+                <button
+                  key={how}
+                  onClick={() => setPayHow(how)}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                    payHow === how
+                      ? "border-cyan-400/50 bg-cyan-400/15 text-cyan-300"
+                      : "border-white/10 bg-white/5 text-white/50"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <button
               onClick={placeOrder}
               disabled={placing}
@@ -421,7 +480,10 @@ export default function TableOrderPage() {
               {money(basket.goods_total_cents)}
             </button>
             <p className="text-center text-xs text-white/30">
-              Pay at the table. No delivery fee.
+              {payHow === "online"
+                ? "You will be taken to a secure payment page."
+                : "Pay staff at the table when your food arrives."}{" "}
+              No delivery fee.
             </p>
           </div>
         </div>
