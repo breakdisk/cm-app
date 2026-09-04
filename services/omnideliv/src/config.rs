@@ -108,6 +108,21 @@ pub struct Config {
     #[serde(default = "default_payments_url")]
     pub payments_url: String,
 
+    /// Whether to offer paying online at all.
+    ///
+    /// **Off by default, and deliberately.** `Online` checkout reaches a real
+    /// payment gateway, and a deployment whose gateway credentials are absent
+    /// or placeholder produces a "Pay now" button that fails every single time
+    /// — which is worse than no button, because the customer has no way to know
+    /// the difference between "this is broken" and "I did something wrong".
+    ///
+    /// A sandbox run against Network International on 2026-09-04 returned
+    /// `401 invalid_token` with the outlet reference literally set to
+    /// `sandbox-outlet-ref`: the credentials on that deployment were
+    /// placeholders. Turn this on once a real gateway answers.
+    #[serde(default)]
+    pub online_payment_enabled: bool,
+
     /// The currency every `Online` authorization is opened in. One value for
     /// the whole service: OmniDeliv has no multi-currency concept anywhere
     /// else in this crate (baskets, prices and fees are all bare cents with

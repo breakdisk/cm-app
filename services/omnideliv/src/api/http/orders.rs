@@ -67,6 +67,17 @@ async fn checkout(
         return Err((StatusCode::BAD_REQUEST, "tip cannot be negative".into()));
     }
 
+    // A client that ignores the flag on the scan response must not get a
+    // generic 500 from a gateway that was never going to answer. This is the
+    // one place that knows the difference between "payment failed" and
+    // "payment was never available here".
+    if req.payment_method == PaymentMethod::Online && !st.online_payment_enabled {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Online payment is not available here. Please pay on collection.".into(),
+        ));
+    }
+
     // Dine-in has no destination; delivery must have one. Checked against the
     // principal, never a default, so a delivery client that omits the fields
     // gets a 400 instead of an order routed to (0, 0).

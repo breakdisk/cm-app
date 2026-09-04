@@ -41,6 +41,12 @@ pub struct ScanResponse {
     pub venue_id: Uuid,
     pub venue_name: String,
     pub table_label: String,
+    /// Whether this deployment can take an online payment.
+    ///
+    /// The client hides the "Pay now" option when false. Sent on the scan
+    /// rather than discovered at checkout, because a payment choice that fails
+    /// only once the basket is full is the worst possible moment to find out.
+    pub online_payment: bool,
     /// Who sells at this venue.
     ///
     /// Without this a diner cannot reach a menu at all: `catalog/search`
@@ -223,6 +229,7 @@ async fn scan(
         venue_id: venue.id,
         venue_name: venue.name,
         table_label: table.label,
+        online_payment: st.online_payment_enabled,
         vendors: vendors
             .into_iter()
             .map(|(vendor_id, name)| VendorBrief { vendor_id, name })

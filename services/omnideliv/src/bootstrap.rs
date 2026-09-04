@@ -220,6 +220,7 @@ pub async fn run() -> anyhow::Result<()> {
         table_session_mins:  cfg.table_session_mins,
         table_session_cap:   cfg.table_session_cap,
         table_scan_base_url: cfg.table_scan_base_url.clone(),
+        online_payment_enabled: cfg.online_payment_enabled,
         scan_limiter:        scan_limiter.clone(),
     });
 
