@@ -3,12 +3,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    AssignmentStatus, Courier, CourierAssignment, CourierLocation, DispatchBlock, ProductKey,
+    AssignmentException, AssignmentStatus, Courier, CourierAssignment, CourierLocation,
+    DispatchBlock, ExceptionReason, ProductKey,
 };
 use crate::domain::repositories::CourierRepository;
 use crate::domain::entities::CourierLedger;
 use crate::infrastructure::db::{
-    AssignmentRepository, ClaimOutcome, CourierLedgerRepository, LocationRepository,
+    AssignmentRepository, ClaimOutcome, CourierLedgerRepository, ExceptionRepository,
+    LocationRepository,
 };
 use crate::infrastructure::messaging::{CourierEvent, CourierEvents};
 
@@ -17,6 +19,7 @@ pub struct DispatchService {
     assignments: Arc<dyn AssignmentRepository>,
     locations:   Arc<dyn LocationRepository>,
     ledgers:     Arc<dyn CourierLedgerRepository>,
+    exceptions:  Arc<dyn ExceptionRepository>,
     events:      Arc<dyn CourierEvents>,
     pay_bounds:  PayBounds,
     compliance:  CompliancePolicy,
@@ -77,6 +80,22 @@ pub fn payout_disposition(balance_cents: i64, cash_held_cents: i64) -> PayoutDis
         return PayoutDisposition::NothingOwed;
     }
     PayoutDisposition::Pay(balance_cents)
+}
+
+/// A no-op exception store for the test modules that are not about exceptions.
+///
+/// At file scope rather than per-module because nine of the eleven test modules
+/// `use super::*` and every one of them constructs a `DispatchService`.
+#[cfg(test)]
+struct NoExceptions;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl ExceptionRepository for NoExceptions {
+    async fn record(&self, _: &AssignmentException) -> anyhow::Result<bool> { Ok(true) }
+    async fn list_open(&self, _: Uuid, _: i64) -> anyhow::Result<Vec<AssignmentException>> {
+        Ok(vec![])
+    }
 }
 
 #[cfg(test)]
@@ -206,16 +225,27 @@ pub enum PositionReader {
 }
 
 impl DispatchService {
+    // Five repositories, an event sink and two policies. Every one is a real
+    // collaborator this service cannot work without, so the alternative to the
+    // count is a params struct that exists only to satisfy the lint.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         couriers: Arc<dyn CourierRepository>,
         assignments: Arc<dyn AssignmentRepository>,
         locations: Arc<dyn LocationRepository>,
         ledgers: Arc<dyn CourierLedgerRepository>,
         events: Arc<dyn CourierEvents>,
+        // After `events` rather than beside the other repositories: every test
+        // module constructs this positionally, and grouping it with the repos
+        // would have meant editing ten call sites to move one argument.
+        exceptions: Arc<dyn ExceptionRepository>,
         pay_bounds: PayBounds,
         compliance: CompliancePolicy,
     ) -> Self {
-        Self { couriers, assignments, locations, ledgers, events, pay_bounds, compliance }
+        Self {
+            couriers, assignments, locations, ledgers, exceptions, events,
+            pay_bounds, compliance,
+        }
     }
 
     /// Whether this deployment lets a compliance verdict withhold work.
@@ -709,6 +739,74 @@ impl DispatchService {
         Ok(true)
     }
 
+    /// A courier reports that this job cannot be completed.
+    ///
+    /// Records and publishes. Deliberately changes no assignment status and
+    /// credits no ledger — see D1/D2/D3, decided 2026-08-30. The goods are
+    /// still with the courier and the money question is open; both are settled
+    /// when ops resolves the exception, not here. A `raise_exception` that
+    /// completed the assignment would pay a courier for a delivery that did not
+    /// happen, and strand a prepaid customer's money with no path back.
+    ///
+    /// Returns false when the job is not this courier's, or is not `Claimed` —
+    /// the same shape `mark_arrived` uses, which the handler turns into a 404.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn raise_exception(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        assignment_id: Uuid,
+        reason: ExceptionReason,
+        note: Option<String>,
+        goods_disposition: Option<String>,
+        capture: Option<(f64, f64)>,
+        client_ref: Uuid,
+        device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<bool> {
+        let Some(a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
+            return Ok(false);
+        };
+        // Being offered a job is not carrying it, and a completed job has
+        // already ended. Only a claimed job can fail.
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
+
+        let e = AssignmentException::new(
+            tenant_id, assignment_id, a.courier_id, reason,
+            note, goods_disposition, capture, client_ref, device_timestamp,
+        );
+
+        // Persist before publishing. The row is the ops queue and the event is
+        // a notification; a published exception with no row is a task nobody
+        // can find once the topic's retention window closes.
+        let fresh = self.exceptions.record(&e).await?;
+        if !fresh {
+            // The offline queue replaying a tap that already landed. Not an
+            // error, and emphatically not a second event — ops would triage the
+            // same failure twice.
+            return Ok(true);
+        }
+
+        self.emit(CourierEvent::ExceptionRaised {
+            tenant_id,
+            product: a.product.as_str().to_string(),
+            external_ref: a.external_ref,
+            courier_id: a.courier_id,
+            exception_id: e.id,
+            reason: reason.as_str().to_string(),
+            device_timestamp,
+        })
+        .await;
+        Ok(true)
+    }
+
+    /// The ops queue: unresolved exceptions, oldest first.
+    pub async fn open_exceptions(&self, tenant_id: Uuid, limit: i64)
+        -> anyhow::Result<Vec<AssignmentException>> {
+        self.exceptions.list_open(tenant_id, limit).await
+    }
+
     /// A vendor's goods are in the bag.
     ///
     /// `user_id` is the authenticated caller and the assignment must be
@@ -1174,6 +1272,7 @@ mod claim_authorization {
             Arc::new(NoLocations),
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy::default(),
         );
@@ -1304,6 +1403,7 @@ mod payout_rules {
         DispatchService::new(
             Arc::new(NoCouriers), Arc::new(NoAssign), Arc::new(NoLoc), ledgers,
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy::default(),
         )
@@ -1471,6 +1571,7 @@ mod position_lookup {
             Arc::new(HeldFix),
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy::default(),
         );
@@ -1620,6 +1721,7 @@ mod position_lookup {
         DispatchService::new(
             Arc::new(NoCouriers), assignments, locations, Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy::default(),
         )
@@ -1774,6 +1876,7 @@ mod milestone_authorization {
                 CourierEvent::Arrived   { .. } => "arrived",
                 CourierEvent::Collected { .. } => "collected",
                 CourierEvent::Delivered { .. } => "delivered",
+                CourierEvent::ExceptionRaised { .. } => "exception_raised",
             });
             Ok(())
         }
@@ -1787,6 +1890,31 @@ mod milestone_authorization {
 
     fn courier() -> Courier {
         Courier::new(TENANT, Uuid::new_v4(), "A".into(), "B".into(), "+63".into())
+    }
+
+    /// Records what was written, and enforces the same uniqueness the database
+    /// index does, so the offline-replay behaviour is testable without Postgres.
+    #[derive(Default)]
+    struct MemExceptions {
+        rows: Mutex<Vec<AssignmentException>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ExceptionRepository for MemExceptions {
+        async fn record(&self, e: &AssignmentException) -> anyhow::Result<bool> {
+            let mut g = self.rows.lock().unwrap();
+            if g.iter().any(|x| x.assignment_id == e.assignment_id && x.client_ref == e.client_ref) {
+                return Ok(false);
+            }
+            g.push(e.clone());
+            Ok(true)
+        }
+        async fn list_open(&self, tenant_id: Uuid, _: i64)
+            -> anyhow::Result<Vec<AssignmentException>> {
+            Ok(self.rows.lock().unwrap().iter()
+                .filter(|e| e.tenant_id == tenant_id && e.resolved_at.is_none())
+                .cloned().collect())
+        }
     }
 
     /// One job, one courier it is addressed to, one who is not.
@@ -1836,6 +1964,7 @@ mod milestone_authorization {
 
         let ledgers = Arc::new(RecordingLedgers::default());
         let events  = Arc::new(RecordingEvents::default());
+        let exceptions = Arc::new(MemExceptions::default());
 
         let svc = DispatchService::new(
             Arc::new(Couriers { by_user: vec![(holder_user, holder), (other_user, other)] }),
@@ -1843,6 +1972,7 @@ mod milestone_authorization {
             Arc::new(NoLocations),
             ledgers.clone(),
             events.clone(),
+            exceptions.clone(),
             PayBounds::default(),
             CompliancePolicy::default(),
         );
@@ -1875,6 +2005,94 @@ mod milestone_authorization {
                    "the courier who did the job is the one credited");
         assert_eq!(saved[0].balance_cents, 3_500 - 38_900,
                    "earned 3500, now holding 38900 of the platform's cash");
+    }
+
+    /// The load-bearing guarantee of D2. If this fails, one tap from a phone
+    /// has settled an assignment whose goods are still in the courier's bag —
+    /// paying them for a delivery that did not happen, and stranding a prepaid
+    /// customer's money with nothing left to resolve it against.
+    #[tokio::test]
+    async fn raising_an_exception_moves_no_status_and_no_money() {
+        let f = fixture();
+
+        assert!(f.svc.raise_exception(
+            TENANT, f.holder, f.assignment, ExceptionReason::CannotPay,
+            Some("no cash at the door".into()), None, None, Uuid::new_v4(), None,
+        ).await.unwrap());
+
+        assert_eq!(f.assignments.rows.lock().unwrap()[0].status, AssignmentStatus::Claimed,
+                   "the assignment is still the courier's to finish");
+        assert!(f.ledgers.saved.lock().unwrap().is_empty(),
+                "no money moves on a courier's report alone");
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["exception_raised"]);
+        assert_eq!(f.svc.open_exceptions(TENANT, 50).await.unwrap().len(), 1);
+    }
+
+    /// The courier app queues writes offline and replays them, so this endpoint
+    /// WILL be called twice with one intent. A replay is one exception and one
+    /// event — two would put the same failure in front of ops twice.
+    #[tokio::test]
+    async fn a_replayed_client_ref_records_once_and_emits_once() {
+        let f = fixture();
+        let client_ref = Uuid::new_v4();
+
+        for _ in 0..3 {
+            assert!(f.svc.raise_exception(
+                TENANT, f.holder, f.assignment, ExceptionReason::CustomerUnreachable,
+                None, None, None, client_ref, None,
+            ).await.unwrap(), "a replay is success, not an error");
+        }
+
+        assert_eq!(f.svc.open_exceptions(TENANT, 50).await.unwrap().len(), 1);
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["exception_raised"]);
+    }
+
+    /// Assignment ids are handed to the offering product, so they are not
+    /// secret. Without the ownership check any authenticated user in the tenant
+    /// could fail somebody else's job.
+    #[tokio::test]
+    async fn another_couriers_job_cannot_be_failed() {
+        let f = fixture();
+
+        assert!(!f.svc.raise_exception(
+            TENANT, f.other, f.assignment, ExceptionReason::GoodsDamaged,
+            None, None, None, Uuid::new_v4(), None,
+        ).await.unwrap());
+
+        assert!(f.svc.open_exceptions(TENANT, 50).await.unwrap().is_empty());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+    }
+
+    /// Being offered a job is not carrying it. `offer_to_nearest` addresses one
+    /// job to several couriers and only the winner's row is claimed; the losers
+    /// keep a readable assignment id.
+    #[tokio::test]
+    async fn a_job_that_was_never_claimed_cannot_fail() {
+        let f = fixture_in(AssignmentStatus::Offered);
+
+        assert!(!f.svc.raise_exception(
+            TENANT, f.holder, f.assignment, ExceptionReason::AddressUnreachable,
+            None, None, None, Uuid::new_v4(), None,
+        ).await.unwrap());
+
+        assert!(f.svc.open_exceptions(TENANT, 50).await.unwrap().is_empty());
+    }
+
+    /// D4: the goods have to be accounted for somewhere, and until a return leg
+    /// exists that somewhere is free text the courier wrote.
+    #[tokio::test]
+    async fn the_goods_disposition_is_kept_verbatim() {
+        let f = fixture();
+        f.svc.raise_exception(
+            TENANT, f.holder, f.assignment, ExceptionReason::CustomerRefused,
+            Some("refused at the door".into()),
+            Some("left with the building concierge".into()),
+            Some((14.5995, 120.9842)), Uuid::new_v4(), None,
+        ).await.unwrap();
+
+        let open = f.svc.open_exceptions(TENANT, 50).await.unwrap();
+        assert_eq!(open[0].goods_disposition.as_deref(), Some("left with the building concierge"));
+        assert_eq!(open[0].capture_lat, Some(14.5995));
     }
 
     /// The assignment ids are handed to the dispatching product, so they are
@@ -2130,6 +2348,7 @@ mod credit_idempotency {
             Arc::new(NoLocations),
             ledgers.clone(),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy::default(),
         );
@@ -2278,6 +2497,7 @@ mod registration_compliance {
             Arc::new(NoLoc),
             Arc::new(NoLedgers),
             events,
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy { enforce: false, jurisdiction: jurisdiction.to_owned() },
         );
@@ -2493,6 +2713,7 @@ mod availability {
             Arc::new(NoLocations),
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy { enforce, jurisdiction: "PH".into() },
         );
@@ -2832,6 +3053,7 @@ mod losing_offers {
             Arc::new(NoLocations),
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy::default(),
         );
@@ -3049,6 +3271,7 @@ mod courier_admin {
             Arc::new(NoLocations),
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            Arc::new(NoExceptions),
             PayBounds::default(),
             CompliancePolicy::default(),
         );
