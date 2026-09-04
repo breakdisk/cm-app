@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, ChevronRight, Loader2, Plus, Store, Utensils } from "lucide-react";
 
-import { VenueForm } from "@/components/storefront/venue-form";
+import { VenueForm } from "@/components/venues/venue-form";
 import {
   DOW_LABELS,
   minuteToHhmm,
@@ -117,7 +117,7 @@ export default function VenuesPage() {
             return (
               <li key={v.venue_id}>
                 <Link
-                  href={`/storefront/venues/${v.venue_id}`}
+                  href={`/venues/${v.venue_id}`}
                   className="group flex h-full flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-xl transition hover:border-cyan-neon/30 hover:bg-white/[0.06]"
                 >
                   <div className="flex items-start justify-between gap-3">

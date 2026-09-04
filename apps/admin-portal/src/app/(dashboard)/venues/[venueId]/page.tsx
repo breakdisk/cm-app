@@ -23,13 +23,13 @@ import {
   Utensils,
 } from "lucide-react";
 
-import { TablePrintSheet } from "@/components/storefront/table-print-sheet";
+import { TablePrintSheet } from "@/components/venues/table-print-sheet";
 import {
   daysFromHours,
   hoursFromDays,
   HoursEditor,
   type DayRow,
-} from "@/components/storefront/hours-editor";
+} from "@/components/venues/hours-editor";
 import {
   minuteToHhmm,
   notOrderableReason,
@@ -218,7 +218,7 @@ export default function VenueDetailPage() {
     setError(null);
     try {
       await venuesApi.remove(venueId);
-      window.location.href = "/storefront/venues";
+      window.location.href = "/venues";
     } catch (e) {
       // The server refuses while tables remain, and says how many. That message
       // is more useful than anything this screen could invent.
@@ -263,9 +263,19 @@ export default function VenueDetailPage() {
   }
 
   const warning = notOrderableReason(venue);
+  /**
+   * Only approved vendors may be put on a table.
+   *
+   * `admin/vendors` returns every vendor including `onboarding` ones, and
+   * nothing downstream re-checks status: `vendor_is_at_venue` is the only gate
+   * on a table order, so linking an unapproved store would put it in front of
+   * diners without anyone having reviewed it. Approval is a deliberate second
+   * act — see the note on the vendor review queue.
+   */
   const linkable = allVendors.filter(
-    (v) => !linked.some((l) => l.vendor_id === v.id),
+    (v) => v.status === "active" && !linked.some((l) => l.vendor_id === v.id),
   );
+  const awaitingApproval = allVendors.filter((v) => v.status !== "active").length;
 
   return (
     <div className="space-y-6">
@@ -401,6 +411,17 @@ export default function VenueDetailPage() {
             </ul>
           )}
 
+          {awaitingApproval > 0 && (
+            <p className="mt-2 text-xs text-white/40">
+              {awaitingApproval} vendor{awaitingApproval === 1 ? " is" : "s are"} not
+              approved yet and cannot be added.{" "}
+              <Link href="/vendors" className="text-cyan-neon underline-offset-2 hover:underline">
+                Review them
+              </Link>
+              .
+            </p>
+          )}
+
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <select
               value={vendorToLink}
@@ -410,7 +431,7 @@ export default function VenueDetailPage() {
             >
               <option value="">
                 {linkable.length === 0
-                  ? "No other vendors available"
+                  ? "No approved vendors available"
                   : "Add a vendor…"}
               </option>
               {linkable.map((v) => (
@@ -503,7 +524,7 @@ export default function VenueDetailPage() {
 function BackLink() {
   return (
     <Link
-      href="/storefront/venues"
+      href="/venues"
       className="inline-flex items-center gap-1.5 text-sm text-white/50 transition hover:text-white"
     >
       <ArrowLeft className="h-4 w-4" />

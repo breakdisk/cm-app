@@ -1,5 +1,13 @@
 /**
- * OmniDeliv venues and tables — merchant-portal client.
+ * OmniDeliv venues and tables — admin/ops client.
+ *
+ * **Operator-owned, not merchant-owned.** Every route here needs
+ * `vendors:manage`, which `rbac.rs` deliberately withholds from the `merchant`
+ * role — that same permission approves vendor applications, and an applicant
+ * must not review their own. A venue is also a multi-vendor object by nature: a
+ * foodcourt is one venue with a stall per vendor, and each of those vendors is a
+ * separate merchant account the operator approved. No single merchant can, or
+ * should, link another merchant's stall to a venue.
  *
  * The setup half of QR table ordering. Everything downstream of "a venue and a
  * table exist" shipped and deployed working; nothing could create either, so
@@ -12,7 +20,9 @@
  * the bundle at build time and wrong for every tenant it was not built for.
  */
 import { authFetch } from "@/lib/auth/auth-fetch";
-import { API_BASE } from "@/lib/api/endpoints";
+
+// Matches every other client in this portal.
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
 /** 1 = Monday .. 7 = Sunday, matching ISO-8601 and the server. */
 export interface OpeningWindow {

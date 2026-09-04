@@ -19,7 +19,7 @@ import {
   hoursFromDays,
   HoursEditor,
   type DayRow,
-} from "@/components/storefront/hours-editor";
+} from "@/components/venues/hours-editor";
 
 /**
  * Common offsets, spelled out. Both live markets are DST-free, which is what

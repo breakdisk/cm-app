@@ -48,6 +48,7 @@
     "react-hook-form": "^7.51.0",
     "react-intersection-observer": "^9.10.0",
     "react-map-gl": "^7.1.0",
+    "react-qr-code": "^2.0.21",
     "recharts": "^2.12.0",
     "sonner": "^1.5.0",
     "tailwind-merge": "^2.3.0",
