@@ -13,35 +13,13 @@
 import { useState } from "react";
 import { Loader2, Plus, X } from "lucide-react";
 
+import { venuesApi, type VenueKind, type VenueRow } from "@/lib/api/venues";
 import {
-  DOW_LABELS,
-  hhmmToMinute,
-  minuteToHhmm,
-  venuesApi,
-  type OpeningWindow,
-  type VenueKind,
-  type VenueRow,
-} from "@/lib/api/venues";
-
-/** One editable row per day. `null` times mean the day is closed. */
-interface DayRow {
-  dow: number;
-  open: boolean;
-  from: string;
-  to: string;
-}
-
-function defaultDays(): DayRow[] {
-  // Open all week is the common case and the safe default: the alternative
-  // default (empty) produces a venue whose codes never scan, with no error to
-  // explain it.
-  return Array.from({ length: 7 }, (_, i) => ({
-    dow: i + 1,
-    open: true,
-    from: "09:00",
-    to: "22:00",
-  }));
-}
+  defaultDays,
+  hoursFromDays,
+  HoursEditor,
+  type DayRow,
+} from "@/components/storefront/hours-editor";
 
 /**
  * Common offsets, spelled out. Both live markets are DST-free, which is what
@@ -73,40 +51,11 @@ export function VenueForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const setDay = (dow: number, patch: Partial<DayRow>) =>
-    setDays((ds) => ds.map((d) => (d.dow === dow ? { ...d, ...patch } : d)));
-
-  /** Apply Monday's times to every open day — the usual case in one click. */
-  const copyMonday = () => {
-    const mon = days.find((d) => d.dow === 1);
-    if (!mon) return;
-    setDays((ds) => ds.map((d) => ({ ...d, from: mon.from, to: mon.to })));
-  };
-
-  const buildHours = (): OpeningWindow[] | string => {
-    const out: OpeningWindow[] = [];
-    for (const d of days) {
-      if (!d.open) continue;
-      const from = hhmmToMinute(d.from);
-      const to = hhmmToMinute(d.to);
-      if (from === null || to === null) {
-        return `${DOW_LABELS[d.dow - 1]}: use 24-hour times like 09:00.`;
-      }
-      // A close at or before the open is how you say "past midnight" — 18:00 to
-      // 01:00 becomes 1080..1500. Without this the server would reject it as a
-      // window that can never match, which is true of 1080..60 but not of what
-      // the operator meant.
-      const close = to <= from ? to + 1440 : to;
-      out.push({ dow: d.dow, open_minute: from, close_minute: close });
-    }
-    return out;
-  };
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    const hours = buildHours();
+    const hours = hoursFromDays(days);
     if (typeof hours === "string") {
       setError(hours);
       return;
@@ -128,7 +77,6 @@ export function VenueForm({
     }
   };
 
-  const openCount = days.filter((d) => d.open).length;
 
   return (
     <form
@@ -203,73 +151,7 @@ export function VenueForm({
         </label>
       </div>
 
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs font-medium uppercase tracking-wide text-white/50">
-            Opening hours
-          </span>
-          <button
-            type="button"
-            onClick={copyMonday}
-            className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-white/60 transition hover:bg-white/10 hover:text-white"
-          >
-            Copy Monday to all
-          </button>
-        </div>
-
-        <div className="space-y-2">
-          {days.map((d) => (
-            <div
-              key={d.dow}
-              className="flex flex-wrap items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 sm:flex-nowrap"
-            >
-              <label className="flex w-24 shrink-0 items-center gap-2 text-sm text-white/70">
-                <input
-                  type="checkbox"
-                  checked={d.open}
-                  onChange={(e) => setDay(d.dow, { open: e.target.checked })}
-                  className="h-4 w-4 rounded border-white/20 bg-white/10 accent-cyan-neon"
-                />
-                {DOW_LABELS[d.dow - 1]}
-              </label>
-
-              {d.open ? (
-                <div className="flex flex-1 flex-wrap items-center gap-2">
-                  <input
-                    type="time"
-                    value={d.from}
-                    onChange={(e) => setDay(d.dow, { from: e.target.value })}
-                    className={`${FIELD} max-w-[8rem]`}
-                  />
-                  <span className="text-white/30">to</span>
-                  <input
-                    type="time"
-                    value={d.to}
-                    onChange={(e) => setDay(d.dow, { to: e.target.value })}
-                    className={`${FIELD} max-w-[8rem]`}
-                  />
-                  {hhmmToMinute(d.to) !== null &&
-                    hhmmToMinute(d.from) !== null &&
-                    hhmmToMinute(d.to)! <= hhmmToMinute(d.from)! && (
-                      <span className="text-xs text-white/40">next day</span>
-                    )}
-                </div>
-              ) : (
-                <span className="flex-1 text-sm text-white/30">Closed</span>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {openCount === 0 && (
-          // The trap this whole component exists to prevent, stated before it
-          // can happen rather than discovered from stickers that do nothing.
-          <p className="rounded-lg border border-amber-signal/30 bg-amber-signal/10 px-3 py-2 text-sm text-amber-signal">
-            No days are open, so every code printed for this venue will refuse every
-            scan. You can save it and set hours later.
-          </p>
-        )}
-      </div>
+      <HoursEditor days={days} onChange={setDays} />
 
       {error && (
         <p className="rounded-lg border border-red-signal/30 bg-red-signal/10 px-3 py-2 text-sm text-red-signal">

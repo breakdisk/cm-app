@@ -108,35 +108,47 @@ async fn handle_authorized(
         return Ok(());
     }
 
-    let (Some(lat), Some(lng)) = (order.delivery_lat, order.delivery_lng) else {
-        // Cannot happen for an order placed through this feature — `place`
-        // always sets both — but an order is never worth crash-looping the
-        // consumer over. Leave it `Placed`; the recovery sweep's no-courier
-        // timeout will eventually void it.
-        tracing::error!(%order_id, "authorized online order has no delivery point — cannot offer a courier");
-        orders.save(&order).await?;
-        return Ok(());
-    };
+    // A dine-in order is paid online but never dispatched: the food crosses a
+    // room. It has no delivery point by construction, so it must skip the
+    // courier offer entirely rather than fall into the "no delivery point"
+    // error path below — which returned early and therefore never reached the
+    // notification loop, leaving a paid table order the kitchen was never told
+    // about.
+    let offered: Vec<uuid::Uuid> = if order.fulfilment.needs_a_courier() {
+        let (Some(lat), Some(lng)) = (order.delivery_lat, order.delivery_lng) else {
+            // Cannot happen for a delivery order placed through this feature —
+            // `place` always sets both — but an order is never worth
+            // crash-looping the consumer over. Leave it `Placed`; the recovery
+            // sweep's no-courier timeout will eventually void it.
+            tracing::error!(%order_id, "authorized delivery order has no delivery point — cannot offer a courier");
+            orders.save(&order).await?;
+            return Ok(());
+        };
 
-    let offered = dispatch
-        .offer(
-            tenant_id, order.id, lat, lng, FIRST_OFFER_RADIUS_KM,
-            order.courier_trip_cents, order.tip_cents, order.cod_amount_cents(),
-            order.pending_offer_card.clone(),
-        )
-        .await?;
+        let offered = dispatch
+            .offer(
+                tenant_id, order.id, lat, lng, FIRST_OFFER_RADIUS_KM,
+                order.courier_trip_cents, order.tip_cents, order.cod_amount_cents(),
+                order.pending_offer_card.clone(),
+            )
+            .await?;
 
-    if offered.is_empty() {
-        // Not fatal: this converges with the ordinary "offered but nobody
-        // accepted" case, and the recovery sweep's no-courier timeout voids
-        // either one the same way.
-        tracing::warn!(%order_id, "payment authorized but no courier could be offered");
-    } else {
-        order.courier_task_id = offered.first().copied();
-        if let Err(e) = order.courier_offered() {
-            tracing::error!(err = %e, %order_id, "could not mark the order awaiting a courier");
+        if offered.is_empty() {
+            // Not fatal: this converges with the ordinary "offered but nobody
+            // accepted" case, and the recovery sweep's no-courier timeout voids
+            // either one the same way.
+            tracing::warn!(%order_id, "payment authorized but no courier could be offered");
+        } else {
+            order.courier_task_id = offered.first().copied();
+            if let Err(e) = order.courier_offered() {
+                tracing::error!(err = %e, %order_id, "could not mark the order awaiting a courier");
+            }
         }
-    }
+        offered
+    } else {
+        tracing::info!(%order_id, "dine-in order paid — no courier to offer, telling the kitchen");
+        Vec::new()
+    };
 
     orders.save(&order).await?;
 

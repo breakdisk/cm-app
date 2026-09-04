@@ -320,9 +320,12 @@ impl CheckoutService {
         let card = build_offer_card(&card_stops, plan.total_distance_m as i64, deadline_hint_mins);
 
         // A dine-in order has no courier leg at all: the food crosses a room.
-        // Nothing is offered, so there is no NoCourier failure to handle and
-        // the order simply stands placed, waiting on the kitchen.
-        if !fulfilment.needs_a_courier() {
+        //
+        // This used to return here unconditionally, which silently discarded
+        // `payment_method` — a diner asking to pay online got an unpaid order
+        // and no checkout page, because the match below was never reached. Only
+        // the COD half genuinely has nothing left to do.
+        if !fulfilment.needs_a_courier() && payment_method == PaymentMethod::Cod {
             return Ok(PlaceOutcome { order, checkout_url: None });
         }
 
@@ -373,13 +376,19 @@ impl CheckoutService {
                 // that currently ever passes anything other than 0 or the full
                 // total to `with_payment`.
                 let prepaid_amount_cents = order.grand_total_cents;
-                order = order
-                    .with_payment(PaymentMethod::Online, prepaid_amount_cents)
+                order = order.with_payment(PaymentMethod::Online, prepaid_amount_cents);
+
+                // The offer card is for a courier, so a dine-in order gets
+                // none. Attaching one anyway would leave the authorized
+                // consumer holding a card for a job that must never be
+                // offered — the food crosses a room.
+                if fulfilment.needs_a_courier() {
                     // Held for the `payment.intent.authorized` consumer, which
                     // offers the job with this exact card rather than trying to
                     // reconstruct one later from less information — see the
                     // field doc comment on `Order::pending_offer_card`.
-                    .with_pending_offer_card(Some(card));
+                    order = order.with_pending_offer_card(Some(card));
+                }
 
                 let return_url = format!(
                     "{}?order_id={}",
@@ -657,6 +666,67 @@ mod place_tests {
             outcome.order.status, OrderStatus::AwaitingCourier,
             "COD offers the job to couriers immediately, reaching the same state as today",
         );
+    }
+
+    /// A diner paying on their phone.
+    ///
+    /// This used to be impossible: `place` returned for any dine-in order
+    /// *before* the payment match, so `payment_method` was silently discarded
+    /// and `checkout_url` was always `None`. A diner asking to pay online got
+    /// an unpaid order and no payment page, with nothing reporting a problem.
+    #[tokio::test]
+    async fn a_dine_in_order_can_be_paid_online() {
+        let tenant_id = tenant();
+        let v = a_vendor(tenant_id);
+        let b = a_basket(tenant_id, &v);
+        let dispatch = Arc::new(FakeDispatch::default());
+        let payments = Arc::new(FakePayments::default());
+        let svc = service(dispatch.clone(), payments.clone(), v, b.clone());
+
+        let outcome = svc
+            .place(tenant_id, b.id, 0, 0.0, 0.0, "diner@table", None, None,
+                   PaymentMethod::Online, Fulfilment::DineIn)
+            .await
+            .expect("a diner may pay online");
+
+        assert!(outcome.checkout_url.is_some(), "the diner needs somewhere to pay");
+        assert_eq!(*payments.authorize_calls.lock().unwrap(), 1, "a real hold is opened");
+        assert_eq!(outcome.order.payment_method, PaymentMethod::Online);
+        assert_eq!(outcome.order.prepaid_amount_cents, outcome.order.grand_total_cents);
+
+        // Still dine-in: no courier, and none of the delivery economics.
+        assert!(
+            dispatch.cod_offered.lock().unwrap().is_empty(),
+            "the food crosses a room -- no courier may ever be offered",
+        );
+        assert_eq!(outcome.order.delivery_fee_cents, 0);
+        assert_eq!(outcome.order.courier_trip_cents, 0);
+        assert!(
+            outcome.order.pending_offer_card.is_none(),
+            "an offer card is for a courier; holding one would leave the authorized              consumer with a card for a job that must never be offered",
+        );
+    }
+
+    /// The other half: paying at the table is unchanged, and still opens no
+    /// hold at all.
+    #[tokio::test]
+    async fn a_dine_in_cod_order_opens_no_payment_at_all() {
+        let tenant_id = tenant();
+        let v = a_vendor(tenant_id);
+        let b = a_basket(tenant_id, &v);
+        let dispatch = Arc::new(FakeDispatch::default());
+        let payments = Arc::new(FakePayments::default());
+        let svc = service(dispatch.clone(), payments.clone(), v, b.clone());
+
+        let outcome = svc
+            .place(tenant_id, b.id, 0, 0.0, 0.0, "diner@table", None, None,
+                   PaymentMethod::Cod, Fulfilment::DineIn)
+            .await
+            .expect("paying at the table succeeds");
+
+        assert!(outcome.checkout_url.is_none(), "nothing to pay online");
+        assert_eq!(*payments.authorize_calls.lock().unwrap(), 0);
+        assert!(dispatch.cod_offered.lock().unwrap().is_empty());
     }
 
     /// Online checkout must open an authorization hold and hand back a

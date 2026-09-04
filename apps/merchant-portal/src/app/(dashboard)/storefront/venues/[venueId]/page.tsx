@@ -25,7 +25,12 @@ import {
 
 import { TablePrintSheet } from "@/components/storefront/table-print-sheet";
 import {
-  DOW_LABELS,
+  daysFromHours,
+  hoursFromDays,
+  HoursEditor,
+  type DayRow,
+} from "@/components/storefront/hours-editor";
+import {
   minuteToHhmm,
   notOrderableReason,
   venuesApi,
@@ -82,6 +87,9 @@ export default function VenueDetailPage() {
   const [vendorToLink, setVendorToLink] = useState("");
   const [linking, setLinking] = useState(false);
   const [trading, setTrading_] = useState(false);
+  // `null` until the venue loads; editing is off until then.
+  const [days, setDays] = useState<DayRow[] | null>(null);
+  const [savingHours, setSavingHours] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -93,6 +101,9 @@ export default function VenueDetailPage() {
       setVenue(v);
       setTables(t);
       setLinked(l);
+      // Re-seeded on every refresh, so the editor always reflects what is
+      // actually stored rather than a stale local edit.
+      setDays(daysFromHours(v.hours));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load this venue");
@@ -168,6 +179,31 @@ export default function VenueDetailPage() {
       setError(e instanceof Error ? e.message : "Could not change trading status");
     } finally {
       setTrading_(false);
+    }
+  };
+
+  /**
+   * Hours were previously set once at creation and then frozen — there was no
+   * editor anywhere but the create form. A venue that changes its hours, or
+   * runs a 24-hour sale, had no way to say so.
+   */
+  const saveHours = async () => {
+    if (!days) return;
+    const hours = hoursFromDays(days);
+    if (typeof hours === "string") {
+      setError(hours);
+      return;
+    }
+    setSavingHours(true);
+    setError(null);
+    try {
+      // The response carries a fresh `not_orderable`, so the warning banner
+      // updates in the same beat as the hours that caused it.
+      setVenue(await venuesApi.update(venueId, { hours }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the opening hours");
+    } finally {
+      setSavingHours(false);
     }
   };
 
@@ -312,33 +348,29 @@ export default function VenueDetailPage() {
           </p>
         )}
 
-        <section className="rounded-xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-xl">
-          <h2 className="font-heading text-base font-semibold text-white">Opening hours</h2>
-          <p className="mt-1 text-xs text-white/40">
-            Local time at the venue (UTC
-            {venue.utc_offset_minutes >= 0 ? "+" : "−"}
-            {minuteToHhmm(Math.abs(venue.utc_offset_minutes))}).
-          </p>
-          {venue.hours.length === 0 ? (
-            <p className="mt-3 text-sm text-white/40">None set — nothing will scan.</p>
-          ) : (
-            <ul className="mt-3 flex flex-wrap gap-2">
-              {[...venue.hours]
-                .sort((a, b) => a.dow - b.dow)
-                .map((w, i) => (
-                  <li
-                    key={`${w.dow}-${i}`}
-                    className="rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1 text-xs text-white/60"
-                  >
-                    <span className="text-white/80">{DOW_LABELS[w.dow - 1]}</span>{" "}
-                    {minuteToHhmm(w.open_minute)}–{minuteToHhmm(w.close_minute)}
-                    {w.close_minute > 1440 && (
-                      <span className="text-white/30"> (+1d)</span>
-                    )}
-                  </li>
-                ))}
-            </ul>
-          )}
+        <section className="space-y-4 rounded-xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-xl">
+          <div>
+            <h2 className="font-heading text-base font-semibold text-white">
+              Opening hours
+            </h2>
+            <p className="mt-1 text-xs text-white/40">
+              Local time at the venue (UTC
+              {venue.utc_offset_minutes >= 0 ? "+" : "\u2212"}
+              {minuteToHhmm(Math.abs(venue.utc_offset_minutes))}). Codes refuse
+              to scan outside these hours.
+            </p>
+          </div>
+
+          {days && <HoursEditor days={days} onChange={setDays} />}
+
+          <button
+            onClick={saveHours}
+            disabled={savingHours || !days}
+            className="inline-flex items-center gap-2 rounded-lg border border-cyan-neon/40 bg-cyan-neon/10 px-4 py-2 text-sm font-medium text-cyan-neon transition hover:bg-cyan-neon/20 disabled:opacity-40"
+          >
+            {savingHours && <Loader2 className="h-4 w-4 animate-spin" />}
+            Save opening hours
+          </button>
         </section>
 
         <section className="rounded-xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-xl">
