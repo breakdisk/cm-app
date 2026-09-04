@@ -50,6 +50,8 @@ interface ScanResponse {
   venue_id: string;
   venue_name: string;
   table_label: string;
+  /** False when this deployment has no working payment gateway. */
+  online_payment: boolean;
   vendors: VendorBrief[];
 }
 
@@ -285,7 +287,12 @@ export default function TableOrderPage() {
       // charged and no courier is dispatched.
       const order = await call<PlacedOrder>("/v1/omnideliv/orders/checkout", {
         method: "POST",
-        body: JSON.stringify({ basket_id: basket.id, payment_method: payHow }),
+        body: JSON.stringify({
+          basket_id: basket.id,
+          // Never send `online` where it is unavailable — the choice is
+          // hidden, but a stale state must not reach the server either.
+          payment_method: session?.online_payment ? payHow : "cod",
+        }),
       });
 
       // Paying online means leaving this page for the hosted payment form.
@@ -446,6 +453,11 @@ export default function TableOrderPage() {
                 </li>
               ))}
             </ul>
+            {/* Offered only where online payment actually works. A payment
+                option that fails every time is worse than no option: the
+                customer cannot tell "this is broken" from "I did something
+                wrong". */}
+            {session.online_payment && (
             <div className="flex gap-2">
               {(
                 [
@@ -466,6 +478,7 @@ export default function TableOrderPage() {
                 </button>
               ))}
             </div>
+            )}
             <button
               onClick={placeOrder}
               disabled={placing}

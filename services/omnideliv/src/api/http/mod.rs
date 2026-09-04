@@ -53,6 +53,9 @@ pub struct AppState {
     /// an unbounded session factory.
     pub table_session_cap:  i64,
     pub table_scan_base_url: String,
+    /// See `Config::online_payment_enabled`. Surfaced to the diner client so a
+    /// payment option that cannot work is never offered.
+    pub online_payment_enabled: bool,
     /// Bounds the unauthenticated scan endpoint. Per-process — see the
     /// module docs for what that does and does not buy.
     pub scan_limiter:        Arc<scan_limit::ScanLimiter>,
