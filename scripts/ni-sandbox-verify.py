@@ -89,21 +89,77 @@ def die(msg):
     sys.exit(1)
 
 
+# Cached for the life of the process, exactly as the adapter caches it.
+_ACCESS_TOKEN = None
+
+
+def _read_body(e):
+    """Read an error body without letting a truncated response mask the error.
+
+    NI's 4xx responses have been observed to declare a Content-Length one byte
+    longer than what they send, which makes a plain `.read()` raise
+    `IncompleteRead` — and then the *real* status code is lost behind a
+    traceback. The partial body is what we actually want.
+    """
+    try:
+        return e.read().decode(errors="replace")
+    except Exception as inner:  # noqa: BLE001
+        partial = getattr(inner, "partial", b"")
+        return partial.decode(errors="replace") if partial else f"<unreadable: {type(inner).__name__}>"
+
+
+def access_token(api_key):
+    """Exchange the API key for the bearer token NI actually accepts.
+
+    **The step the adapter was missing.** Sending the raw API key as a bearer
+    makes NI try to decode it as a JWT:
+
+        401 invalid_token — "Invalid JWT serialization: Missing dot delimiter(s)"
+
+    Endpoint, media type and scheme confirmed against the sandbox: plain
+    `application/json` is refused with 415, which is how we know the
+    `vnd.ni-identity.v1+json` type is the required one.
+    """
+    global _ACCESS_TOKEN
+    if _ACCESS_TOKEN:
+        return _ACCESS_TOKEN
+
+    url = BASE_URL.rstrip("/") + "/identity/auth/access-token"
+    req = urllib.request.Request(url, data=b"{}", method="POST")
+    # The portal's key is already base64 of `<id>:<secret>`, so it is passed
+    # through as the Basic credential rather than re-encoded.
+    req.add_header("Authorization", "Basic " + api_key.strip())
+    req.add_header("Content-Type", "application/vnd.ni-identity.v1+json")
+    req.add_header("Accept", "application/vnd.ni-identity.v1+json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            _ACCESS_TOKEN = json.loads(resp.read().decode())["access_token"]
+            return _ACCESS_TOKEN
+    except urllib.error.HTTPError as e:
+        print("  Could not exchange the API key for an access token.")
+        print(f"  NI returned {e.code}: {_read_body(e)}")
+        print()
+        print("  Nothing else can be checked until this succeeds. Every NI call")
+        print("  needs this token, so a failure here means the key is not valid")
+        print("  for this environment -- a production key against the sandbox")
+        print("  host would look exactly like this.")
+        sys.exit(1)
+
+
 def post_json(url, payload, api_key):
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
-    # Mirrors reqwest's `.bearer_auth(api_key)` in the adapter.
-    req.add_header("Authorization", "Bearer " + api_key)
+    # The exchanged token, not the raw key -- see `access_token`.
+    req.add_header("Authorization", "Bearer " + access_token(api_key))
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        raw = e.read().decode(errors="replace")
         # The adapter captures the error body too. If this comes back
         # unreadable, production debugging of a declined charge is just as blind.
-        return e.code, raw
+        return e.code, _read_body(e)
 
 
 def main():
