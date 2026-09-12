@@ -13,12 +13,16 @@ use serde::{Deserialize, Serialize};
 
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_errors::AppError;
+use logisticos_types::Currency;
 
 use crate::api::http::AppState;
 use crate::application::commands::AddressInput;
 use crate::domain::entities::shipment::{ae_base_fee_for, ae_piece_fee_for};
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
-use crate::domain::value_objects::{ServiceType, ShipmentDimensions};
+use crate::domain::value_objects::{
+    price_accessorials_itemised, AccessorialRequest, PricedAccessorial, ServiceType,
+    ShipmentDimensions,
+};
 
 /// Quote token validity — short enough that a stale review screen can't be
 /// used to lock in a price from an hour ago, long enough to cover filling out
@@ -49,6 +53,24 @@ fn billable_weight_grams(
     scale_grams.max(volumetric)
 }
 
+/// The tenant's billing currency as a `Currency`.
+///
+/// An unrecognised claim is a 422 rather than a default, because defaulting would
+/// price a whole market off the wrong card.
+fn parse_currency(code: &str) -> Result<Currency, AppError> {
+    match code {
+        "PHP" => Ok(Currency::PHP),
+        "USD" => Ok(Currency::USD),
+        "SGD" => Ok(Currency::SGD),
+        "MYR" => Ok(Currency::MYR),
+        "IDR" => Ok(Currency::IDR),
+        "AED" => Ok(Currency::AED),
+        other => Err(AppError::Validation(format!(
+            "Tenant currency {other} is not a currency this service can price in"
+        ))),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct QuoteRequest {
     pub service_type: String,
@@ -67,6 +89,11 @@ pub struct QuoteRequest {
     pub width_cm: Option<u32>,
     #[serde(default)]
     pub height_cm: Option<u32>,
+
+    /// e.g. `[{ "code": "helper", "units": 2 }, { "code": "haulaway" }]`.
+    /// Priced server-side; the caller states which and how many, never the price.
+    #[serde(default)]
+    pub accessorials: Vec<AccessorialRequest>,
 }
 
 #[derive(Deserialize)]
@@ -92,15 +119,14 @@ pub struct QuoteBreakdownView {
     pub currency: String,
     /// Sum of `carriage_rows`.
     pub carriage_cents: i64,
-    /// Sum of `items`. Zero until the accessorial rate card lands.
+    /// Sum of `items`. Zero when none were requested.
     pub accessorial_cents: i64,
     /// `carriage_cents + accessorial_cents`. Never computed independently.
     pub total_cents: i64,
     /// Base / distance / weight — the three rows the Review screen renders.
     pub carriage_rows: Vec<PriceRow>,
-    /// Priced accessorials. Empty until the accessorial rate card lands; the
-    /// field ships now so the app never has to branch on it appearing later.
-    pub items: Vec<serde_json::Value>,
+    /// Priced accessorials, from `price_accessorials_itemised`.
+    pub items: Vec<PricedAccessorial>,
 }
 
 #[derive(Serialize)]
@@ -210,13 +236,13 @@ pub async fn get_quote(
 
         // The invariant the Review screen depends on. A drift here is a wrong
         // price shown to a customer, so it fails the request rather than
-        // rendering rows that do not add up. Extend this when accessorials
-        // land — do not add a second guard.
+        // rendering rows that do not add up. One guard, covering carriage and
+        // accessorials both — never two.
         let summed: i64 = rows.iter().map(|r| r.amount_cents).sum();
         if summed != q.breakdown.total_cents {
             return Err(AppError::Internal(anyhow::anyhow!(
-                "quote rows sum to {summed} but total is {} — refusing to return \
-                 a breakdown that does not reconcile",
+                "quote carriage rows sum to {summed} but total is {} — refusing to \
+                 return a breakdown that does not reconcile",
                 q.breakdown.total_cents
             )));
         }
@@ -255,6 +281,15 @@ pub async fn get_quote(
         (amount, "AED".into(), "parcel_tariff", None, None, None, None)
     };
 
+    // Accessorials price off the tenant's card, in the currency the carriage fee
+    // was priced in. A requested accessorial this market does not offer is a 422
+    // naming the code, not a silent zero.
+    let currency_enum = parse_currency(&currency)?;
+    let items = price_accessorials_itemised(&s.svc.accessorials, currency_enum, &req.accessorials)
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    let accessorial_cents: i64 = items.iter().map(|i| i.amount_cents).sum();
+    let total_cents = amount_cents.saturating_add(accessorial_cents);
+
     // Checked after pricing but before signing: an unconfigured deployment
     // cannot issue a token regardless of which branch priced the job, and 503
     // (not 422) says this is deployment state, not something about the request.
@@ -269,7 +304,9 @@ pub async fn get_quote(
         tenant_id: claims.tenant_id,
         service_type: req.service_type.clone(),
         weight_grams: req.weight_grams,
-        amount_cents,
+        // The all-in figure, so POST /v1/shipments re-verifies what the customer
+        // actually agreed to rather than the carriage fee alone.
+        amount_cents: total_cents,
         currency: currency.clone(),
         expires_at,
         pricing_mode: Some(mode.to_string()),
@@ -284,17 +321,17 @@ pub async fn get_quote(
         Some(QuoteBreakdownView {
             currency: currency.clone(),
             carriage_cents: amount_cents,
-            accessorial_cents: 0,
-            total_cents: amount_cents,
+            accessorial_cents,
+            total_cents,
             carriage_rows: rows,
-            items: Vec::new(),
+            items,
         })
     };
 
     Ok((
         StatusCode::OK,
         Json(QuoteResponse {
-            amount_cents,
+            amount_cents: total_cents,
             currency,
             quote_token,
             expires_at,

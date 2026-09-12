@@ -208,6 +208,9 @@ pub struct ShipmentService {
     /// card. `None` when `SERVICES__CARRIER_URL` is unset, in which case a move
     /// quote returns 503 rather than silently falling back to the parcel tariff.
     pub carrier: Option<Arc<crate::infrastructure::http::CarrierClient>>,
+    /// Accessorial rate card. Empty by default, which simply means this
+    /// deployment offers none -- each entry is independently optional.
+    pub accessorials: crate::config::AccessorialsConfig,
 }
 
 /// Returned by `create()`: the persisted shipment, plus a checkout URL when
@@ -227,8 +230,9 @@ impl ShipmentService {
         awb_generator: Arc<dyn AwbGenerator>,
         payment: Option<PaymentCapability>,
         carrier: Option<Arc<crate::infrastructure::http::CarrierClient>>,
+        accessorials: crate::config::AccessorialsConfig,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator, payment, carrier }
+        Self { repo, publisher, normalizer, awb_generator, payment, carrier, accessorials }
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<CreateShipmentResult> {

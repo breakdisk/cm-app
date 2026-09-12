@@ -28,6 +28,14 @@ pub struct Config {
     /// price is worse than an honest "not configured".
     #[serde(default)]
     pub services: ServicesConfig,
+    /// Optional accessorial rate card (helper, assembly, haul-away, carbon
+    /// offset). Each entry is independently optional: an unset accessorial is
+    /// simply not offered, and a quote that requests it is a 422 rather than a
+    /// silent zero. Unlike `payments` these are deliberately NOT bundled -- a
+    /// market offering haul-away but not assembly is ordinary, whereas two of
+    /// three payment fields is always a misconfiguration.
+    #[serde(default)]
+    pub accessorials: AccessorialsConfig,
     /// HMAC-SHA256 signing secret for short-TTL quote tokens
     /// (`domain::value_objects::quote_token`). A top-level field, so it is
     /// read from the env var QUOTE_TOKEN_SECRET directly — no `__` prefix,
@@ -125,6 +133,63 @@ pub struct ServicesConfig {
     /// Mesh-internal carrier base URL. `SERVICES__CARRIER_URL`.
     #[serde(default)]
     pub carrier_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AccessorialsConfig {
+    #[serde(default)] pub helper:        Option<AccessorialRate>,
+    #[serde(default)] pub assembly:      Option<AccessorialRate>,
+    #[serde(default)] pub haulaway:      Option<AccessorialRate>,
+    #[serde(default)] pub carbon_offset: Option<AccessorialRate>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AccessorialRate {
+    /// Minor units, in the tenant's own currency -- never converted.
+    pub amount_cents: i64,
+    /// `PHP`, `AED`. Must match the tenant's JWT currency claim or the quote is
+    /// refused, so a misconfigured market cannot underbill.
+    pub currency: String,
+    /// `booking` (once) or `stair_flight` (multiplied by the stated count).
+    #[serde(default)] pub basis: AccessorialBasis,
+    /// Cap on a multiplied basis. `helper` without one lets a caller state 400
+    /// flights.
+    #[serde(default)] pub max_units: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessorialBasis {
+    #[default] Booking,
+    StairFlight,
+}
+
+impl AccessorialsConfig {
+    pub fn lookup(&self, code: &str) -> Option<&AccessorialRate> {
+        match code {
+            "helper"        => self.helper.as_ref(),
+            "assembly"      => self.assembly.as_ref(),
+            "haulaway"      => self.haulaway.as_ref(),
+            "carbon_offset" => self.carbon_offset.as_ref(),
+            // `threshold` is deliberately absent: it is a promise about where the
+            // driver puts the item, not a charge, so it has no config entry and
+            // a request for it is a misuse of the endpoint.
+            _ => None,
+        }
+    }
+
+    /// Every configured accessorial, for `GET /v1/accessorials`.
+    pub fn offered(&self) -> Vec<(&'static str, &AccessorialRate)> {
+        [
+            ("helper",        self.helper.as_ref()),
+            ("assembly",      self.assembly.as_ref()),
+            ("haulaway",      self.haulaway.as_ref()),
+            ("carbon_offset", self.carbon_offset.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(code, rate)| rate.map(|r| (code, r)))
+        .collect()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -232,6 +297,7 @@ mod config_tests {
     fn payment_config_is_disabled_when_only_some_of_the_three_fields_are_set() {
         let cfg = Config {
             services: ServicesConfig::default(),
+            accessorials: AccessorialsConfig::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,
@@ -257,6 +323,7 @@ mod config_tests {
     fn payment_config_is_enabled_when_all_three_fields_are_set() {
         let cfg = Config {
             services: ServicesConfig::default(),
+            accessorials: AccessorialsConfig::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,

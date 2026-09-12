@@ -22,6 +22,7 @@ use crate::application::{
 };
 use crate::domain::entities::address_code::AddressCode;
 
+pub mod accessorials;
 pub mod quote;
 
 // ---------------------------------------------------------------------------
@@ -425,6 +426,7 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments",        post(create_shipment).get(list_shipments))
         .route("/shipments/bulk",   post(bulk_create_shipments))
         .route("/shipments/quote",  post(quote::get_quote))
+        .route("/accessorials",     get(accessorials::list_accessorials))
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
         .route("/shipments/:id/cancel",     post(cancel_shipment))

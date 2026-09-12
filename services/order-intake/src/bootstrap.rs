@@ -149,6 +149,7 @@ pub async fn run() -> anyhow::Result<()> {
         awb_generator,
         payment,
         carrier,
+        cfg.accessorials.clone(),
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();

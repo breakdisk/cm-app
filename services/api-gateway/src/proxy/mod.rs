@@ -71,6 +71,8 @@ impl ProxyClient {
             // Address autocomplete for the booking form. Authenticated, unlike
             // /v1/public above.
             || path.starts_with("/v1/address")
+            // Accessorial rate card for the consumer Review screen's toggles.
+            || path.starts_with("/v1/accessorials")
         {
             Some(&self.services.order_intake_url)
         // Dispatch & Routing — dispatch service exposes /v1/routes, /v1/queue,
@@ -273,6 +275,15 @@ mod routing_tests {
                 "{path} must reach field-ops"
             );
         }
+    }
+
+    /// The consumer Review screen's accessorial toggles.
+    #[test]
+    fn accessorials_reach_order_intake() {
+        assert_eq!(
+            resolve("/v1/accessorials").as_deref(),
+            Some("http://order-intake:8004"),
+        );
     }
 
     /// The driver app's Hub Scan screen. HubOpsApiService.kt has declared these

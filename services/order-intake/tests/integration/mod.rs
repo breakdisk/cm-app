@@ -475,6 +475,7 @@ fn build_test_server_with_publisher_and_payments(
             shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
         }),
         None,
+        Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -517,6 +518,7 @@ fn build_test_server_with_payment_disabled(
         awb_gen,
         None,
         None,
+        Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -2577,6 +2579,7 @@ mod payment_consumer_tests {
                 shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
             }),
             None,
+            Default::default(),
         ))
     }
 
