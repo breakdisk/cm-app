@@ -328,6 +328,21 @@ impl SizeClass {
         }
     }
 
+    /// Human-readable vehicle name, for the consumer Review screen's base-fee
+    /// row ("Cargo van callout"). `as_str` is the wire value and stays stable;
+    /// this is display copy and may be localised later.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Motorcycle => "Motorcycle",
+            Self::Sedan      => "Sedan",
+            Self::Van        => "Cargo van",
+            Self::L300       => "L300",
+            Self::SixWheeler => "6-wheeler",
+            Self::TenWheeler => "10-wheeler",
+            Self::Trailer    => "Trailer",
+        }
+    }
+
     // Inherent `from_str` is total (unknown input maps to a variant); `FromStr` implies fallible.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
