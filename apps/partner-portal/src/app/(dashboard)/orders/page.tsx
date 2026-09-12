@@ -68,107 +68,6 @@ interface Driver {
   isAiPick:     boolean;
 }
 
-// ── Mock data ─────────────────────────────────────────────────────────────────
-
-const MOCK_ORDERS: IncomingOrder[] = [
-  {
-    id: "o1", awb: "CM-PH1-S0000010A", type: "local", status: "unassigned",
-    senderName: "Fatima Al-Rashid",
-    pickupAddr: "Bldg 7, Al Quoz Industrial Area", pickupCity: "Dubai",
-    receiverName: "Maria Santos",
-    destAddr: "123 Kalayaan Ave", destCity: "Pasig City",
-    description: "Clothes & personal items", weight: "3.5",
-    isCOD: false, totalFee: 165,
-    bookedAt: "2 min ago",
-  },
-  {
-    id: "o2", awb: "CM-PH1-B0000011B", type: "balikbayan", freightMode: "sea", status: "unassigned",
-    senderName: "Ahmed Hassan",
-    pickupAddr: "Villa 12, Jumeirah 2", pickupCity: "Dubai",
-    receiverName: "Lourdes Hassan",
-    destAddr: "45 Magsaysay Blvd", destCity: "Quezon City", destCountry: "PH",
-    description: "Balikbayan Box — food, clothes, gadgets", weight: "22",
-    isCOD: false, totalFee: 720,
-    bookedAt: "8 min ago",
-  },
-  {
-    id: "o3", awb: "CM-PH1-S0000012C", type: "local", status: "assigning",
-    senderName: "Grace Villanueva",
-    pickupAddr: "Unit 3A, Silicon Oasis", pickupCity: "Dubai",
-    receiverName: "Pedro Reyes",
-    destAddr: "789 EDSA", destCity: "Mandaluyong",
-    description: "Electronics — laptop", weight: "2.1",
-    isCOD: true, codAmount: 45000, totalFee: 185,
-    bookedAt: "14 min ago",
-  },
-  {
-    id: "o4", awb: "CM-PH1-N0000013D", type: "balikbayan", freightMode: "air", status: "assigned",
-    assignedTo: "Rodel Bautista",
-    senderName: "John Mendoza",
-    pickupAddr: "Flat 401, Deira Twin Towers", pickupCity: "Deira",
-    receiverName: "Elena Mendoza",
-    destAddr: "32 Session Rd", destCity: "Baguio City", destCountry: "PH",
-    description: "Urgent — medicines & documents", weight: "8",
-    isCOD: false, totalFee: 1450,
-    bookedAt: "21 min ago", etaPickup: "10:45 AM",
-  },
-  {
-    id: "o5", awb: "CM-PH1-S0000014E", type: "local", status: "assigned",
-    assignedTo: "Mark Cruz",
-    senderName: "Aisha Morales",
-    pickupAddr: "Shop 5, Karama Centre", pickupCity: "Al Karama",
-    receiverName: "Jose Morales",
-    destAddr: "10 Bonifacio St", destCity: "Makati City",
-    description: "Accessories & shoes", weight: "1.8",
-    isCOD: true, codAmount: 3200, totalFee: 125,
-    bookedAt: "35 min ago", etaPickup: "11:00 AM",
-  },
-  {
-    id: "o6", awb: "CM-PH1-S0000015F", type: "local", status: "picked_up",
-    assignedTo: "Danny Soriano",
-    senderName: "Sandra Lee",
-    pickupAddr: "Office 22, Dafza Free Zone", pickupCity: "Dubai",
-    receiverName: "Ana Dela Cruz",
-    destAddr: "55 Timog Ave", destCity: "Quezon City",
-    description: "Documents", weight: "0.5",
-    isCOD: false, totalFee: 95,
-    bookedAt: "1 hr ago", etaPickup: "Done",
-  },
-];
-
-const MOCK_DRIVERS: Driver[] = [
-  {
-    id: "d1", name: "Rodel Bautista",   phone: "+971-55-001-2345",
-    vehicle: "Toyota Hiace Van",  vehicleClass: "van",  status: "available",
-    tasksToday: 4, distanceKm: 1.2, etaMinutes: 6, isAiPick: true,
-  },
-  {
-    id: "d2", name: "Mark Cruz",        phone: "+971-55-002-3456",
-    vehicle: "Toyota Land Cruiser", vehicleClass: "van", status: "available",
-    tasksToday: 6, distanceKm: 2.8, etaMinutes: 12, isAiPick: false,
-  },
-  {
-    id: "d3", name: "Danny Soriano",    phone: "+971-55-003-4567",
-    vehicle: "Ford Transit",       vehicleClass: "van",  status: "on_route",
-    tasksToday: 8, distanceKm: 4.1, etaMinutes: 18, isAiPick: false,
-  },
-  {
-    id: "d4", name: "Rico Evangelista", phone: "+971-55-004-5678",
-    vehicle: "Toyota Hiace Van",   vehicleClass: "van",  status: "available",
-    tasksToday: 3, distanceKm: 5.5, etaMinutes: 22, isAiPick: false,
-  },
-  {
-    id: "d5", name: "Carlo Reyes",      phone: "+971-55-005-6789",
-    vehicle: "Toyota Vios",        vehicleClass: "sedan", status: "available",
-    tasksToday: 5, distanceKm: 2.1, etaMinutes: 9, isAiPick: false,
-  },
-  {
-    id: "d6", name: "Jessa Mariano",    phone: "+971-55-006-7890",
-    vehicle: "Honda City",         vehicleClass: "sedan", status: "available",
-    tasksToday: 3, distanceKm: 3.4, etaMinutes: 14, isAiPick: false,
-  },
-];
-
 // ── API fetch functions ───────────────────────────────────────────────────────
 
 // Source the orders page from the dispatch queue (`/v1/queue?status=all`) —
@@ -181,7 +80,11 @@ async function fetchOrders(): Promise<IncomingOrder[]> {
   if (!res.ok) {
     // Graceful degradation: try order-intake as a secondary source.
     const fallback = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
-    if (!fallback.ok) return [];
+    if (!fallback.ok) {
+      // Both sources are unreachable — surface a hard error so the page can
+      // render an error banner rather than masquerading failure as "0 orders".
+      throw new Error(`Order feed unavailable (dispatch ${res.status}, order-intake ${fallback.status})`);
+    }
     const j = await fallback.json();
     const items = j.data?.items ?? j.data ?? [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -277,6 +180,19 @@ async function dispatchOrder(shipmentId: string, driverId: string): Promise<bool
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ driver_id: driverId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Undo a dispatch — resets the queue row back to `pending` so the shipment
+// re-enters the unassigned pool. Backed by POST /v1/queue/:id/cancel-dispatch.
+async function cancelDispatch(shipmentId: string): Promise<boolean> {
+  try {
+    const res = await authFetch(`${DISPATCH_URL}/v1/queue/${shipmentId}/cancel-dispatch`, {
+      method: "POST",
     });
     return res.ok;
   } catch {
@@ -543,10 +459,12 @@ function OrderRow({
   order,
   onAssign,
   onAutoAssign,
+  onCancel,
 }: {
   order: IncomingOrder;
   onAssign: (order: IncomingOrder) => void;
   onAutoAssign: (orderId: string) => void;
+  onCancel: (orderId: string) => void;
 }) {
   const cfg    = STATUS_CONFIG[order.status];
   const isIntl = order.type === "balikbayan";
@@ -674,6 +592,18 @@ function OrderRow({
               <Navigation className="h-3 w-3" />
               Dispatch
             </a>
+            {/* Undo the assignment — only before pickup. Resets the shipment to
+                the unassigned queue via POST /v1/queue/:id/cancel-dispatch. */}
+            {order.status === "assigned" && (
+              <button
+                onClick={() => onCancel(order.id)}
+                title="Cancel dispatch — return order to the unassigned queue"
+                className="inline-flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-2 py-1 text-2xs font-medium text-white/50 transition-all hover:border-red-signal/40 hover:text-red-signal"
+              >
+                <X className="h-3 w-3" />
+                Cancel
+              </button>
+            )}
           </div>
         )}
       </td>
@@ -688,14 +618,25 @@ function OrdersPageInner() {
   const [drivers,      setDrivers]      = useState<Driver[]>([]);
   const [assignTarget, setAssignTarget] = useState<IncomingOrder | null>(null);
   const [filter,       setFilter]       = useState<"all" | "unassigned" | "assigned" | "picked_up">("all");
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState<string | null>(null);
   const searchParams    = useSearchParams();
   const assignToParam   = searchParams.get("assignTo");
   const didAutoOpen     = useRef(false);
 
   const loadData = useCallback(async () => {
-    const [apiOrders, apiDrivers] = await Promise.all([fetchOrders(), fetchAvailableDrivers()]);
-    setOrders(apiOrders);
-    setDrivers(apiDrivers);
+    try {
+      const [apiOrders, apiDrivers] = await Promise.all([fetchOrders(), fetchAvailableDrivers()]);
+      setOrders(apiOrders);
+      setDrivers(apiDrivers);
+      setError(null);
+    } catch (e) {
+      // Keep any previously loaded orders on screen; just flag the failure so
+      // the operator knows the feed is stale rather than empty.
+      setError(e instanceof Error ? e.message : "Failed to load orders");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -758,17 +699,42 @@ function OrdersPageInner() {
         : o
     ));
     if (!ok) {
-      // Backend dispatch failed — log and let the user retry manually.
-      console.warn(`Auto-assign failed for order ${orderId}`);
+      // Backend dispatch failed — surface it and let the user retry manually.
+      setError(driverId
+        ? `Auto-assign failed for ${orderId.slice(0, 8)}… — try a manual assignment.`
+        : "No available driver to auto-assign — bring a driver online or assign manually.");
     }
   }
 
-  function handleManualAssign(orderId: string, driverId: string, driverName: string) {
+  async function handleManualAssign(orderId: string, driverId: string, driverName: string) {
+    // Optimistic flip, then confirm against the backend. Mirrors handleAutoAssign:
+    // revert to "unassigned" and surface an error if the dispatch call is rejected.
+    setAssignTarget(null);
     setOrders(prev => prev.map(o =>
       o.id === orderId ? { ...o, status: "assigned", assignedTo: driverName, etaPickup: "~12 min" } : o
     ));
-    setAssignTarget(null);
-    dispatchOrder(orderId, driverId);
+    const ok = await dispatchOrder(orderId, driverId);
+    if (!ok) {
+      setOrders(prev => prev.map(o =>
+        o.id === orderId ? { ...o, status: "unassigned", assignedTo: undefined, etaPickup: undefined } : o
+      ));
+      setError(`Assignment of ${orderId.slice(0, 8)}… to ${driverName} was rejected — please retry.`);
+    }
+  }
+
+  // Undo a dispatch — returns the shipment to the unassigned queue.
+  async function handleCancel(orderId: string) {
+    const snapshot = orders.find(o => o.id === orderId);
+    // Optimistic: drop back to unassigned immediately.
+    setOrders(prev => prev.map(o =>
+      o.id === orderId ? { ...o, status: "unassigned", assignedTo: undefined, etaPickup: undefined } : o
+    ));
+    const ok = await cancelDispatch(orderId);
+    if (!ok) {
+      // Roll back to the prior assigned state and tell the user.
+      if (snapshot) setOrders(prev => prev.map(o => (o.id === orderId ? snapshot : o)));
+      setError(`Could not cancel dispatch for ${orderId.slice(0, 8)}… — please retry.`);
+    }
   }
 
   const filtered = orders.filter(o => {
@@ -806,6 +772,23 @@ function OrdersPageInner() {
             </motion.div>
           ))}
         </motion.div>
+
+        {/* ── Error banner — feed unreachable or an action was rejected ─ */}
+        {error && (
+          <motion.div variants={variants.fadeInUp}>
+            <div className="flex items-center gap-3 rounded-xl border border-red-signal/30 bg-red-signal/5 px-4 py-3">
+              <AlertCircle className="h-4 w-4 text-red-signal flex-shrink-0" />
+              <p className="text-sm text-white/80">{error}</p>
+              <button
+                onClick={() => loadData()}
+                className="ml-auto flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs font-semibold text-white/70 transition hover:text-white"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Retry
+              </button>
+            </div>
+          </motion.div>
+        )}
 
         {/* ── Alert banner when unassigned orders exist ─────────────── */}
         {(unassignedCount > 0 || assigningCount > 0) && (
@@ -884,6 +867,7 @@ function OrdersPageInner() {
                       order={order}
                       onAssign={setAssignTarget}
                       onAutoAssign={handleAutoAssign}
+                      onCancel={handleCancel}
                     />
                   ))}
                 </motion.tbody>
@@ -891,8 +875,17 @@ function OrdersPageInner() {
 
               {filtered.length === 0 && (
                 <div className="flex flex-col items-center gap-2 py-14 text-white/20">
-                  <Package className="h-8 w-8" />
-                  <p className="text-sm">No orders in this filter</p>
+                  {loading ? (
+                    <>
+                      <RefreshCw className="h-8 w-8 animate-spin" />
+                      <p className="text-sm">Loading orders…</p>
+                    </>
+                  ) : (
+                    <>
+                      <Package className="h-8 w-8" />
+                      <p className="text-sm">{error ? "Orders unavailable — retry above" : "No orders in this filter"}</p>
+                    </>
+                  )}
                 </div>
               )}
             </div>
