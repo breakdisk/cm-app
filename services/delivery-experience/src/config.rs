@@ -26,6 +26,11 @@ pub struct AppConfig {
     pub host: String,
     pub port: u16,
     pub env: String,
+    /// Comma-separated list of allowed CORS origins.
+    /// e.g. APP__CORS_ORIGINS=https://merchant.cargomarket.net,https://admin.cargomarket.net
+    /// Defaults to localhost dev origins when unset.
+    #[serde(default)]
+    pub cors_origins: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
