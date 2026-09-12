@@ -204,6 +204,10 @@ pub struct ShipmentService {
     /// through to the cash/free path — see the check right after the
     /// idempotency replay, before any other work.
     pub payment: Option<PaymentCapability>,
+    /// Mesh-internal carrier client, for pricing a consumer move off a rate
+    /// card. `None` when `SERVICES__CARRIER_URL` is unset, in which case a move
+    /// quote returns 503 rather than silently falling back to the parcel tariff.
+    pub carrier: Option<Arc<crate::infrastructure::http::CarrierClient>>,
 }
 
 /// Returned by `create()`: the persisted shipment, plus a checkout URL when
@@ -222,8 +226,9 @@ impl ShipmentService {
         normalizer:    Arc<dyn AddressNormalizer>,
         awb_generator: Arc<dyn AwbGenerator>,
         payment: Option<PaymentCapability>,
+        carrier: Option<Arc<crate::infrastructure::http::CarrierClient>>,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator, payment }
+        Self { repo, publisher, normalizer, awb_generator, payment, carrier }
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<CreateShipmentResult> {

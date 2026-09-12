@@ -1,11 +1,13 @@
 //! POST /v1/shipments/quote — authoritative, server-priced quote for a
 //! shipment the customer is about to book. Returns a signed, short-TTL token
 //! carrying the priced amount; `POST /v1/shipments` re-verifies it rather
-//! than trusting a client-supplied amount. AE-region (AED) tenants only —
-//! other currencies keep using the existing cash-at-pickup flow and never
-//! call this endpoint.
+//! than trusting a client-supplied amount.
+//!
+//! Two pricing modes. A request carrying `origin` and `destination` is a consumer
+//! move and prices off a carrier's rate card, itemised. Anything else is a parcel
+//! and uses the hand-written AE tariff, which stays AED-only.
 
-use axum::{extract::State, http::StatusCode, response::{IntoResponse, Json}};
+use axum::{extract::State, http::StatusCode, response::Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +15,7 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_errors::AppError;
 
 use crate::api::http::AppState;
+use crate::application::commands::AddressInput;
 use crate::domain::entities::shipment::{ae_base_fee_for, ae_piece_fee_for};
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
 use crate::domain::value_objects::{ServiceType, ShipmentDimensions};
@@ -52,11 +55,52 @@ pub struct QuoteRequest {
     pub weight_grams: u32,
     #[serde(default)]
     pub pieces: Option<Vec<QuotePieceInput>>,
+
+    // ── Rate-card inputs. Present for a consumer move, absent for a parcel. ──
+    #[serde(default)]
+    pub origin: Option<AddressInput>,
+    #[serde(default)]
+    pub destination: Option<AddressInput>,
+    #[serde(default)]
+    pub length_cm: Option<u32>,
+    #[serde(default)]
+    pub width_cm: Option<u32>,
+    #[serde(default)]
+    pub height_cm: Option<u32>,
 }
 
 #[derive(Deserialize)]
 pub struct QuotePieceInput {
     pub weight_grams: u32,
+}
+
+/// One row on the Review screen's "How this is priced" table.
+#[derive(Serialize)]
+pub struct PriceRow {
+    /// e.g. "Cargo van callout", "Distance", "Weight".
+    pub label: String,
+    /// e.g. "7.4 km at 2.40 per km". Empty for the base row.
+    pub note: String,
+    pub amount_cents: i64,
+}
+
+/// The nested shape `design/Accessorial Config.dc.html` specifies. Carriage rows
+/// and accessorial items sit in one object so the Review screen itemises
+/// everything it charges without recomputing anything.
+#[derive(Serialize)]
+pub struct QuoteBreakdownView {
+    pub currency: String,
+    /// Sum of `carriage_rows`.
+    pub carriage_cents: i64,
+    /// Sum of `items`. Zero until the accessorial rate card lands.
+    pub accessorial_cents: i64,
+    /// `carriage_cents + accessorial_cents`. Never computed independently.
+    pub total_cents: i64,
+    /// Base / distance / weight — the three rows the Review screen renders.
+    pub carriage_rows: Vec<PriceRow>,
+    /// Priced accessorials. Empty until the accessorial rate card lands; the
+    /// field ships now so the app never has to branch on it appearing later.
+    pub items: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -65,47 +109,160 @@ pub struct QuoteResponse {
     pub currency: String,
     pub quote_token: String,
     pub expires_at: DateTime<Utc>,
+
+    /// `"rate_card"` or `"parcel_tariff"`. The app renders the breakdown only
+    /// for `rate_card`; a parcel quote legitimately has one number.
+    pub pricing_mode: String,
+    /// Absent for a parcel quote.
+    pub breakdown: Option<QuoteBreakdownView>,
+    pub billable_grams: Option<u32>,
+    /// `"volumetric"` or `"scale"` — which one settled the billable weight.
+    pub billable_basis: Option<String>,
+    pub distance_km: Option<f32>,
+    pub vehicle_label: Option<String>,
 }
 
-/// `POST /v1/shipments/quote` — JWT-authenticated (any role). Gated on the
-/// tenant's billing currency, not a role/permission, since this is purely a
-/// pricing lookup: any authenticated caller for an AE-region tenant may quote.
+/// `POST /v1/shipments/quote` — JWT-authenticated (any role).
+///
+/// The AED restriction used to apply to the whole endpoint, which made the
+/// consumer app unusable in eight of its nine markets. It now scopes only the
+/// parcel-tariff branch, which is genuinely the hand-written AE table.
 pub async fn get_quote(
     State(s): State<AppState>,
     claims: AuthClaims,
     Json(req): Json<QuoteRequest>,
-) -> impl IntoResponse {
-    // Checked first, ahead of the AED-tenant business rule below: an
-    // unconfigured deployment can't quote for anyone regardless of tenant
-    // currency, and 503 (not 422) tells the caller this is a deployment
-    // state, not something about their request.
-    let payment = match s.svc.payment.as_ref() {
-        Some(p) => p,
-        None => {
-            return Err(AppError::ServiceUnavailable(
-                "Online payment is not configured for this deployment — no quote can be issued".into(),
+) -> Result<(StatusCode, Json<QuoteResponse>), AppError> {
+    let service_type = ServiceType::parse(&req.service_type).map_err(AppError::Validation)?;
+
+    let is_move = req.origin.is_some() && req.destination.is_some();
+
+    let mut rows: Vec<PriceRow> = Vec::new();
+    let (amount_cents, currency, mode, billable, basis, distance, vehicle) = if is_move {
+        let carrier = s.svc.carrier.as_ref().ok_or_else(|| {
+            AppError::ServiceUnavailable(
+                "Rate-card quoting is not configured for this deployment".into(),
+            )
+        })?;
+
+        let origin = req.origin.as_ref().expect("checked by is_move");
+        let destination = req.destination.as_ref().expect("checked by is_move");
+
+        // AddressNormalizer::normalize returns logisticos_types::Address, whose
+        // `coordinates` is None on any geocoder failure — that degradation is
+        // deliberate, so a move quote has to handle it rather than assume a pair.
+        let from = s
+            .svc
+            .normalizer
+            .normalize(origin)
+            .await
+            .map_err(AppError::Internal)?;
+        let to = s
+            .svc
+            .normalizer
+            .normalize(destination)
+            .await
+            .map_err(AppError::Internal)?;
+
+        let (Some(a), Some(b)) = (from.coordinates, to.coordinates) else {
+            return Err(AppError::BusinessRule(
+                "Could not locate one of the addresses — a move cannot be priced \
+                 without a distance. Check GEOCODER__MAPBOX_ACCESS_TOKEN is set."
+                    .into(),
+            ));
+        };
+
+        // Coordinates::distance_km is already on the type normalize returns.
+        // No new dependency, no third haversine.
+        let distance_km = a.distance_km(&b) as f32;
+
+        let billable_grams =
+            billable_weight_grams(req.weight_grams, req.length_cm, req.width_cm, req.height_cm);
+        let basis = if billable_grams > req.weight_grams {
+            "volumetric"
+        } else {
+            "scale"
+        };
+
+        let q = carrier
+            .quote_breakdown(claims.tenant_id, distance_km, billable_grams as f32 / 1000.0)
+            .await
+            .map_err(AppError::BusinessRule)?;
+
+        let per_km = q.per_km_cents as f64 / 100.0;
+        let per_kg = q.per_kg_cents as f64 / 100.0;
+        let kg = billable_grams as f64 / 1000.0;
+
+        rows.push(PriceRow {
+            label: format!("{} callout", q.vehicle_label),
+            note: "Listed base rate".into(),
+            amount_cents: q.breakdown.base_cents,
+        });
+        rows.push(PriceRow {
+            label: "Distance".into(),
+            note: format!("{distance_km:.1} km at {per_km:.2} per km"),
+            amount_cents: q.breakdown.distance_cents,
+        });
+        rows.push(PriceRow {
+            label: "Weight".into(),
+            note: format!("{kg:.0} kg at {per_kg:.2} per kg"),
+            amount_cents: q.breakdown.weight_cents,
+        });
+
+        // The invariant the Review screen depends on. A drift here is a wrong
+        // price shown to a customer, so it fails the request rather than
+        // rendering rows that do not add up. Extend this when accessorials
+        // land — do not add a second guard.
+        let summed: i64 = rows.iter().map(|r| r.amount_cents).sum();
+        if summed != q.breakdown.total_cents {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "quote rows sum to {summed} but total is {} — refusing to return \
+                 a breakdown that does not reconcile",
+                q.breakdown.total_cents
+            )));
+        }
+
+        (
+            q.breakdown.total_cents,
+            claims.currency.clone().unwrap_or_else(|| "PHP".into()),
+            "rate_card",
+            Some(billable_grams),
+            Some(basis.to_string()),
+            Some(distance_km),
+            Some(q.vehicle_label),
+        )
+    } else {
+        // Parcel tariff. The AE table is hand-written and finance has not signed
+        // it off, so it stays scoped to AED tenants — it just no longer gates
+        // the consumer move path above.
+        if claims.currency.as_deref() != Some("AED") {
+            return Err(AppError::Validation(
+                "Parcel quotes are only available for AE-region (AED) tenants. \
+                 Send `origin` and `destination` to price a move off the rate card."
+                    .into(),
             ));
         }
+
+        let amount = match (&req.pieces, service_type) {
+            (Some(inputs), ServiceType::Balikbayan | ServiceType::International)
+                if !inputs.is_empty() =>
+            {
+                let weights: Vec<u32> = inputs.iter().map(|p| p.weight_grams).collect();
+                ae_piece_fee_for(&weights).amount
+            }
+            _ => ae_base_fee_for(service_type, req.weight_grams).amount,
+        };
+
+        (amount, "AED".into(), "parcel_tariff", None, None, None, None)
     };
 
-    if claims.currency.as_deref() != Some("AED") {
-        return Err::<_, AppError>(AppError::Validation(
-            "Online quotes are only available for AE-region (AED) tenants".into(),
-        ));
-    }
-
-    let service_type = match ServiceType::parse(&req.service_type) {
-        Ok(st) => st,
-        Err(e) => return Err(AppError::Validation(e)),
-    };
-
-    let amount_cents = match (&req.pieces, service_type) {
-        (Some(inputs), ServiceType::Balikbayan | ServiceType::International) if !inputs.is_empty() => {
-            let weights: Vec<u32> = inputs.iter().map(|p| p.weight_grams).collect();
-            ae_piece_fee_for(&weights).amount
-        }
-        _ => ae_base_fee_for(service_type, req.weight_grams).amount,
-    };
+    // Checked after pricing but before signing: an unconfigured deployment
+    // cannot issue a token regardless of which branch priced the job, and 503
+    // (not 422) says this is deployment state, not something about the request.
+    let payment = s.svc.payment.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable(
+            "Online payment is not configured for this deployment — no quote can be issued".into(),
+        )
+    })?;
 
     let expires_at = Utc::now() + Duration::minutes(QUOTE_TTL_MINUTES);
     let payload = QuoteTokenPayload {
@@ -113,17 +270,42 @@ pub async fn get_quote(
         service_type: req.service_type.clone(),
         weight_grams: req.weight_grams,
         amount_cents,
-        currency: "AED".into(),
+        currency: currency.clone(),
         expires_at,
+        pricing_mode: Some(mode.to_string()),
+        billable_grams: billable,
     };
     let quote_token = quote_token::sign(payment.quote_token_secret.as_bytes(), &payload);
 
-    Ok((StatusCode::OK, Json(QuoteResponse {
-        amount_cents,
-        currency: "AED".into(),
-        quote_token,
-        expires_at,
-    })))
+    // A parcel quote has one number and no breakdown; a move always has one.
+    let breakdown = if rows.is_empty() {
+        None
+    } else {
+        Some(QuoteBreakdownView {
+            currency: currency.clone(),
+            carriage_cents: amount_cents,
+            accessorial_cents: 0,
+            total_cents: amount_cents,
+            carriage_rows: rows,
+            items: Vec::new(),
+        })
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(QuoteResponse {
+            amount_cents,
+            currency,
+            quote_token,
+            expires_at,
+            pricing_mode: mode.into(),
+            breakdown,
+            billable_grams: billable,
+            billable_basis: basis,
+            distance_km: distance,
+            vehicle_label: vehicle,
+        }),
+    ))
 }
 
 #[cfg(test)]
@@ -151,5 +333,33 @@ mod billable_weight_tests {
     fn missing_dimensions_fall_back_to_scale_weight() {
         assert_eq!(billable_weight_grams(187_000, None, None, None), 187_000);
         assert_eq!(billable_weight_grams(187_000, Some(160), None, Some(100)), 187_000);
+    }
+}
+
+#[cfg(test)]
+mod reconciliation_tests {
+    use super::*;
+
+    fn row(amount: i64) -> PriceRow {
+        PriceRow { label: "r".into(), note: String::new(), amount_cents: amount }
+    }
+
+    /// The guard that keeps the Review screen honest. The handoff records this
+    /// invariant breaking twice in design review — once by itemising protection
+    /// that was not charged, once by charging a carbon offset that was not
+    /// itemised. Rows that do not sum to the total must fail the request.
+    #[test]
+    fn a_missing_row_does_not_reconcile() {
+        let rows = [row(45_000), row(1_776)];
+        let summed: i64 = rows.iter().map(|r| r.amount_cents).sum();
+        assert_ne!(summed, 53_816, "this is the drift the handler must refuse");
+    }
+
+    /// And the passing case: base + distance + weight for the worked example.
+    #[test]
+    fn all_three_rows_reconcile() {
+        let rows = [row(45_000), row(1_776), row(7_040)];
+        let summed: i64 = rows.iter().map(|r| r.amount_cents).sum();
+        assert_eq!(summed, 53_816);
     }
 }

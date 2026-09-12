@@ -20,6 +20,21 @@ pub struct QuoteTokenPayload {
     pub amount_cents: i64,
     pub currency: String,
     pub expires_at: DateTime<Utc>,
+    /// `"rate_card"` or `"parcel_tariff"`. Signed so a rate-card total cannot be
+    /// presented to `POST /v1/shipments` and re-verified against the parcel
+    /// tariff, or the reverse.
+    ///
+    /// `#[serde(default)]` on both new fields is deliberate: tokens signed by the
+    /// previous build are still inside their 15-minute TTL at the moment this
+    /// deploys, and a caller holding one should not get a malformed-token error
+    /// for a price we issued ourselves.
+    #[serde(default)]
+    pub pricing_mode: Option<String>,
+    /// Billable weight the price was computed on. Signed for the same reason as
+    /// `weight_grams`: the create call must not be able to re-declare a lighter
+    /// load than the one that was quoted.
+    #[serde(default)]
+    pub billable_grams: Option<u32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +103,8 @@ mod tests {
             amount_cents: 2_200,
             currency: "AED".into(),
             expires_at: Utc::now() + Duration::minutes(ttl_minutes),
+            pricing_mode: Some("parcel_tariff".into()),
+            billable_grams: None,
         }
     }
 

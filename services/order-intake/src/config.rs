@@ -21,6 +21,13 @@ pub struct Config {
     /// too so "absent ⇒ None" is visible at the field declaration.
     #[serde(default)]
     pub payments: Option<PaymentsConfig>,
+    /// Mesh-internal base URL for the carrier service, e.g. `http://carrier:8010`,
+    /// set via SERVICES__CARRIER_URL. Needed to price a consumer move off a
+    /// carrier rate card. When unset, a move quote returns 503 rather than
+    /// falling back to the parcel tariff - a sofa is not a parcel, and a wrong
+    /// price is worse than an honest "not configured".
+    #[serde(default)]
+    pub services: ServicesConfig,
     /// HMAC-SHA256 signing secret for short-TTL quote tokens
     /// (`domain::value_objects::quote_token`). A top-level field, so it is
     /// read from the env var QUOTE_TOKEN_SECRET directly — no `__` prefix,
@@ -111,6 +118,13 @@ pub struct RedisConfig {
 pub struct KafkaConfig {
     pub brokers: String,
     pub group_id: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServicesConfig {
+    /// Mesh-internal carrier base URL. `SERVICES__CARRIER_URL`.
+    #[serde(default)]
+    pub carrier_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -217,6 +231,7 @@ mod config_tests {
     #[test]
     fn payment_config_is_disabled_when_only_some_of_the_three_fields_are_set() {
         let cfg = Config {
+            services: ServicesConfig::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,
@@ -241,6 +256,7 @@ mod config_tests {
     #[test]
     fn payment_config_is_enabled_when_all_three_fields_are_set() {
         let cfg = Config {
+            services: ServicesConfig::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,

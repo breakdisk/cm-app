@@ -474,6 +474,7 @@ fn build_test_server_with_publisher_and_payments(
             quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
             shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
         }),
+        None,
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -514,6 +515,7 @@ fn build_test_server_with_payment_disabled(
         Arc::clone(&publisher),
         normalizer,
         awb_gen,
+        None,
         None,
     ));
     let query = Arc::new(ShipmentQueryService::new(
@@ -2129,6 +2131,8 @@ mod payment_aware_create {
             amount_cents,
             currency: "AED".to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
+            pricing_mode: Some("parcel_tariff".to_string()),
+            billable_grams: None,
         };
         quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
     }
@@ -2572,6 +2576,7 @@ mod payment_consumer_tests {
                 quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
                 shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
             }),
+            None,
         ))
     }
 
