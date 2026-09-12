@@ -90,15 +90,44 @@ pub struct ShipmentDimensions {
 
 impl ShipmentDimensions {
     /// Volumetric weight in grams (DIM factor = 5000 cm³/kg, standard carrier rate).
+    ///
+    /// The multiplication is widened to u64 deliberately. These three values come
+    /// straight off a booking request, and in a debug build a u32 product panics
+    /// on overflow — which is a crash reachable from a request body. Consumer
+    /// furniture moves carry far larger dimensions than the parcels this was
+    /// written for, so the headroom now matters.
     pub fn volumetric_weight_grams(&self) -> u32 {
-        let vol_cm3 = self.length_cm * self.width_cm * self.height_cm;
-        (vol_cm3 as f64 / 5.0).round() as u32 // vol_cm3 / 5000 * 1000
+        // Saturating, not merely widened: u32::MAX cubed overflows u64 too.
+        let vol_cm3 = (self.length_cm as u64)
+            .saturating_mul(self.width_cm as u64)
+            .saturating_mul(self.height_cm as u64);
+        (vol_cm3 / 5).min(u32::MAX as u64) as u32 // vol_cm3 / 5000 * 1000
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sofa: 160x100x100 cm = 1_600_000 cm3 / 5000 = 320 kg.
+    #[test]
+    fn volumetric_weight_matches_the_dim_5000_factor() {
+        let d = ShipmentDimensions { length_cm: 160, width_cm: 100, height_cm: 100 };
+        assert_eq!(d.volumetric_weight_grams(), 320_000);
+    }
+
+    /// These three values arrive in a request body. A u32 product panics on
+    /// overflow in a debug build, which would make this a crash reachable from
+    /// the booking form, so the multiplication is widened and the result capped.
+    #[test]
+    fn absurd_dimensions_saturate_instead_of_panicking() {
+        let d = ShipmentDimensions {
+            length_cm: u32::MAX,
+            width_cm:  u32::MAX,
+            height_cm: u32::MAX,
+        };
+        assert_eq!(d.volumetric_weight_grams(), u32::MAX);
+    }
 
     #[test]
     fn service_type_parse_and_as_str_round_trip_for_all_variants() {
