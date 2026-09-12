@@ -545,6 +545,9 @@ async fn get_shipment_billing(
         "total":                total,
         // Booking-time classification — "balikbayan" is the exact string the
         // payments pickup consumer gates the Track A ledger debit on.
+        // Read by pod to resolve the delivery PIN recipient from the booking
+        // record rather than from whatever phone the caller put in the body.
+        "customer_phone":       shipment.customer_phone,
         "service_code":         shipment.service_type.as_str(),
         "declared_value_cents": shipment.declared_value.map(|v| v.amount),
     }))))

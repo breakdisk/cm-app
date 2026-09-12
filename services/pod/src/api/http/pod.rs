@@ -152,14 +152,60 @@ pub async fn get_pod(
     Ok(Json(serde_json::json!({ "data": view })))
 }
 
+/// Whether the caller may see the OTP code in the response body.
+///
+/// A driver must not: the PIN exists precisely so that closing the job requires
+/// the recipient. A driver may still call the endpoint to trigger a resend — they
+/// just get `{ otp_id, sent }` with no code.
+///
+/// The driver check is evaluated first and wins outright. If it were merely one
+/// entry in a deny-list weighed against the allow-list, granting a driver any
+/// other role would hand them the code.
+fn code_is_visible_to(roles: &[String]) -> bool {
+    let driverish = roles.iter().any(|r| r == "driver" || r == "courier");
+    if driverish {
+        return false;
+    }
+    roles
+        .iter()
+        .any(|r| matches!(r.as_str(), "admin" | "tenant_admin" | "customer" | "support"))
+}
+
+/// `POST /v1/otps/generate` — issue (or re-issue) the recipient's delivery PIN.
+///
+/// Two things used to be wrong here, and together they made the PIN decorative:
+/// the handler ran no permission or ownership check, and it took
+/// `recipient_phone` from the request body then returned the code in the
+/// response. A driver holding a tenant JWT could point the SMS at their own
+/// handset, read the code out of the 200, and verify it — closing the job with
+/// no recipient involved, which is exactly what the PIN is supposed to prevent.
+///
+/// The phone now comes from the shipment record and the body's value is ignored.
 pub async fn generate_otp(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<GenerateOtpCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let (otp_id, code) = state.pod_service.generate_and_send_otp(&tenant_id, cmd).await?;
-    Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "code": code } })))
+
+    let recipient_phone = state
+        .pod_service
+        .recipient_phone_for_shipment(cmd.shipment_id)
+        .await?;
+
+    let (otp_id, code) = state
+        .pod_service
+        .generate_and_send_otp(
+            &tenant_id,
+            GenerateOtpCommand { shipment_id: cmd.shipment_id, recipient_phone },
+        )
+        .await?;
+
+    if code_is_visible_to(&claims.roles) {
+        Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "code": code } })))
+    } else {
+        Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "sent": true } })))
+    }
 }
 
 pub async fn verify_otp(
@@ -345,4 +391,47 @@ pub async fn pop_status_internal(
         "statuses":      statuses,
         "all_completed": all_completed,
     })))
+}
+
+#[cfg(test)]
+mod otp_authority_tests {
+    use super::*;
+
+    /// The whole point of the PIN is that the driver does not hold it. A driver
+    /// asking for one must not receive the code in the response -- they may
+    /// trigger a resend to the recipient, nothing more.
+    #[test]
+    fn a_driver_may_trigger_a_resend_but_never_read_the_code() {
+        assert!(!code_is_visible_to(&["driver".to_string()]));
+        assert!(!code_is_visible_to(&["courier".to_string()]));
+    }
+
+    /// A driver who also holds another role is still a driver standing at the
+    /// door. The driverish check has to win over any grant, or the bypass is
+    /// simply one role assignment away.
+    #[test]
+    fn a_driver_with_an_extra_role_still_cannot_read_the_code() {
+        assert!(!code_is_visible_to(&["driver".to_string(), "admin".to_string()]));
+    }
+
+    /// Ops needs it for the phone-support case where the recipient never got
+    /// the SMS.
+    #[test]
+    fn ops_may_read_the_code() {
+        assert!(code_is_visible_to(&["admin".to_string()]));
+        assert!(code_is_visible_to(&["tenant_admin".to_string()]));
+    }
+
+    /// The recipient's own app shows it on the tracking screen.
+    #[test]
+    fn the_customer_may_read_their_own_code() {
+        assert!(code_is_visible_to(&["customer".to_string()]));
+    }
+
+    /// An unrecognised role is not trusted with it.
+    #[test]
+    fn an_unknown_role_cannot_read_the_code() {
+        assert!(!code_is_visible_to(&["hub_scanner".to_string()]));
+        assert!(!code_is_visible_to(&[]));
+    }
 }

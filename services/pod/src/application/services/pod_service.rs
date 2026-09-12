@@ -433,6 +433,38 @@ impl PodService {
     /// a cosmetic one. It is still non-blocking: a driver standing at the merchant's
     /// counter must never be stopped by a transient internal HTTP failure, so every
     /// degraded path logs loudly rather than returning an error.
+    /// The recipient's phone for a shipment, from the booking record.
+    ///
+    /// Unlike `resolve_billing_context` below, this is **blocking on failure and
+    /// deliberately so**. That one degrades to the driver's device values because
+    /// a courier at a merchant's counter must not be stopped by a transient
+    /// internal hop. This one cannot degrade to a caller-supplied phone without
+    /// restoring the exact hole it closes: a driver pointing the delivery PIN at
+    /// their own handset. An unreachable order-intake means no PIN is issued.
+    pub async fn recipient_phone_for_shipment(&self, shipment_id: Uuid) -> AppResult<String> {
+        let source = self.shipment_ctx.as_ref().ok_or_else(|| {
+            AppError::ServiceUnavailable(
+                "SERVICES__ORDER_INTAKE_URL is not set — the delivery PIN recipient \
+                 cannot be resolved from the booking, so no PIN can be issued"
+                    .into(),
+            )
+        })?;
+
+        let ctx = source
+            .fetch(shipment_id)
+            .await
+            .map_err(AppError::internal)?;
+
+        ctx.customer_phone
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::BusinessRule(format!(
+                    "Shipment {shipment_id} has no recipient phone on the booking — \
+                     cannot send a delivery PIN"
+                ))
+            })
+    }
+
     async fn resolve_billing_context(
         &self,
         shipment_id:                 Uuid,
