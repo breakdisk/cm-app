@@ -216,7 +216,8 @@ export default function DriversPage() {
   const pendingGigCount  = drivers.filter((d) => {
     if (!isGigWorker(d)) return false;
     const cs = complianceMap.get(d.id);
-    return !cs || cs === "pending_submission";
+    // under_review = docs submitted but not yet approved — still blocks offer claiming.
+    return !cs || cs === "pending_submission" || cs === "under_review";
   }).length;
 
   return (
