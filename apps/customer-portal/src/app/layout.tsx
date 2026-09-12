@@ -4,14 +4,9 @@
  * Uses glassmorphism with a lighter touch for consumer audience.
  */
 import type { Metadata } from "next";
-import { Inter, Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import { BrandingBoot } from "@/components/BrandingBoot";
 import { BrandedNav, BrandedFooter } from "@/components/BrandedChrome";
 import "./globals.css";
-
-const geist   = Inter({ subsets: ["latin"], variable: "--font-sans" });
-const heading = Space_Grotesk({ subsets: ["latin"], variable: "--font-heading" });
-const mono    = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
   title:       "Track Your Delivery — LogisticOS",
@@ -25,7 +20,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geist.variable} ${heading.variable} ${mono.variable} dark`}>
+    <html lang="en" className="dark">
       <body className="bg-canvas font-sans text-white antialiased min-h-screen">
         {/* Ambient radial glow */}
         <div

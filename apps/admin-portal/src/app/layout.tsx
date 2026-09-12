@@ -3,15 +3,9 @@
  * Minimal: font variables, body baseline, global CSS.
  * Dashboard chrome (sidebar, header) lives in (dashboard)/layout.tsx.
  */
-import { Inter, Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import { Toaster } from "sonner";
-import { cn } from "@/lib/design-system/cn";
 import { BrandingBoot } from "@/components/BrandingBoot";
 import "./globals.css";
-
-const geist   = Inter({ subsets: ["latin"], variable: "--font-sans" });
-const heading = Space_Grotesk({ subsets: ["latin"], variable: "--font-heading" });
-const mono    = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata = {
   title: "LogisticOS — Operations Portal",
@@ -20,7 +14,7 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={cn(geist.variable, heading.variable, mono.variable, "dark")}>
+    <html lang="en" className="dark">
       <body className="bg-canvas font-sans text-white antialiased">
         <div
           className="pointer-events-none fixed inset-0 z-0 bg-grid-pattern bg-grid-md opacity-[0.3]"
