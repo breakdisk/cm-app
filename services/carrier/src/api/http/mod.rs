@@ -24,6 +24,8 @@ use crate::application::services::{
 use crate::domain::entities::{Carrier, SlaRecord};
 use crate::AppState;
 
+pub mod internal_quote;
+
 // ── Carrier authorization helpers ─────────────────────────────────────────────
 //
 // Every `/v1/carriers/:id` route funnels through these so the tenant guard and
@@ -147,6 +149,22 @@ pub fn router() -> Router<AppState> {
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
         // Internal — called by dispatch when allocating a carrier to a shipment
         .route("/v1/internal/sla-records",                     post(create_sla_record))
+}
+
+/// Mesh-internal routes, mounted *outside* the JWT layer in bootstrap.
+///
+/// Note the asymmetry with `/v1/internal/sla-records` above, which sits inside
+/// `router()` and therefore does require a JWT despite its comment — carrier
+/// layers `require_auth` over the whole of `router()`, unlike order-intake,
+/// which applies it to a sub-router and nests `/v1/internal` outside it. That
+/// pre-existing route is left alone: dispatch calls it today and evidently
+/// satisfies the JWT, so flipping it is a separate change with its own blast
+/// radius.
+pub fn internal_router() -> Router<AppState> {
+    Router::new()
+        // Called by order-intake to price a consumer move off a carrier rate
+        // card, so the consumer never needs marketplace:book.
+        .route("/v1/internal/quote-breakdown", post(internal_quote::internal_quote_breakdown))
 }
 
 /// Unauthenticated webhook routes — 3PL systems authenticate with a per-carrier

@@ -21,6 +21,21 @@ pub struct Config {
     /// too so "absent ⇒ None" is visible at the field declaration.
     #[serde(default)]
     pub payments: Option<PaymentsConfig>,
+    /// Mesh-internal base URL for the carrier service, e.g. `http://carrier:8010`,
+    /// set via SERVICES__CARRIER_URL. Needed to price a consumer move off a
+    /// carrier rate card. When unset, a move quote returns 503 rather than
+    /// falling back to the parcel tariff - a sofa is not a parcel, and a wrong
+    /// price is worse than an honest "not configured".
+    #[serde(default)]
+    pub services: ServicesConfig,
+    /// Optional accessorial rate card (helper, assembly, haul-away, carbon
+    /// offset). Each entry is independently optional: an unset accessorial is
+    /// simply not offered, and a quote that requests it is a 422 rather than a
+    /// silent zero. Unlike `payments` these are deliberately NOT bundled -- a
+    /// market offering haul-away but not assembly is ordinary, whereas two of
+    /// three payment fields is always a misconfiguration.
+    #[serde(default)]
+    pub accessorials: AccessorialsConfig,
     /// HMAC-SHA256 signing secret for short-TTL quote tokens
     /// (`domain::value_objects::quote_token`). A top-level field, so it is
     /// read from the env var QUOTE_TOKEN_SECRET directly — no `__` prefix,
@@ -111,6 +126,96 @@ pub struct RedisConfig {
 pub struct KafkaConfig {
     pub brokers: String,
     pub group_id: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServicesConfig {
+    /// Mesh-internal carrier base URL. `SERVICES__CARRIER_URL`.
+    #[serde(default)]
+    pub carrier_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AccessorialsConfig {
+    #[serde(default)] pub helper:        Option<AccessorialRate>,
+    #[serde(default)] pub assembly:      Option<AccessorialRate>,
+    #[serde(default)] pub haulaway:      Option<AccessorialRate>,
+    #[serde(default)] pub carbon_offset: Option<AccessorialRate>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AccessorialRate {
+    /// What the customer is billed, in minor units of the tenant's own currency.
+    /// Never converted. A promotion discounts this column and only this column.
+    /// Env: `ACCESSORIALS__<CODE>__BILLED_CENTS`.
+    pub billed_cents: i64,
+    /// What settlement pays the mover for performing it. Promotions never read
+    /// or change this: a consumer discount comes out of platform margin, never
+    /// out of the driver's fee. Env: `ACCESSORIALS__<CODE>__PAID_CENTS`.
+    pub paid_cents: i64,
+    /// `PHP`, `AED`. Must match the tenant's JWT currency claim or the quote is
+    /// refused, so a misconfigured market cannot underbill.
+    pub currency: String,
+    /// `booking` (once) or `stair_flight` (multiplied by the stated count).
+    #[serde(default)] pub basis: AccessorialBasis,
+    /// Cap on a multiplied basis. `helper` without one lets a caller state 400
+    /// flights.
+    #[serde(default)] pub max_units: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessorialBasis {
+    #[default] Booking,
+    StairFlight,
+}
+
+impl AccessorialsConfig {
+    pub fn lookup(&self, code: &str) -> Option<&AccessorialRate> {
+        match code {
+            "helper"        => self.helper.as_ref(),
+            "assembly"      => self.assembly.as_ref(),
+            "haulaway"      => self.haulaway.as_ref(),
+            "carbon_offset" => self.carbon_offset.as_ref(),
+            // `threshold` is deliberately absent: it is a promise about where the
+            // driver puts the item, not a charge, so it has no config entry and
+            // a request for it is a misuse of the endpoint.
+            _ => None,
+        }
+    }
+
+    /// Every configured accessorial, for `GET /v1/accessorials`.
+    pub fn offered(&self) -> Vec<(&'static str, &AccessorialRate)> {
+        [
+            ("helper",        self.helper.as_ref()),
+            ("assembly",      self.assembly.as_ref()),
+            ("haulaway",      self.haulaway.as_ref()),
+            ("carbon_offset", self.carbon_offset.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(code, rate)| rate.map(|r| (code, r)))
+        .collect()
+    }
+
+    /// Refuse a card that pays the mover more than the customer is billed, or
+    /// carries a negative amount. Either loses money on every job. Called at
+    /// startup so a bad card stops the deploy instead of every quote.
+    pub fn validate(&self) -> Result<(), String> {
+        let bad: Vec<&str> = self
+            .offered()
+            .into_iter()
+            .filter(|(_, r)| r.billed_cents < 0 || r.paid_cents < 0 || r.paid_cents > r.billed_cents)
+            .map(|(code, _)| code)
+            .collect();
+        if bad.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "accessorial rate card pays more than it bills, or is negative, for: {}",
+                bad.join(", ")
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -217,6 +322,8 @@ mod config_tests {
     #[test]
     fn payment_config_is_disabled_when_only_some_of_the_three_fields_are_set() {
         let cfg = Config {
+            services: ServicesConfig::default(),
+            accessorials: AccessorialsConfig::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,
@@ -241,6 +348,8 @@ mod config_tests {
     #[test]
     fn payment_config_is_enabled_when_all_three_fields_are_set() {
         let cfg = Config {
+            services: ServicesConfig::default(),
+            accessorials: AccessorialsConfig::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,

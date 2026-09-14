@@ -42,6 +42,8 @@ struct BillingContextResponse {
     service_code:         Option<String>,
     #[serde(default)]
     declared_value_cents: Option<i64>,
+    #[serde(default)]
+    customer_phone:       Option<String>,
 }
 
 #[async_trait]
@@ -74,6 +76,7 @@ impl ShipmentBillingContextSource for OrderIntakeClient {
         Ok(ShipmentBillingContext {
             service_code,
             declared_value_cents: resp.declared_value_cents,
+            customer_phone:       resp.customer_phone,
         })
     }
 }

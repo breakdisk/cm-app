@@ -15,7 +15,7 @@ use crate::{
         awb::{FallbackAwbGenerator, PostgresAwbGenerator, RedisAwbGenerator},
         db::PgShipmentRepository,
         external::{MapboxGeocoder, PassthroughNormalizer},
-        http::PaymentsClient,
+        http::{CarrierClient, PaymentsClient},
         messaging::{
             payment_consumer::PaymentConsumer, status_consumer::start_status_consumer,
             KafkaEventPublisher,
@@ -123,12 +123,39 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
     let payment_enabled = payment.is_some();
+
+    // Rate-card pricing for consumer moves. Logged either way: a missing URL
+    // means every move quote 503s, and that is worth seeing at startup rather
+    // than discovering from the app.
+    let carrier = match cfg.services.carrier_url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() => {
+            tracing::info!(carrier_url = %url, "rate-card quoting ENABLED for consumer moves");
+            Some(Arc::new(CarrierClient::new(url)))
+        }
+        _ => {
+            tracing::warn!(
+                "SERVICES__CARRIER_URL not set - rate-card quoting is DISABLED: a quote \
+                 carrying origin and destination will return 503. Parcel quotes are \
+                 unaffected."
+            );
+            None
+        }
+    };
+
+    // A card that pays more than it bills loses money on every job. Stop the
+    // deploy here rather than let every quote carry it.
+    cfg.accessorials
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e} - refusing to start order-intake"))?;
+
     let svc = Arc::new(ShipmentService::new(
         repo.clone(),
         publisher,
         normalizer,
         awb_generator,
         payment,
+        carrier,
+        cfg.accessorials.clone(),
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();

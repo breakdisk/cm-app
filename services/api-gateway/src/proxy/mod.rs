@@ -71,6 +71,8 @@ impl ProxyClient {
             // Address autocomplete for the booking form. Authenticated, unlike
             // /v1/public above.
             || path.starts_with("/v1/address")
+            // Accessorial rate card for the consumer Review screen's toggles.
+            || path.starts_with("/v1/accessorials")
         {
             Some(&self.services.order_intake_url)
         // Dispatch & Routing — dispatch service exposes /v1/routes, /v1/queue,
@@ -95,6 +97,9 @@ impl ProxyClient {
             || path.starts_with("/v1/consolidation")
             || path.starts_with("/v1/containers")
             || path.starts_with("/v1/pallets")
+            // Driver app hub scan. Without this the two calls
+            // HubOpsApiService.kt already declares both 404 at the gateway.
+            || path.starts_with("/v1/hub-transfer")
         {
             Some(&self.services.hub_ops_url)
         // Carrier Management + Marketplace listings/bookings
@@ -268,6 +273,34 @@ mod routing_tests {
                 resolve(path).as_deref(),
                 Some("http://field-ops:8090"),
                 "{path} must reach field-ops"
+            );
+        }
+    }
+
+    /// The consumer Review screen's accessorial toggles.
+    #[test]
+    fn accessorials_reach_order_intake() {
+        assert_eq!(
+            resolve("/v1/accessorials").as_deref(),
+            Some("http://order-intake:8004"),
+        );
+    }
+
+    /// The driver app's Hub Scan screen. HubOpsApiService.kt has declared these
+    /// two calls all along, and the gateway answered both with 404 "No upstream
+    /// service found for this path" because /v1/hub-transfer matched no rule --
+    /// indistinguishable, from the app, from a UI bug.
+    #[test]
+    fn hub_transfer_reaches_hub_ops() {
+        for path in [
+            "/v1/hub-transfer/scans",
+            "/v1/hub-transfer/shipment-by-awb",
+            "/v1/hub-transfer/scans/3f2a",
+        ] {
+            assert_eq!(
+                resolve(path).as_deref(),
+                Some("http://hub-ops:8009"),
+                "{path} must reach hub-ops"
             );
         }
     }

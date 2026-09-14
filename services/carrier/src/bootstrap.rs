@@ -316,6 +316,9 @@ pub async fn run() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .merge(http::observability_router())
         .merge(http::webhook_router())
+        // Mesh-internal, mounted after the JWT layer so Istio mTLS is the only
+        // gate — order-intake calls this to price a consumer move.
+        .merge(http::internal_router())
         .layer(axum::middleware::from_fn(propagate_request_id))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);

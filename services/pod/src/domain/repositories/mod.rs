@@ -82,6 +82,10 @@ pub struct ShipmentBillingContext {
     pub service_code:         String,
     /// Declared value in cents; `None` when the merchant booked without one.
     pub declared_value_cents: Option<i64>,
+    /// The recipient's phone, from the booking. The delivery PIN is sent here and
+    /// nowhere else -- a caller-supplied phone is what let a driver mint their
+    /// own PIN. `None` only against an order-intake predating the field.
+    pub customer_phone:       Option<String>,
 }
 
 /// Driven port — resolves a shipment's billing classification from order-intake.
