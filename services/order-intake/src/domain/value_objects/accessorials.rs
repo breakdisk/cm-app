@@ -32,7 +32,14 @@ pub enum AccessorialError {
 pub struct PricedAccessorial {
     pub code: String,
     pub units: u16,
-    pub amount_cents: i64,
+    /// What the customer is charged. Serialised as `amount_cents`, the name the
+    /// design's response shape uses.
+    #[serde(rename = "amount_cents")]
+    pub billed_cents: i64,
+    /// What settlement pays. Never serialised: it reveals the take rate, and this
+    /// struct is rendered straight into the consumer's quote breakdown.
+    #[serde(skip_serializing)]
+    pub paid_cents: i64,
 }
 
 /// Total for the requested accessorials, or the first offending code.
@@ -47,7 +54,7 @@ pub fn price_accessorials(
 ) -> Result<Money, AccessorialError> {
     let items = price_accessorials_itemised(cfg, currency, requested)?;
     Ok(Money::new(
-        items.iter().map(|p| p.amount_cents).sum(),
+        items.iter().map(|p| p.billed_cents).sum(),
         currency,
     ))
 }
@@ -85,7 +92,8 @@ pub fn price_accessorials_itemised(
         out.push(PricedAccessorial {
             code: req.code.clone(),
             units,
-            amount_cents: rate.amount_cents.saturating_mul(units as i64),
+            billed_cents: rate.billed_cents.saturating_mul(units as i64),
+            paid_cents: rate.paid_cents.saturating_mul(units as i64),
         });
     }
 
@@ -99,20 +107,24 @@ mod tests {
 
     fn php_card() -> AccessorialsConfig {
         AccessorialsConfig {
+            // billed = design USD billed x 58; paid = design USD paid x 58.
             helper: Some(AccessorialRate {
-                amount_cents: 81_200,
+                billed_cents: 81_200,
+                paid_cents: 63_800,
                 currency: "PHP".into(),
                 basis: AccessorialBasis::StairFlight,
                 max_units: Some(8),
             }),
             assembly: Some(AccessorialRate {
-                amount_cents: 150_800,
+                billed_cents: 150_800,
+                paid_cents: 116_000,
                 currency: "PHP".into(),
                 basis: AccessorialBasis::Booking,
                 max_units: None,
             }),
             haulaway: Some(AccessorialRate {
-                amount_cents: 226_200,
+                billed_cents: 226_200,
+                paid_cents: 150_800,
                 currency: "PHP".into(),
                 basis: AccessorialBasis::Booking,
                 max_units: None,
@@ -194,7 +206,43 @@ mod tests {
         ];
         let items = price_accessorials_itemised(&php_card(), Currency::PHP, &requested).unwrap();
         let total = price_accessorials(&php_card(), Currency::PHP, &requested).unwrap();
-        let summed: i64 = items.iter().map(|i| i.amount_cents).sum();
+        let summed: i64 = items.iter().map(|i| i.billed_cents).sum();
         assert_eq!(summed, total.amount);
+    }
+
+    /// What the mover is paid is priced from its own column. A future discount
+    /// moves billed; nothing here may derive paid from billed.
+    #[test]
+    fn paid_is_priced_from_its_own_column() {
+        let items = price_accessorials_itemised(
+            &php_card(),
+            Currency::PHP,
+            &[req("helper", Some(2)), req("haulaway", None)],
+        )
+        .unwrap();
+        assert_eq!(items.iter().map(|i| i.billed_cents).sum::<i64>(), 2 * 81_200 + 226_200);
+        assert_eq!(items.iter().map(|i| i.paid_cents).sum::<i64>(), 2 * 63_800 + 150_800);
+    }
+
+    /// paid_cents is settlement data. It reveals the take rate, so it must never
+    /// reach the consumer app -- the quote breakdown serialises these items.
+    #[test]
+    fn a_priced_accessorial_never_serialises_paid() {
+        let items =
+            price_accessorials_itemised(&php_card(), Currency::PHP, &[req("assembly", None)]).unwrap();
+        let json = serde_json::to_value(&items[0]).unwrap();
+        assert!(json.get("paid_cents").is_none(), "settlement leaked: {json}");
+        assert_eq!(json["amount_cents"], 150_800, "the wire name the design uses must stay");
+    }
+
+    /// A card paying the mover more than the customer is billed loses money on
+    /// every job. That is a misconfiguration, and boot should refuse it.
+    #[test]
+    fn a_card_that_pays_more_than_it_bills_is_rejected() {
+        assert!(php_card().validate().is_ok(), "the reference card must validate");
+        let mut card = php_card();
+        card.assembly.as_mut().unwrap().paid_cents = 999_999;
+        let err = card.validate().expect_err("paid > billed must not boot");
+        assert!(err.contains("assembly"), "error must name the code: {err}");
     }
 }

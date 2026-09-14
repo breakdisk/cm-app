@@ -2135,6 +2135,7 @@ mod payment_aware_create {
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
             pricing_mode: Some("parcel_tariff".to_string()),
             billable_grams: None,
+            accessorial_paid_cents: None,
         };
         quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
     }

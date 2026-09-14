@@ -142,6 +142,12 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
+    // A card that pays more than it bills loses money on every job. Stop the
+    // deploy here rather than let every quote carry it.
+    cfg.accessorials
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e} - refusing to start order-intake"))?;
+
     let svc = Arc::new(ShipmentService::new(
         repo.clone(),
         publisher,

@@ -145,8 +145,14 @@ pub struct AccessorialsConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AccessorialRate {
-    /// Minor units, in the tenant's own currency -- never converted.
-    pub amount_cents: i64,
+    /// What the customer is billed, in minor units of the tenant's own currency.
+    /// Never converted. A promotion discounts this column and only this column.
+    /// Env: `ACCESSORIALS__<CODE>__BILLED_CENTS`.
+    pub billed_cents: i64,
+    /// What settlement pays the mover for performing it. Promotions never read
+    /// or change this: a consumer discount comes out of platform margin, never
+    /// out of the driver's fee. Env: `ACCESSORIALS__<CODE>__PAID_CENTS`.
+    pub paid_cents: i64,
     /// `PHP`, `AED`. Must match the tenant's JWT currency claim or the quote is
     /// refused, so a misconfigured market cannot underbill.
     pub currency: String,
@@ -189,6 +195,26 @@ impl AccessorialsConfig {
         .into_iter()
         .filter_map(|(code, rate)| rate.map(|r| (code, r)))
         .collect()
+    }
+
+    /// Refuse a card that pays the mover more than the customer is billed, or
+    /// carries a negative amount. Either loses money on every job. Called at
+    /// startup so a bad card stops the deploy instead of every quote.
+    pub fn validate(&self) -> Result<(), String> {
+        let bad: Vec<&str> = self
+            .offered()
+            .into_iter()
+            .filter(|(_, r)| r.billed_cents < 0 || r.paid_cents < 0 || r.paid_cents > r.billed_cents)
+            .map(|(code, _)| code)
+            .collect();
+        if bad.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "accessorial rate card pays more than it bills, or is negative, for: {}",
+                bad.join(", ")
+            ))
+        }
     }
 }
 

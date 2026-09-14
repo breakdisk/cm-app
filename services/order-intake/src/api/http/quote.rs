@@ -287,7 +287,10 @@ pub async fn get_quote(
     let currency_enum = parse_currency(&currency)?;
     let items = price_accessorials_itemised(&s.svc.accessorials, currency_enum, &req.accessorials)
         .map_err(|e| AppError::Validation(e.to_string()))?;
-    let accessorial_cents: i64 = items.iter().map(|i| i.amount_cents).sum();
+    let accessorial_cents: i64 = items.iter().map(|i| i.billed_cents).sum();
+    // What settlement owes for the accessorials, fixed at quote time. Signed into
+    // the token and never put in the response: it reveals the take rate.
+    let accessorial_paid_cents: i64 = items.iter().map(|i| i.paid_cents).sum();
     let total_cents = amount_cents.saturating_add(accessorial_cents);
 
     // Checked after pricing but before signing: an unconfigured deployment
@@ -311,6 +314,7 @@ pub async fn get_quote(
         expires_at,
         pricing_mode: Some(mode.to_string()),
         billable_grams: billable,
+        accessorial_paid_cents: Some(accessorial_paid_cents),
     };
     let quote_token = quote_token::sign(payment.quote_token_secret.as_bytes(), &payload);
 

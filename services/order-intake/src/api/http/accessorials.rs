@@ -52,7 +52,8 @@ pub async fn list_accessorials(
         .filter(|(_, rate)| rate.currency == currency)
         .map(|(code, rate)| AccessorialItem {
             code,
-            amount_cents: rate.amount_cents,
+            // Billed only. paid_cents is settlement data and never leaves the server.
+            amount_cents: rate.billed_cents,
             basis: match rate.basis {
                 AccessorialBasis::Booking => "booking",
                 AccessorialBasis::StairFlight => "stair_flight",
