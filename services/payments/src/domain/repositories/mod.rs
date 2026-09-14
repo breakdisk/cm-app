@@ -302,7 +302,11 @@ pub trait PaymentIntentRepository: Send + Sync {
     /// only ever touches `refund_requested_at`, unconditionally on status.
     /// Idempotent: does not overwrite an already-recorded timestamp, so a
     /// redelivered cancellation event doesn't reset the sweep's clock.
-    async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()>;
+    ///
+    /// `amount_cents` is what is owed: `None` for the whole capture, `Some` for
+    /// a partial refund. It is recorded with the timestamp and, like it, only
+    /// the first obligation counts, so the sweep retries exactly that amount.
+    async fn mark_refund_requested(&self, id: Uuid, amount_cents: Option<i64>) -> anyhow::Result<()>;
 
     /// Atomically claims exclusive ownership of refunding this intent:
     /// `captured` -> `refunding` in one `UPDATE ... WHERE status =

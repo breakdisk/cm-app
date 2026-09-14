@@ -21,6 +21,22 @@ use crate::application::{
     services::shipment_service::ShipmentService,
 };
 use crate::domain::entities::address_code::AddressCode;
+use crate::domain::value_objects::cancel_authority::{is_tenant_wide, ActingAs, Actor};
+use crate::domain::value_objects::cancellation_policy::{quote_cancellation, CancelTier};
+
+/// The by-id actor for this token. Tenant is always enforced. Merchants and
+/// customers (create without update) are limited to shipments they booked:
+/// `create_shipment` stamps `merchant_id = claims.user_id` for every caller.
+fn acting_as(claims: &AuthClaims) -> ActingAs {
+    ActingAs::User(Actor {
+        tenant_id: claims.tenant_id,
+        user_id: claims.user_id,
+        tenant_wide: is_tenant_wide(
+            claims.has_permission(permissions::SHIPMENT_CREATE),
+            claims.has_permission(permissions::SHIPMENT_UPDATE),
+        ),
+    })
+}
 
 pub mod quote;
 
@@ -156,7 +172,7 @@ async fn get_shipment(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let shipment = s.query.get_by_id(id).await?;
+    let shipment = s.query.get_for(id, &acting_as(&claims)).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(shipment)))
 }
 
@@ -166,10 +182,50 @@ async fn cancel_shipment(
     Path(id): Path<Uuid>,
     Json(mut cmd): Json<CancelShipmentCommand>,
 ) -> impl IntoResponse {
-    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    // Customers and merchants hold SHIPMENT_CANCEL, not SHIPMENT_UPDATE, so
+    // requiring UPDATE made cancel a guaranteed 403 in both the customer app and
+    // the merchant portal, while operators could cancel across tenants.
+    if !(claims.has_permission(permissions::SHIPMENT_CANCEL)
+        || claims.has_permission(permissions::SHIPMENT_UPDATE))
+    {
+        return Err(AppError::Forbidden { resource: permissions::SHIPMENT_CANCEL.to_owned() });
+    }
     cmd.shipment_id = id;
+    cmd.acting_as = acting_as(&claims);
     s.svc.cancel(cmd).await?;
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
+}
+
+/// `GET /v1/shipments/:id/cancellation-preview`
+///
+/// What cancelling now would cost, computed on the server so the app renders
+/// the server's numbers rather than doing arithmetic on a device clock. The
+/// amounts are an estimate from the quoted total; payments computes the real
+/// retention at the same rate, on what it actually captured.
+async fn cancellation_preview(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let shipment = s.query.get_for(id, &acting_as(&claims)).await?;
+    let quote = quote_cancellation(
+        &s.svc.cancellation_policy,
+        shipment.scheduled_pickup_at,
+        chrono::Utc::now(),
+        shipment.booking_amount_cents,
+    );
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "cancellable":     shipment.can_cancel(),
+        "policy_applies":  quote.tier != CancelTier::Unscheduled,
+        "tier":            quote.tier.as_str(),
+        "hours_to_pickup": quote.minutes_to_pickup.map(|m| m as f64 / 60.0),
+        "fee_bps":         quote.retention_bps,
+        "fee_cents":       quote.fee_cents,
+        "refund_cents":    quote.refund_cents,
+        "currency":        shipment.booking_currency,
+        "policy_version":  shipment.cancellation_policy_version,
+    }))))
 }
 
 async fn reschedule_shipment(
@@ -180,6 +236,7 @@ async fn reschedule_shipment(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
     cmd.shipment_id = id;
+    cmd.acting_as = acting_as(&claims);
     s.svc.reschedule(cmd).await?;
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
 }
@@ -232,7 +289,7 @@ async fn admin_override_status(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
-    s.svc.override_status(id, new_status, &actor).await?;
+    s.svc.override_status(id, new_status, &actor, &acting_as(&claims)).await?;
 
     // Stamp the manual transition into the immutable timeline (date/time/location).
     let _ = sqlx::query(
@@ -247,7 +304,7 @@ async fn admin_override_status(
                       'override', true
                   )
            FROM order_intake.shipments s
-           WHERE s.id = $2"#,
+           WHERE s.id = $2 AND s.tenant_id = $1"#,
     )
     .bind(claims.tenant_id)
     .bind(id)
@@ -307,7 +364,7 @@ async fn internal_override_status(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
-    s.svc.override_status(id, new_status, "automation_rule").await?;
+    s.svc.override_status(id, new_status, "automation_rule", &ActingAs::System).await?;
 
     let _ = sqlx::query(
         r#"INSERT INTO order_intake.shipment_events
@@ -321,7 +378,7 @@ async fn internal_override_status(
                       'override', true
                   )
            FROM order_intake.shipments s
-           WHERE s.id = $2"#,
+           WHERE s.id = $2 AND s.tenant_id = $1"#,
     )
     .bind(body.tenant_id)
     .bind(id)
@@ -428,6 +485,7 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
         .route("/shipments/:id/cancel",     post(cancel_shipment))
+        .route("/shipments/:id/cancellation-preview", get(cancellation_preview))
         .route("/shipments/:id/reschedule", post(reschedule_shipment))
         .route("/shipments/:id/status",     put(admin_override_status))
         .route("/address/lookup",           get(lookup_address))

@@ -8,6 +8,33 @@ use logisticos_types::{
     awb::ServiceCode,
     ShipmentId, MerchantId, CustomerId, Money, Currency, ShipmentStatus, TenantId,
 };
+use crate::domain::value_objects::cancel_authority::{may_act_on, ActingAs};
+use crate::domain::value_objects::cancellation_policy::{quote_cancellation, CancelTier, CancellationPolicy};
+
+/// Refuse a by-id action the caller has no authority over.
+///
+/// A refusal is a 404, not a 403, so a caller cannot probe which shipment ids
+/// exist in another tenant. `Unset` is a programming error, not a caller error.
+pub(crate) fn authorize_shipment(acting_as: &ActingAs, shipment: &Shipment) -> AppResult<()> {
+    let permitted = match acting_as {
+        ActingAs::Unset => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "by-id action on shipment {} reached the service with no actor",
+                shipment.id.inner()
+            )))
+        }
+        ActingAs::System => true,
+        ActingAs::User(actor) => {
+            may_act_on(actor, shipment.tenant_id.inner(), shipment.merchant_id.inner())
+        }
+    };
+    if permitted {
+        Ok(())
+    } else {
+        Err(AppError::NotFound { resource: "Shipment", id: shipment.id.inner().to_string() })
+    }
+}
+
 use crate::{
     application::commands::{
         CreateShipmentCommand, CancelShipmentCommand, RescheduleShipmentCommand,
@@ -204,6 +231,8 @@ pub struct ShipmentService {
     /// through to the cash/free path — see the check right after the
     /// idempotency replay, before any other work.
     pub payment: Option<PaymentCapability>,
+    /// Cancellation fee policy. Rates default to 0 bps.
+    pub cancellation_policy: CancellationPolicy,
 }
 
 /// Returned by `create()`: the persisted shipment, plus a checkout URL when
@@ -222,8 +251,9 @@ impl ShipmentService {
         normalizer:    Arc<dyn AddressNormalizer>,
         awb_generator: Arc<dyn AwbGenerator>,
         payment: Option<PaymentCapability>,
+        cancellation_policy: CancellationPolicy,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator, payment }
+        Self { repo, publisher, normalizer, awb_generator, payment, cancellation_policy }
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<CreateShipmentResult> {
@@ -495,6 +525,11 @@ impl ShipmentService {
             payment_status,
             pending_dispatch_events: None,
             idempotency_key: cmd.idempotency_key.clone(),
+            // Nothing books a slot yet; whole-home moving (part 2, Part A) will.
+            scheduled_pickup_at: None,
+            cancellation_policy_version: Some(self.cancellation_policy.version.clone()),
+            booking_amount_cents: verified_amount_cents,
+            booking_currency: verified_currency.clone(),
             created_at: now,
             updated_at: now,
         };
@@ -716,11 +751,32 @@ impl ShipmentService {
         let id = ShipmentId::from_uuid(cmd.shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
             .ok_or(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() })?;
+        // Before the status check, so a refusal cannot leak whether the id exists.
+        authorize_shipment(&cmd.acting_as, &shipment)?;
 
         if !shipment.can_cancel() {
             return Err(AppError::BusinessRule(
                 format!("Cannot cancel shipment in status {:?}", shipment.status),
             ));
+        }
+
+        // Every cancellation is priced, even when the price is nothing. An
+        // unscheduled one carries no retention, which payments reads as a full
+        // refund: exactly what every cancellation was before the policy existed.
+        let quote = quote_cancellation(
+            &self.cancellation_policy,
+            shipment.scheduled_pickup_at,
+            Utc::now(),
+            shipment.booking_amount_cents,
+        );
+        let mut data = serde_json::json!({ "shipment_id": shipment.id.inner(), "reason": cmd.reason });
+        if quote.tier != CancelTier::Unscheduled {
+            data["retention_bps"] = serde_json::json!(quote.retention_bps);
+            data["cancellation_tier"] = serde_json::json!(quote.tier.as_str());
+            data["policy_version"] = serde_json::json!(shipment
+                .cancellation_policy_version
+                .as_deref()
+                .unwrap_or(&self.cancellation_policy.version));
         }
 
         shipment.status     = ShipmentStatus::Cancelled;
@@ -730,8 +786,10 @@ impl ShipmentService {
         let event = Event::new(
             "logisticos/order-intake",
             "shipment.cancelled",
-            uuid::Uuid::nil(),
-            serde_json::json!({ "shipment_id": shipment.id.inner(), "reason": cmd.reason }),
+            // Was Uuid::nil(), so every tenant-scoped consumer saw a cancellation
+            // that belonged to no tenant.
+            shipment.tenant_id.inner(),
+            data,
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
         self.publisher
@@ -815,6 +873,7 @@ impl ShipmentService {
         let id = ShipmentId::from_uuid(cmd.shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
             .ok_or(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() })?;
+        authorize_shipment(&cmd.acting_as, &shipment)?;
 
         if !shipment.can_reschedule() {
             return Err(AppError::BusinessRule(
@@ -850,10 +909,17 @@ impl ShipmentService {
         Ok(())
     }
 
-    pub async fn override_status(&self, shipment_id: uuid::Uuid, new_status: ShipmentStatus, actor: &str) -> AppResult<()> {
+    pub async fn override_status(
+        &self,
+        shipment_id: uuid::Uuid,
+        new_status: ShipmentStatus,
+        actor: &str,
+        acting_as: &ActingAs,
+    ) -> AppResult<()> {
         let id = ShipmentId::from_uuid(shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
             .ok_or(AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })?;
+        authorize_shipment(acting_as, &shipment)?;
 
         let old_status = shipment.status;
         shipment.status     = new_status;

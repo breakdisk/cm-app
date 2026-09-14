@@ -223,7 +223,12 @@ async fn handle_failed(shipment_id: Uuid, reason: &str, svc: &ShipmentService) -
         return Ok(());
     }
 
-    svc.cancel(CancelShipmentCommand { shipment_id, reason: reason.to_string() })
+    svc.cancel(CancelShipmentCommand {
+        shipment_id,
+        reason: reason.to_string(),
+        // No user: payments reported the intent failed. Mesh-internal, trusted.
+        acting_as: crate::domain::value_objects::cancel_authority::ActingAs::System,
+    })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
