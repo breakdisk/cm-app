@@ -105,6 +105,13 @@ pub struct PaymentIntent {
     /// intent captured before partial capture existed). Read it as
     /// `amount_cents` — see `captured_or_full()`.
     pub captured_amount_cents: Option<i64>,
+    /// What a refund obligation owes, recorded with it by
+    /// `PaymentIntentRepository::mark_refund_requested`. `None` means the whole
+    /// capture. `PaymentIntentService::refund` reads it, so the pending-refund
+    /// sweep retries the same amount rather than refunding in full.
+    pub refund_requested_cents: Option<i64>,
+    /// What actually came back. `None` on a `Refunded` intent means in full.
+    pub refunded_cents: Option<i64>,
 }
 
 impl PaymentIntent {
@@ -141,6 +148,8 @@ impl PaymentIntent {
             expires_at: now + ttl,
             refund_requested_at: None,
             captured_amount_cents: None,
+            refund_requested_cents: None,
+            refunded_cents: None,
         }
     }
 

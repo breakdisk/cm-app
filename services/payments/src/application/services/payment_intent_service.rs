@@ -375,9 +375,19 @@ impl PaymentIntentService {
         // this same snapshot back to release the claim.
         intent.status = PaymentIntentStatus::Captured;
 
-        match self.gateway.refund(&gateway_payment_ref, intent.amount_cents).await {
+        // What is owed: the amount recorded with the obligation, or the whole
+        // capture. Capped at what was captured, never the authorized amount: a
+        // partially captured intent used to be refunded against `amount_cents`,
+        // asking the gateway to return money it never took.
+        let refund_cents = intent
+            .refund_requested_cents
+            .unwrap_or_else(|| intent.captured_or_full())
+            .min(intent.captured_or_full());
+
+        match self.gateway.refund(&gateway_payment_ref, refund_cents).await {
             Ok(()) => {
                 intent.refund().map_err(|e| anyhow::anyhow!("{e}"))?;
+                intent.refunded_cents = Some(refund_cents);
                 self.repo.save(&intent).await?;
                 Ok(())
             }
@@ -753,11 +763,12 @@ mod tests {
                 .cloned())
         }
 
-        async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()> {
+        async fn mark_refund_requested(&self, id: Uuid, amount_cents: Option<i64>) -> anyhow::Result<()> {
             if let Some(intent) = self.intents.lock().unwrap().get_mut(&id) {
-                // COALESCE-equivalent: don't reset an already-recorded timestamp.
+                // COALESCE-equivalent: don't reset an already-recorded obligation.
                 if intent.refund_requested_at.is_none() {
                     intent.refund_requested_at = Some(Utc::now());
+                    intent.refund_requested_cents = amount_cents;
                 }
             }
             Ok(())
