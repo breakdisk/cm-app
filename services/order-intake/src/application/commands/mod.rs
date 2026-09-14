@@ -168,6 +168,10 @@ pub struct RescheduleShipmentCommand {
     pub preferred_date: chrono::NaiveDate,
     pub preferred_time_slot: Option<String>, // "morning" | "afternoon" | "anytime"
     pub reason: String,
+    /// Set in code by the caller, never read from the request body. Defaults to
+    /// `Unset`, which the service refuses.
+    #[serde(skip)]
+    pub acting_as: crate::domain::value_objects::cancel_authority::ActingAs,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +180,10 @@ pub struct CancelShipmentCommand {
     #[serde(default)]
     pub shipment_id: uuid::Uuid,
     pub reason: String,
+    /// Set in code by the caller, never read from the request body. Defaults to
+    /// `Unset`, which the service refuses.
+    #[serde(skip)]
+    pub acting_as: crate::domain::value_objects::cancel_authority::ActingAs,
 }
 
 #[derive(Debug, Deserialize)]
