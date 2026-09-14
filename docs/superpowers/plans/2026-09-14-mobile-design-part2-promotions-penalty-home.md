@@ -969,3 +969,57 @@ is a placeholder):
 7. **Crew model.** Lead-only task with a size, or real multi-driver assignment.
 8. **"Haulline".** A tenant or white-label name, or a rename?
 9. **Promo window.** 11th–24th (README, design code) or 11th–19th (Wiring Map).
+
+---
+
+## Execution notes: Phase 0 (2026-09-15)
+
+Tasks 1–4 are implemented. The plan above is left as written; this section
+records where the code differed from it and why.
+
+| Task | Commit | Branch |
+|---|---|---|
+| 1. Accessorial `billed`/`paid` split | `e343c5dd` | `claude/uber-freight-design-backend-900a06` (PR #161) |
+| 2. Scope by-id actions to tenant and owner | `deda2f81` | `claude/cancel-scoping-and-priced-cancel` |
+| 3. Refund only what a cancellation returns | `582d69b9` | same |
+| 4. One cancel path, always priced | this branch | same |
+
+### Decisions taken during execution (2026-09-14)
+
+- **Scope:** the penalty policy prices **scheduled jobs only**. Unscheduled
+  shipments (every parcel today) keep the old rule exactly.
+- **24–48 hour band:** charged the **late rate**.
+- **Rollout:** every rate **defaults to 0 bps**. Deploying changes nobody's money;
+  fees are config (`CANCELLATION_POLICY__LATE_BPS`, `__SAME_DAY_BPS`).
+- **Rounding:** **down**, in the customer's favour.
+
+### Where the code differed from the plan
+
+| Plan said | What happened | Why |
+|---|---|---|
+| RLS is forced but `app.tenant_id` is never set | Migration **0011 dropped the policies outright** (ADR-0016 makes isolation application-layer) | Same conclusion: the service check is the only guard. `find_by_id` broke ADR-0016's own contract. The Task 2 commit message was corrected before push. |
+| Cancel 403s for customers | It **also 403s for merchants**, who hold `SHIPMENT_CANCEL` but not `SHIPMENT_UPDATE` | Found reading the role table. |
+| Scope cancel | **Reads were exposed too.** `GET /v1/shipments/:id` let any `SHIPMENT_READ` holder read any tenant's shipment. | Fixed in the same change via `get_for`. `get_by_id` stays for `/v1/internal/*` only. |
+| `actor: Option<Actor>` | `ActingAs` enum defaulting to **`Unset`, which is refused** | The payment-failure consumer builds a cancel with no user. An `Option` the service rejects would break it, and a `System` default would silently trust forgotten call sites. |
+| Event carries `refunded_cents` | Event carries **`retention_bps`**, a rate | order-intake never stores the amount paid (it lives in the quote token), and partial capture exists. Payments applies the rate to `captured_or_full()`. An amount computed in order-intake would drift from what was captured and make payments refuse the refund. |
+| `refund_amount()` beside `refund()` | **One refund path.** The obligation records its amount (migration 0021) and `refund()` reads it. | The obligation was a timestamp only, and the sweep retried with a full refund. Recording the amount makes the existing sweep correct with no second function. |
+| (not in plan) | `refund()` now caps at the **captured** amount | It refunded `amount_cents`, the authorized figure, so a partially captured intent asked the gateway to return money it never took. Pre-existing. |
+| `between_bps` config | Removed: under 48h is `late_bps` | Follows the 24–48h decision. |
+| `crew_dispatched` input | Removed: same-day means at or after the scheduled start | No dispatch signal exists in order-intake. |
+| `ChargeType::CancellationRetention` | **Deferred** | Nothing is retained at 0%, so the variant would be dead code. Add it with the first non-zero rate. |
+| Survey fee applied to retention first | **Deferred to Part A** | No survey fee exists yet. |
+| `policy_version` prices under the booked policy | The booked version is **recorded**; rates are current config | There are no versioned rate tables. Needed before any rate changes after bookings exist. |
+
+### Found in passing
+
+- **`services/order-intake/tests/unit/mod.rs` is dead.** `tests/lib.rs` contains only
+  `mod integration;`, and the unit suite's `Shipment` literal uses fields that no
+  longer exist (`tracking_number`, no `awb`). Its `can_cancel` tests have never
+  run. New `can_cancel` coverage lives in the integration tests.
+
+### Deploy order
+
+Payments (`582d69b9`, migration 0021) **before** order-intake (migration 0013). At
+0% the order does not matter for money, but keep it for the day rates turn on.
+Nothing sets `scheduled_pickup_at` until Part A, so the policy is dormant for
+every shipment regardless.
