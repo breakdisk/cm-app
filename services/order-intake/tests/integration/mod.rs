@@ -474,6 +474,7 @@ fn build_test_server_with_publisher_and_payments(
             quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
             shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
         }),
+        Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -515,6 +516,7 @@ fn build_test_server_with_payment_disabled(
         normalizer,
         awb_gen,
         None,
+        Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -688,6 +690,10 @@ fn make_shipment(
         idempotency_key:         None,
         created_at:           now,
         updated_at:           now,
+        scheduled_pickup_at:         None,
+        cancellation_policy_version: None,
+        booking_amount_cents:        None,
+        booking_currency:            None,
     }
 }
 
@@ -2562,6 +2568,14 @@ mod payment_consumer_tests {
         repo: Arc<InMemoryShipmentRepository>,
         publisher: Arc<dyn EventPublisher>,
     ) -> Arc<ShipmentService> {
+        build_service_with_policy(repo, publisher, CancellationPolicy::default())
+    }
+
+    fn build_service_with_policy(
+        repo: Arc<InMemoryShipmentRepository>,
+        publisher: Arc<dyn EventPublisher>,
+        policy: CancellationPolicy,
+    ) -> Arc<ShipmentService> {
         Arc::new(ShipmentService::new(
             Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
             publisher,
@@ -2572,6 +2586,7 @@ mod payment_consumer_tests {
                 quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
                 shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
             }),
+            policy,
         ))
     }
 
@@ -2954,6 +2969,110 @@ mod payment_consumer_tests {
 
         assert!(matches!(err, AppError::Internal(_)), "{err:?}");
         assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Confirmed);
+    }
+
+    // ========================================================================
+    // Cancellation policy. order-intake states the rate on shipment.cancelled;
+    // payments applies it to what it captured. Scheduled jobs only.
+    // ========================================================================
+
+    use logisticos_order_intake::domain::value_objects::cancellation_policy::CancellationPolicy;
+
+    /// Placeholder rates, only to exercise the tiers. The shipped default is 0%.
+    fn live_policy() -> CancellationPolicy {
+        CancellationPolicy {
+            version: "2026-09".into(),
+            free_until_hours: 48,
+            late_from_hours: 24,
+            late_bps: 1_500,
+            same_day_bps: 10_000,
+        }
+    }
+
+    fn cancelled_data(recorder: &RecordingEventPublisher) -> serde_json::Value {
+        let records = recorder.records.lock().unwrap();
+        let (_, _, payload) = records.iter()
+            .find(|(topic, _, _)| topic == topics::SHIPMENT_CANCELLED)
+            .expect("shipment.cancelled must be published");
+        serde_json::from_str::<serde_json::Value>(payload).unwrap()["data"].clone()
+    }
+
+    /// Returns the published event data after the owner cancels.
+    async fn cancel_as_owner(
+        policy: CancellationPolicy,
+        status: ShipmentStatus,
+        scheduled_in: Option<chrono::Duration>,
+    ) -> (Result<(), AppError>, Arc<RecordingEventPublisher>) {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service_with_policy(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            policy,
+        );
+        let (tenant_id, owner) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let shipment = Shipment {
+            scheduled_pickup_at: scheduled_in.map(|d| chrono::Utc::now() + d),
+            ..make_shipment(tenant_id, owner, status)
+        };
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+        let me = Actor { tenant_id, user_id: owner, tenant_wide: false };
+        (svc.cancel(cancel_as(shipment_id, ActingAs::User(me))).await, recorder)
+    }
+
+    /// Every parcel booked today has no scheduled time. Its cancellation must
+    /// carry no retention, so payments refunds in full, as it always has.
+    #[tokio::test]
+    async fn an_unscheduled_cancellation_carries_no_retention() {
+        let (result, recorder) = cancel_as_owner(live_policy(), ShipmentStatus::Confirmed, None).await;
+        result.expect("cancel must succeed");
+        let data = cancelled_data(&recorder);
+        assert!(data.get("retention_bps").is_none(), "unscheduled must not be priced: {data}");
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_cancellation_19_hours_out_states_the_late_rate() {
+        let (result, recorder) =
+            cancel_as_owner(live_policy(), ShipmentStatus::Confirmed, Some(chrono::Duration::hours(19))).await;
+        result.expect("cancel must succeed");
+        let data = cancelled_data(&recorder);
+        assert_eq!(data["retention_bps"], 1_500);
+        assert_eq!(data["cancellation_tier"], "late");
+    }
+
+    /// The shipped default: rates are 0 until finance confirms them, so a
+    /// scheduled cancellation states a zero rate and payments refunds in full.
+    #[tokio::test]
+    async fn the_default_policy_states_a_zero_rate() {
+        let (result, recorder) = cancel_as_owner(
+            CancellationPolicy::default(),
+            ShipmentStatus::Confirmed,
+            Some(chrono::Duration::hours(19)),
+        ).await;
+        result.expect("cancel must succeed");
+        assert_eq!(cancelled_data(&recorder)["retention_bps"], 0);
+    }
+
+    /// A scheduled job can be cancelled after its crew is assigned, because the
+    /// policy prices that case.
+    #[tokio::test]
+    async fn a_scheduled_job_can_be_cancelled_after_crew_assignment() {
+        let (result, _) = cancel_as_owner(
+            live_policy(),
+            ShipmentStatus::PickupAssigned,
+            Some(chrono::Duration::hours(3)),
+        ).await;
+        result.expect("a scheduled job past assignment is cancellable");
+    }
+
+    /// Decided 2026-09-14: an unscheduled shipment keeps the old rule.
+    #[tokio::test]
+    async fn an_unscheduled_shipment_still_cannot_be_cancelled_after_assignment() {
+        let (result, recorder) = cancel_as_owner(live_policy(), ShipmentStatus::PickupAssigned, None).await;
+        let err = result.expect_err("the old rule refuses this");
+        assert!(matches!(err, AppError::BusinessRule(_)), "{err:?}");
+        assert!(recorder.published.lock().unwrap().is_empty());
     }
 
     // ========================================================================

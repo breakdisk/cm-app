@@ -76,6 +76,11 @@ struct ShipmentRow {
 
     created_at:           chrono::DateTime<chrono::Utc>,
     updated_at:           chrono::DateTime<chrono::Utc>,
+
+    scheduled_pickup_at:         Option<chrono::DateTime<chrono::Utc>>,
+    cancellation_policy_version: Option<String>,
+    booking_amount_cents:        Option<i64>,
+    booking_currency:            Option<String>,
 }
 
 impl ShipmentRow {
@@ -192,6 +197,10 @@ impl ShipmentRow {
             idempotency_key:         self.idempotency_key,
             created_at:           self.created_at,
             updated_at:           self.updated_at,
+            scheduled_pickup_at:         self.scheduled_pickup_at,
+            cancellation_policy_version: self.cancellation_policy_version,
+            booking_amount_cents:        self.booking_amount_cents,
+            booking_currency:            self.booking_currency,
         })
     }
 }
@@ -228,7 +237,8 @@ const SHIPMENT_COLS: &str = r#"
     declared_value_cents, cod_amount_cents, special_instructions,
     merchant_reference, source_platform, external_order_id,
     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
-    created_at, updated_at
+    created_at, updated_at,
+    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency
 "#;
 
 /// Maps a dynamic `PgRow` into the typed `ShipmentRow` struct.
@@ -281,6 +291,10 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         idempotency_key:         r.get("idempotency_key"),
         created_at:           r.get("created_at"),
         updated_at:           r.get("updated_at"),
+        scheduled_pickup_at:         r.get("scheduled_pickup_at"),
+        cancellation_policy_version: r.get("cancellation_policy_version"),
+        booking_amount_cents:        r.get("booking_amount_cents"),
+        booking_currency:            r.get("booking_currency"),
     }
 }
 
@@ -376,14 +390,16 @@ impl ShipmentRepository for PgShipmentRepository {
                     declared_value_cents, cod_amount_cents, special_instructions,
                     merchant_reference, source_platform, external_order_id,
                     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
-                    created_at, updated_at
+                    created_at, updated_at,
+                    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency
                 ) VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,
                     $10,$11,$12,$13,
                     $14,$15,$16,$17,$18,$19,$20,$21,$22,
                     $23,$24,$25,$26,$27,$28,$29,$30,$31,
                     $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,
-                    $42,$43,$44,$45,$46,$47
+                    $42,$43,$44,$45,$46,$47,
+                    $48,$49,$50,$51
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -404,6 +420,11 @@ impl ShipmentRepository for PgShipmentRepository {
                     payment_status          = EXCLUDED.payment_status,
                     pending_dispatch_events = EXCLUDED.pending_dispatch_events,
                     idempotency_key         = EXCLUDED.idempotency_key,
+                    scheduled_pickup_at  = EXCLUDED.scheduled_pickup_at,
+                    -- The version and the quoted total are fixed at booking.
+                    cancellation_policy_version = COALESCE(order_intake.shipments.cancellation_policy_version, EXCLUDED.cancellation_policy_version),
+                    booking_amount_cents = COALESCE(order_intake.shipments.booking_amount_cents, EXCLUDED.booking_amount_cents),
+                    booking_currency     = COALESCE(order_intake.shipments.booking_currency, EXCLUDED.booking_currency),
                     updated_at           = EXCLUDED.updated_at"#,
             )
             .bind(s.id.inner())
@@ -456,6 +477,10 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.idempotency_key.as_deref())
             .bind(s.created_at)
             .bind(s.updated_at)
+            .bind(s.scheduled_pickup_at)
+            .bind(s.cancellation_policy_version.as_deref())
+            .bind(s.booking_amount_cents)
+            .bind(s.booking_currency.as_deref())
             .execute(&self.pool)
             .await?;
             Ok(())

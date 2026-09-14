@@ -22,6 +22,7 @@ use crate::application::{
 };
 use crate::domain::entities::address_code::AddressCode;
 use crate::domain::value_objects::cancel_authority::{is_tenant_wide, ActingAs, Actor};
+use crate::domain::value_objects::cancellation_policy::{quote_cancellation, CancelTier};
 
 /// The by-id actor for this token. Tenant is always enforced. Merchants and
 /// customers (create without update) are limited to shipments they booked:
@@ -193,6 +194,38 @@ async fn cancel_shipment(
     cmd.acting_as = acting_as(&claims);
     s.svc.cancel(cmd).await?;
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
+}
+
+/// `GET /v1/shipments/:id/cancellation-preview`
+///
+/// What cancelling now would cost, computed on the server so the app renders
+/// the server's numbers rather than doing arithmetic on a device clock. The
+/// amounts are an estimate from the quoted total; payments computes the real
+/// retention at the same rate, on what it actually captured.
+async fn cancellation_preview(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let shipment = s.query.get_for(id, &acting_as(&claims)).await?;
+    let quote = quote_cancellation(
+        &s.svc.cancellation_policy,
+        shipment.scheduled_pickup_at,
+        chrono::Utc::now(),
+        shipment.booking_amount_cents,
+    );
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "cancellable":     shipment.can_cancel(),
+        "policy_applies":  quote.tier != CancelTier::Unscheduled,
+        "tier":            quote.tier.as_str(),
+        "hours_to_pickup": quote.minutes_to_pickup.map(|m| m as f64 / 60.0),
+        "fee_bps":         quote.retention_bps,
+        "fee_cents":       quote.fee_cents,
+        "refund_cents":    quote.refund_cents,
+        "currency":        shipment.booking_currency,
+        "policy_version":  shipment.cancellation_policy_version,
+    }))))
 }
 
 async fn reschedule_shipment(
@@ -452,6 +485,7 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
         .route("/shipments/:id/cancel",     post(cancel_shipment))
+        .route("/shipments/:id/cancellation-preview", get(cancellation_preview))
         .route("/shipments/:id/reschedule", post(reschedule_shipment))
         .route("/shipments/:id/status",     put(admin_override_status))
         .route("/address/lookup",           get(lookup_address))
