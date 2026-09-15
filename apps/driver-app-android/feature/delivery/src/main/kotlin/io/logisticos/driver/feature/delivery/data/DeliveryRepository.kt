@@ -38,10 +38,10 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Named
 
-/** Result of POST /v1/otps/generate. [code] is non-null in dummy/dev mode
- *  (no Twilio configured) — the app auto-verifies using it so the driver
- *  can complete the POD flow without a real SMS being delivered. */
-data class OtpGenerateResult(val otpId: String, val code: String?)
+/** Result of POST /v1/otps/generate. [alreadyActive] means pod kept the
+ *  recipient's live PIN rather than issuing one. [code] is withheld from
+ *  drivers by pod, and is never used to verify on the driver's behalf. */
+data class OtpGenerateResult(val otpId: String, val code: String?, val alreadyActive: Boolean = false)
 
 class DeliveryRepository @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -338,17 +338,19 @@ class DeliveryRepository @Inject constructor(
     }
 
     /**
-     * Triggers an OTP to the recipient via POST /v1/otps/generate.
-     * Returns [OtpGenerateResult] containing the otp_id and, when the server
-     * has no real SMS adapter configured, the plaintext code so the app can
-     * auto-verify without requiring the driver to read a code from an SMS
-     * the recipient never received (dummy / dev mode).
+     * Asks pod to text the recipient a delivery PIN via POST /v1/otps/generate.
+     * pod keeps a live PIN unless [reissue] is set, and reports it as
+     * [OtpGenerateResult.alreadyActive].
      */
-    suspend fun generateOtp(shipmentId: String, recipientPhone: String): OtpGenerateResult {
+    suspend fun generateOtp(shipmentId: String, recipientPhone: String, reissue: Boolean = false): OtpGenerateResult {
         val response = podApi.generateOtp(
-            GenerateOtpRequest(shipmentId = shipmentId, recipientPhone = recipientPhone)
+            GenerateOtpRequest(shipmentId = shipmentId, recipientPhone = recipientPhone, reissue = reissue)
         )
-        return OtpGenerateResult(otpId = response.data.otpId, code = response.data.code)
+        return OtpGenerateResult(
+            otpId = response.data.otpId,
+            code = response.data.code,
+            alreadyActive = response.data.active,
+        )
     }
 
     /**

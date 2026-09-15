@@ -136,7 +136,6 @@ impl TaskService {
 
     fn to_summary(t: DriverTask, payout_cents: Option<i64>) -> TaskSummary {
         let is_delivery = matches!(t.task_type, TaskType::Delivery);
-        let has_cod = t.cod_amount_cents.unwrap_or(0) > 0;
         TaskSummary {
             task_id:           t.id,
             shipment_id:       t.shipment_id,
@@ -161,12 +160,13 @@ impl TaskService {
             // display fallback for rows created before the snapshot column.
             payout_cents:      t.payout_cents.or(payout_cents),
             // Pickup: AWB + parcel photo. Delivery: AWB + parcel photo +
-            // signature. OTP only when COD is collected (verifies recipient
-            // received cash). Persisted requires_* columns will replace this
-            // heuristic once dispatch propagates the per-shipment policy.
+            // signature + the recipient's delivery PIN. The PIN used to be
+            // asked for only on COD drops; pod now refuses every POD without it
+            // (DELIVERY_PIN__REQUIRED), so asking for less here would strand
+            // the driver at a submit that cannot succeed.
             requires_photo:     true,
             requires_signature: is_delivery,
-            requires_otp:       is_delivery && has_cod,
+            requires_otp:       is_delivery,
         }
     }
 

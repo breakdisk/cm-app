@@ -238,17 +238,17 @@ fun PodScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        // OTP
+        // Delivery PIN — pod refuses a POD without it
         if (requiresOtp) {
             OtpPodSection(
                 otpToken = state.otpToken,
-                recipientPhone = state.recipientPhone,
                 otpSent = state.otpSent,
+                pinAlreadyIssued = state.pinAlreadyIssued,
                 isSendingOtp = state.isSendingOtp,
                 isVerifyingOtp = state.isVerifyingOtp,
                 otpError = state.otpError,
-                dummyOtpCode = state.dummyOtpCode,
-                onSendOtp = viewModel::sendOtpToRecipient,
+                onSendPin = { viewModel.sendOtpToRecipient() },
+                onSendNewPin = { viewModel.sendOtpToRecipient(reissue = true) },
                 onConfirmOtp = viewModel::confirmOtp
             )
             Spacer(Modifier.height(12.dp))
@@ -569,34 +569,30 @@ private fun PhotoSection(
 }
 
 /**
- * OTP capture section with a two-step flow:
+ * Delivery PIN section.
  *
- *  1. "Send Code" button  →  POST /v1/otps/generate  → SMS dispatched to recipient
- *  2. Driver asks recipient for the code; types it here
- *     → 6 digits entered  →  POST /v1/otps/verify  → backend confirms or rejects
- *  3. On success: section turns green, otpToken is set, submit button unlocks.
+ * The recipient normally has the PIN already — the customer app shows it from
+ * booking — so the entry field is shown straight away and 6 digits verify
+ * automatically (POST /v1/otps/verify). "Send one" asks pod to text a PIN; pod
+ * keeps a live PIN rather than replacing it, and says so. "Send a new PIN"
+ * replaces it, which is why it is its own button.
  *
- * Inline OTP errors (send failure, wrong/expired code) are shown inside the
- * section rather than the global error surface so the rest of the form stays usable.
+ * pod's reasons (wrong with attempts left, locked, none issued) are shown
+ * inline so the rest of the form stays usable.
  */
 @Composable
 private fun OtpPodSection(
     otpToken: String?,
-    recipientPhone: String,
     otpSent: Boolean,
+    pinAlreadyIssued: Boolean,
     isSendingOtp: Boolean,
     isVerifyingOtp: Boolean,
     otpError: String?,
-    /** Non-null in dummy/dev mode — backend returned the code directly (no SMS sent).
-     *  Pre-fills the entry field and is shown as a visible badge for QA purposes. */
-    dummyOtpCode: String?,
-    onSendOtp: () -> Unit,
+    onSendPin: () -> Unit,
+    onSendNewPin: () -> Unit,
     onConfirmOtp: (String) -> Unit,
 ) {
-    // Local input buffer — pre-filled with dummy code when available.
-    var entered by remember { mutableStateOf(dummyOtpCode ?: "") }
-    // Keep in sync if dummyOtpCode arrives after initial composition (race: state update).
-    LaunchedEffect(dummyOtpCode) { if (dummyOtpCode != null) entered = dummyOtpCode }
+    var entered by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -617,7 +613,7 @@ private fun OtpPodSection(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("OTP Verification", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+            Text("Delivery PIN", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
             if (otpToken != null) Text("Verified ✓", color = Green, fontSize = 11.sp)
         }
 
@@ -625,74 +621,37 @@ private fun OtpPodSection(
             // ── Step 3: already verified ──────────────────────────────────────
             otpToken != null -> {
                 Text(
-                    "Code verified — recipient confirmed delivery.",
+                    "PIN verified — the recipient confirmed delivery.",
                     color = Green.copy(alpha = 0.85f),
                     fontSize = 13.sp
                 )
             }
 
-            // ── Step 1: OTP not yet sent — show "Send Code" button ────────────
-            !otpSent -> {
-                val phoneHint = if (recipientPhone.isNotBlank()) " to $recipientPhone" else ""
-                Text(
-                    "Send a one-time code$phoneHint and ask the recipient to read it back.",
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 13.sp
-                )
-                Button(
-                    onClick = onSendOtp,
-                    enabled = !isSendingOtp,
-                    modifier = Modifier.fillMaxWidth().height(44.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Cyan.copy(alpha = 0.15f),
-                        disabledContainerColor = Glass
-                    )
-                ) {
-                    if (isSendingOtp) {
-                        CircularProgressIndicator(
-                            color = Cyan,
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text(
-                            "Send Code to Recipient",
-                            color = Cyan,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
-
-            // ── Step 2: OTP sent — show entry field ───────────────────────────
+            // ── Ask for the PIN; send one only if the recipient has none ──────
             else -> {
-                // Dev/dummy mode badge — visible when backend returned code directly.
-                if (dummyOtpCode != null) {
-                    Text(
-                        "Dev mode — code: $dummyOtpCode",
-                        color = Cyan.copy(alpha = 0.75f),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
                 Text(
-                    if (dummyOtpCode != null) "Verifying automatically…"
-                    else "Enter the 6-digit code shown on the recipient's phone.",
-                    color = Color.White.copy(alpha = 0.5f),
+                    when {
+                        pinAlreadyIssued ->
+                            "The recipient already has a PIN — from their booking or an earlier text. Ask them for it."
+                        otpSent ->
+                            "A new PIN was texted to the recipient. Earlier PINs no longer work."
+                        else ->
+                            "Ask the recipient for the 6-digit delivery PIN from their booking or text message."
+                    },
+                    color = Color.White.copy(alpha = 0.6f),
                     fontSize = 13.sp
                 )
                 OutlinedTextField(
                     value = entered,
-                    onValueChange = { input ->
+                    onValueChange = { raw ->
+                        val input = raw.filter(Char::isDigit)
                         if (input.length <= 6) {
                             entered = input
-                            // Auto-submit as soon as 6 digits are entered — fires verifyOtp.
+                            // Verifies as soon as 6 digits are entered.
                             if (input.length == 6 && !isVerifyingOtp) onConfirmOtp(input)
                         }
                     },
-                    label = { Text("6-digit OTP") },
+                    label = { Text("6-digit PIN") },
                     singleLine = true,
                     enabled = !isVerifyingOtp,
                     modifier = Modifier.fillMaxWidth(),
@@ -718,12 +677,27 @@ private fun OtpPodSection(
                         disabledLabelColor = Color.White.copy(alpha = 0.3f)
                     )
                 )
-                // Resend affordance — clears otpSent so the "Send Code" button re-appears.
+                // Glove-sized, per the driver design (56–64 dp). "Send one" keeps a
+                // live PIN; once pod has answered, the only send left is a replacement.
                 TextButton(
-                    onClick = onSendOtp,
-                    modifier = Modifier.align(Alignment.End)
+                    onClick = if (otpSent) onSendNewPin else onSendPin,
+                    enabled = !isSendingOtp,
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
                 ) {
-                    Text("Resend Code", color = Cyan.copy(alpha = 0.55f), fontSize = 12.sp)
+                    if (isSendingOtp) {
+                        CircularProgressIndicator(
+                            color = Cyan,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            if (otpSent) "Send a new PIN" else "Recipient has no PIN? Send one",
+                            color = Cyan,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
             }
         }

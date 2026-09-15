@@ -36,6 +36,7 @@ import { useNetInfo } from "@react-native-community/netinfo";
 import { shipmentsActions, authActions } from "../../store";
 import type { AppDispatch, RootState } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
+import { DeliveryPinCard } from "../../components/DeliveryPinCard";
 import Toast from "../../components/Toast";
 import * as shipmentsService from "../../services/api/shipments";
 import { lookupByPostalCode, lookupByCity, type AddressCode } from "../../services/api/addresses";
@@ -1346,6 +1347,11 @@ export function BookingScreen({ route }: { route?: any }) {
               </View>
 
               <AwbQRCode awb={confirmedAwb} size={232} accent={isIntl ? PURPLE : CYAN} />
+
+              {/* Delivery PIN — issued now and kept until delivery; the driver needs it to complete */}
+              {confirmedShipmentId && (
+                <DeliveryPinCard shipmentId={confirmedShipmentId} recipientPhone={receiverPhone} autoIssue />
+              )}
 
               <View style={s.successRows}>
                 {[

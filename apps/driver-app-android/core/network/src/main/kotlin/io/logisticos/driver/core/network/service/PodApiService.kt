@@ -80,7 +80,9 @@ data class SubmitPodData(
 @Serializable
 data class GenerateOtpRequest(
     @SerialName("shipment_id")      val shipmentId: String,
-    @SerialName("recipient_phone")  val recipientPhone: String
+    @SerialName("recipient_phone")  val recipientPhone: String,
+    /** Replace the recipient's live PIN. Without it pod keeps the live one. */
+    @SerialName("reissue")          val reissue: Boolean = false,
 )
 
 @Serializable
@@ -91,10 +93,10 @@ data class GenerateOtpResponse(
 @Serializable
 data class GenerateOtpData(
     @SerialName("otp_id") val otpId: String,
-    /** Present when no SMS adapter is configured (dev/staging dummy mode).
-     *  The app uses this to auto-verify without requiring the driver to
-     *  type a code the recipient never received via SMS. */
+    /** Withheld from drivers by pod. Never used to verify on the driver's behalf. */
     @SerialName("code") val code: String? = null,
+    /** True when pod kept the recipient's live PIN instead of issuing one. */
+    @SerialName("active") val active: Boolean = false,
 )
 
 @Serializable

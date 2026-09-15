@@ -399,14 +399,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 val taskId    = args?.getString("taskId") ?: ""
                 val photo     = args?.getString("requiresPhoto") == "true"
                 val sig       = args?.getString("requiresSignature") == "true"
-                val otp       = args?.getString("requiresOtp") == "true"
                 val isCod     = args?.getString("isCod") == "true"
                 val codAmount = args?.getString("codAmount")?.toDoubleOrNull() ?: 0.0
                 PodScreen(
                     taskId            = taskId,
                     requiresPhoto     = photo,
                     requiresSignature = sig,
-                    requiresOtp       = otp,
+                    // Always. pod refuses every POD without the recipient's PIN, and
+                    // task rows cached before driver-ops changed still carry false.
+                    requiresOtp       = true,
                     isCod             = isCod,
                     codAmount         = codAmount,
                     onCompleted = {

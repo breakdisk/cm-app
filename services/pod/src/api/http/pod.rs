@@ -8,6 +8,7 @@ use logisticos_types::awb::TenantCode;
 use crate::{
     api::http::AppState,
     application::commands::*,
+    domain::value_objects::delivery_pin::IssuedPin,
 };
 
 #[derive(serde::Deserialize)]
@@ -181,6 +182,9 @@ fn code_is_visible_to(roles: &[String]) -> bool {
 /// no recipient involved, which is exactly what the PIN is supposed to prevent.
 ///
 /// The phone now comes from the shipment record and the body's value is ignored.
+///
+/// A live PIN is kept unless the body says `reissue: true`, and the response then
+/// carries `active: true` with no code: the PIN is already with the recipient.
 pub async fn generate_otp(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
@@ -193,19 +197,22 @@ pub async fn generate_otp(
         .recipient_phone_for_shipment(cmd.shipment_id)
         .await?;
 
-    let (otp_id, code) = state
+    let issued = state
         .pod_service
         .generate_and_send_otp(
             &tenant_id,
-            GenerateOtpCommand { shipment_id: cmd.shipment_id, recipient_phone },
+            GenerateOtpCommand { shipment_id: cmd.shipment_id, recipient_phone, reissue: cmd.reissue },
         )
         .await?;
 
-    if code_is_visible_to(&claims.roles) {
-        Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "code": code } })))
-    } else {
-        Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "sent": true } })))
-    }
+    let data = match issued {
+        IssuedPin::KeptLive { otp_id } => serde_json::json!({ "otp_id": otp_id, "active": true, "sent": false }),
+        IssuedPin::New { otp_id, code } if code_is_visible_to(&claims.roles) => {
+            serde_json::json!({ "otp_id": otp_id, "code": code })
+        }
+        IssuedPin::New { otp_id, .. } => serde_json::json!({ "otp_id": otp_id, "sent": true }),
+    };
+    Ok(Json(serde_json::json!({ "data": data })))
 }
 
 pub async fn verify_otp(

@@ -1,44 +1,44 @@
 /**
  * Delivery PIN — `POST /v1/otps/generate` (pod, through the gateway).
  *
- * Three backend facts shape this file:
+ * Decided 2026-09-15: the PIN is required to complete a delivery, and it is
+ * shown from booking. What shapes this file:
  *
- * - **A PIN lives 15 minutes** (`OtpCode::new`, services/pod/src/domain/entities/otp.rs).
- *   Issued at booking it would be dead long before the driver arrives, so the
- *   app asks for it at handover time instead.
- * - **Every call issues a new code** and texts the recipient again, and the
- *   driver's submit checks only the newest one. A screen that issued on mount
- *   would replace the code the recipient already holds each time it rendered.
- *   So the app issues only on an explicit tap, and keeps the result until it
- *   expires.
- * - **The server decides who sees the code.** Where it withholds it the body
- *   carries `sent: true` and no code. That is kept too, so the app does not
- *   re-issue a PIN it will never be shown.
+ * - **Issued once, at booking.** pod keeps a PIN until delivery (60 days by
+ *   default), so the app asks for it when the shipment is booked and keeps it
+ *   in SecureStore. Nothing here expires it; the card is only shown while the
+ *   shipment is still moving.
+ * - **pod does not replace a live PIN unless asked** (`reissue: true`). A
+ *   request for a shipment that already has one returns `active: true` and no
+ *   code: the PIN exists, just not on this device. Only then — or when the
+ *   customer says theirs is not working — does the app offer a new one, which
+ *   replaces the old.
+ * - **The server decides who sees the code.** Where it withholds it the body is
+ *   `sent: true` (texted to the recipient) with no code.
  *
  * `recipient_phone` is still sent. The deployed pod texts the number in the
- * body; the fixed handler (PR #161) ignores it and reads the shipment record.
+ * body; the fixed handler reads the shipment record instead.
  */
 import * as SecureStore from 'expo-secure-store';
 import { getPodClient } from './client';
 
-/** Mirrors `OtpCode::new`. The server does not return an expiry. */
-export const DELIVERY_PIN_TTL_MS = 15 * 60 * 1000;
-
 export type DeliveryPin =
   | { kind: 'code'; code: string; issuedAt: number }
-  | { kind: 'sent'; issuedAt: number };
+  /** Texted to the recipient; this account is not shown the code. */
+  | { kind: 'sent'; issuedAt: number }
+  /** A live PIN exists but is not on this device. Never stored. */
+  | { kind: 'active'; issuedAt: number };
 
 const storageKey = (shipmentId: string) => `delivery_pin_${shipmentId}`;
-
-export function isPinLive(pin: DeliveryPin | null, now: number = Date.now()): pin is DeliveryPin {
-  return !!pin && now - pin.issuedAt < DELIVERY_PIN_TTL_MS;
-}
 
 export function parseIssuedPin(body: unknown, issuedAt: number): DeliveryPin {
   const data = (body as any)?.data ?? body;
   const code = data?.code;
   if (typeof code === 'string' && /^\d{4,8}$/.test(code)) {
     return { kind: 'code', code, issuedAt };
+  }
+  if (data?.active === true) {
+    return { kind: 'active', issuedAt };
   }
   if (data?.sent === true) {
     return { kind: 'sent', issuedAt };
@@ -58,12 +58,11 @@ function parseStored(raw: string): DeliveryPin | null {
   }
 }
 
-/** A live PIN this device already holds, or null. Never calls the server. */
-export async function getStoredDeliveryPin(shipmentId: string, now: number = Date.now()): Promise<DeliveryPin | null> {
+/** The PIN this device holds for the shipment, or null. Never calls the server. */
+export async function getStoredDeliveryPin(shipmentId: string): Promise<DeliveryPin | null> {
   try {
     const raw = await SecureStore.getItemAsync(storageKey(shipmentId));
-    const pin = raw ? parseStored(raw) : null;
-    return isPinLive(pin, now) ? pin : null;
+    return raw ? parseStored(raw) : null;
   } catch {
     return null;
   }
@@ -74,8 +73,8 @@ const listeners = new Set<Listener>();
 const inFlight = new Map<string, Promise<DeliveryPin>>();
 
 /**
- * Tells every mounted card for the shipment. History and Tracking both stay
- * mounted as tabs; one must show the PIN the other issued, not issue over it.
+ * Tells every mounted card for the shipment. Booking, History and Tracking can
+ * all be mounted at once; one must show the PIN another issued, not issue over it.
  */
 export function onDeliveryPinIssued(listener: Listener): () => void {
   listeners.add(listener);
@@ -84,27 +83,37 @@ export function onDeliveryPinIssued(listener: Listener): () => void {
   };
 }
 
-/** Issues a new PIN. A second tap while the first request is open joins it. */
-export function issueDeliveryPin(shipmentId: string, recipientPhone: string): Promise<DeliveryPin> {
-  const pending = inFlight.get(shipmentId);
+/**
+ * Asks pod for the shipment's PIN. Without `reissue` a live PIN is kept and
+ * comes back as `active`; with it, the old PIN is replaced. A second identical
+ * request while the first is open joins it.
+ */
+export function issueDeliveryPin(
+  shipmentId: string,
+  recipientPhone: string,
+  { reissue = false }: { reissue?: boolean } = {},
+): Promise<DeliveryPin> {
+  const key = `${shipmentId}:${reissue}`;
+  const pending = inFlight.get(key);
   if (pending) return pending;
 
   const request = (async () => {
-    // Stamped before the request, so the local expiry never outlives the server's.
-    const issuedAt = Date.now();
     const response = await getPodClient().post('/v1/otps/generate', {
       shipment_id: shipmentId,
       recipient_phone: recipientPhone,
+      reissue,
     });
-    const pin = parseIssuedPin(response.data, issuedAt);
-    // A failed write costs only a re-issue after an app restart.
-    await SecureStore.setItemAsync(storageKey(shipmentId), JSON.stringify(pin)).catch(() => {});
+    const pin = parseIssuedPin(response.data, Date.now());
+    if (pin.kind !== 'active') {
+      // A failed write costs only a "Get a new PIN" after an app restart.
+      await SecureStore.setItemAsync(storageKey(shipmentId), JSON.stringify(pin)).catch(() => {});
+    }
     listeners.forEach(listener => listener(shipmentId, pin));
     return pin;
   })().finally(() => {
-    inFlight.delete(shipmentId);
+    inFlight.delete(key);
   });
 
-  inFlight.set(shipmentId, request);
+  inFlight.set(key, request);
   return request;
 }

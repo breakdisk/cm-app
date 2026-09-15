@@ -376,9 +376,8 @@ export function TrackingScreen() {
             />
           )}
 
-          {/* Delivery PIN — at handover only; a PIN lives 15 minutes */}
-          {pinShipment?.id && isConnected
-            && (displayResult.status === "out_for_delivery" || displayResult.status === "delivery_attempted") && (
+          {/* Delivery PIN — from booking until delivery; the driver needs it to complete */}
+          {pinShipment?.id && isConnected && !isTerminalStatus(displayResult.status) && (
             <DeliveryPinCard shipmentId={pinShipment.id} recipientPhone={pinShipment.recipientPhone} />
           )}
 

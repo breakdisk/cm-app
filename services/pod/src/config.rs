@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::domain::value_objects::delivery_pin::DeliveryPinPolicy;
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub app: AppConfig,
@@ -17,6 +19,10 @@ pub struct Config {
     /// container in docker-compose.yml).
     #[serde(default)]
     pub services: ServicesConfig,
+    /// `DELIVERY_PIN__REQUIRED` (default true), `DELIVERY_PIN__TTL_HOURS` (default
+    /// 1440), `DELIVERY_PIN__MAX_ATTEMPTS` (default 5).
+    #[serde(default)]
+    pub delivery_pin: DeliveryPinPolicy,
 }
 
 /// Base URLs of sibling services POD calls over the internal mesh.

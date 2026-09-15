@@ -137,7 +137,14 @@ pub struct SubmitPickupCommand {
 #[derive(Debug, Deserialize)]
 pub struct GenerateOtpCommand {
     pub shipment_id: Uuid,
+    /// Ignored from the body — the handler reads it off the shipment record.
+    /// Defaulted so a client need not send it.
+    #[serde(default)]
     pub recipient_phone: String,
+    /// Replace a live PIN. Without it a live PIN is kept, so a driver's tap at
+    /// the door cannot overwrite the PIN on the recipient's booking screen.
+    #[serde(default)]
+    pub reissue: bool,
 }
 
 #[derive(Debug, Deserialize)]

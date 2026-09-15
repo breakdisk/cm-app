@@ -21,6 +21,9 @@ use crate::{
             POD_GEOFENCE_METERS, OUT_OF_BOUNDS_HANDOVER_METERS,
             MAX_PHOTOS_PER_POD, MAX_PHOTO_SIZE_BYTES,
             is_allowed_content_type, generate_otp, hash_otp, verify_otp,
+            delivery_pin::{
+                attempts_left, issue_decision, DeliveryPinPolicy, IssueDecision, IssuedPin, PinRejection,
+            },
         },
     },
     infrastructure::external::storage::StorageAdapter,
@@ -43,6 +46,8 @@ pub struct PodService {
     /// at POP initiation. `None` when `ORDER_INTAKE_URL` is unset, in which case
     /// POP falls back to the client-supplied classification.
     shipment_ctx: Option<Arc<dyn ShipmentBillingContextSource>>,
+    /// Delivery PIN policy — required, lifetime, attempts. `DELIVERY_PIN__*`.
+    pin_policy:   DeliveryPinPolicy,
 }
 
 impl PodService {
@@ -57,8 +62,9 @@ impl PodService {
         sms:         Arc<dyn SmsAdapter>,
         kafka:       Arc<KafkaProducer>,
         shipment_ctx: Option<Arc<dyn ShipmentBillingContextSource>>,
+        pin_policy:  DeliveryPinPolicy,
     ) -> Self {
-        Self { pod_repo, otp_repo, pickup_repo, telemetry, pod_storage, pop_storage, sms, kafka, shipment_ctx }
+        Self { pod_repo, otp_repo, pickup_repo, telemetry, pod_storage, pop_storage, sms, kafka, shipment_ctx, pin_policy }
     }
 
     /// Step 1: Driver initiates POD capture at delivery location.
@@ -243,26 +249,18 @@ impl PodService {
             return Err(AppError::Forbidden { resource: "POD".into() });
         }
 
-        // OTP verification — validate if code provided
-        if let Some(otp_code) = cmd.otp_code {
-            let otp = self.otp_repo
-                .find_active_by_shipment(pod.shipment_id, tenant_id.inner()).await
-                .map_err(AppError::Internal)?;
-
-            match otp {
-                None => return Err(AppError::BusinessRule("No active OTP found for this shipment".into())),
-                Some(mut otp_record) => {
-                    if !otp_record.is_valid() {
-                        return Err(AppError::BusinessRule("OTP has expired. Request a new one".into()));
-                    }
-                    if !verify_otp(&otp_code, &otp_record.code_hash) {
-                        return Err(AppError::BusinessRule("Invalid OTP code".into()));
-                    }
-                    pod.mark_otp_verified(otp_record.id);
-                    otp_record.mark_used();
-                    self.otp_repo.save(&otp_record).await.map_err(AppError::Internal)?;
-                }
+        // Delivery PIN. Required unless DELIVERY_PIN__REQUIRED=false, and a PIN
+        // that is supplied is always checked. Every POD is a delivery, so there
+        // is no task type to exempt.
+        let pin = match cmd.otp_code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(code) => Some(self.check_delivery_pin(tenant_id.inner(), pod.shipment_id, code).await?),
+            None if self.pin_policy.required => {
+                return Err(AppError::BusinessRule(PinRejection::Missing.message()));
             }
+            None => None,
+        };
+        if let Some(otp) = &pin {
+            pod.mark_otp_verified(otp.id);
         }
 
         // Record COD collection
@@ -274,6 +272,18 @@ impl PodService {
         pod.submit().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         let pod_id = pod.id;
         self.pod_repo.save(&pod).await.map_err(AppError::Internal)?;
+
+        // The PIN is burned only now. Burning it before the evidence check and the
+        // save meant a missing photo or a failed write consumed the recipient's
+        // PIN, and every retry was refused with no live PIN. The POD is already
+        // final here (assert_draft refuses a second submit), so a failure below
+        // leaves an unused PIN behind, never a stuck delivery.
+        if let Some(mut otp) = pin {
+            otp.mark_used();
+            if let Err(e) = self.otp_repo.save(&otp).await {
+                tracing::error!(error = %e, otp_id = %otp.id, "POD submitted but its delivery PIN was not marked used");
+            }
+        }
 
         // Publish POD captured event — payments service reconciles COD and
         // issues a payment receipt for customer-booked shipments.
@@ -691,37 +701,52 @@ impl PodService {
         })
     }
 
-    /// Generate and send OTP to recipient's phone for high-value deliveries.
-    /// Should be called by driver before arriving at address.
+    /// Issues the recipient's delivery PIN and texts it to them — or keeps the
+    /// live one.
     ///
-    /// Returns `(otp_id, code)`. The plaintext code is always included so the
-    /// driver app can display it as a fallback when no SMS arrives (e.g. staging
-    /// with no Twilio configured, or the recipient has no mobile signal).
-    /// The endpoint is already auth-gated to drivers so surfacing it here is safe.
+    /// The customer app issues it at booking; the driver app asks at the door
+    /// only when the recipient has none. A live PIN is kept unless
+    /// `cmd.reissue` is set, because replacing it kills the code already on the
+    /// recipient's booking screen or in their earlier text. See
+    /// `delivery_pin::issue_decision`.
+    ///
+    /// Whether the caller sees the code is the handler's decision; a driver never does.
     pub async fn generate_and_send_otp(
         &self,
         tenant_id: &TenantId,
         cmd: GenerateOtpCommand,
-    ) -> AppResult<(Uuid, String)> {
-        // Invalidate any previous OTP for this shipment by letting it expire (no delete needed —
-        // find_active_by_shipment filters by is_used=false AND expires_at > NOW())
-        let code = generate_otp();
-        let code_hash = hash_otp(&code);
+    ) -> AppResult<IssuedPin> {
+        let live = self.otp_repo
+            .find_active_by_shipment(cmd.shipment_id, tenant_id.inner()).await
+            .map_err(AppError::Internal)?
+            .filter(OtpCode::is_valid);
+        if let Some(pin) = &live {
+            if issue_decision(Some(pin.failed_attempts), cmd.reissue, self.pin_policy.max_attempts)
+                == IssueDecision::KeepLive
+            {
+                return Ok(IssuedPin::KeptLive { otp_id: pin.id });
+            }
+        }
 
+        // A replaced PIN needs no delete: find_active_by_shipment takes the newest.
+        let code = generate_otp();
         let otp = OtpCode::new(
             tenant_id.inner(),
             cmd.shipment_id,
             cmd.recipient_phone.clone(),
-            code_hash,
+            hash_otp(&code),
+            self.pin_policy.ttl(),
         );
         let otp_id = otp.id;
 
         self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
 
         // SMS is best-effort. A Twilio failure (wrong creds, network, rate-limit)
-        // must NOT prevent the OTP from being issued — the driver app displays
-        // data.code as a fallback so the delivery can still be completed.
-        let message = format!("Your LogisticOS delivery code is: {code}. Valid for 15 minutes. Do not share.");
+        // must NOT prevent the PIN from being issued — the customer app shows it
+        // to the booking account, and the recipient can ask for a new one.
+        let message = format!(
+            "Your LogisticOS delivery PIN is {code}. Give it to the driver only when your delivery is in your hands."
+        );
         match self.sms.send(&cmd.recipient_phone, &message).await {
             Ok(()) => {
                 tracing::info!(
@@ -737,12 +762,12 @@ impl PodService {
                     error       = %e,
                     shipment_id = %cmd.shipment_id,
                     phone       = %cmd.recipient_phone,
-                    "SMS delivery failed — OTP still valid; code returned in API response"
+                    "SMS delivery failed — delivery PIN still issued"
                 );
             }
         }
 
-        Ok((otp_id, code))
+        Ok(IssuedPin::New { otp_id, code })
     }
 
     /// Retrieve a POD record by ID (for admin/ops views).
@@ -914,28 +939,47 @@ impl PodService {
         })
     }
 
-    /// Standalone OTP verification — driver can pre-verify before submitting POD.
-    /// Returns otp_id on success.
+    /// Standalone PIN check — the driver app verifies before submitting. Counts
+    /// toward the lock exactly as submit does. Returns otp_id on success.
     pub async fn verify_otp_standalone(
         &self,
         tenant_id: Uuid,
         cmd: VerifyOtpCommand,
     ) -> AppResult<Uuid> {
-        let otp = self.otp_repo
-            .find_active_by_shipment(cmd.shipment_id, tenant_id).await
-            .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::BusinessRule("No active OTP found for this shipment".into()))?;
-
-        if !otp.is_valid() {
-            return Err(AppError::BusinessRule("OTP has expired. Request a new one.".into()));
-        }
-
-        if !verify_otp(&cmd.code, &otp.code_hash) {
-            return Err(AppError::BusinessRule("Invalid OTP code".into()));
-        }
-
-        tracing::info!(shipment_id = %cmd.shipment_id, "OTP pre-verified");
+        let otp = self.check_delivery_pin(tenant_id, cmd.shipment_id, cmd.code.trim()).await?;
+        tracing::info!(shipment_id = %cmd.shipment_id, "Delivery PIN pre-verified");
         Ok(otp.id)
+    }
+
+    /// Checks a PIN against the shipment's live one. Shared by the standalone
+    /// verify and by submit, so the two cannot drift.
+    ///
+    /// An attempt is claimed before the comparison and handed back on a match.
+    /// Reading the counter and then comparing would let many parallel guesses
+    /// all see an unlocked PIN; a claim is one UPDATE, so each guess either
+    /// takes a slot or finds none left.
+    async fn check_delivery_pin(&self, tenant_id: Uuid, shipment_id: Uuid, code: &str) -> AppResult<OtpCode> {
+        let otp = self.otp_repo
+            .find_active_by_shipment(shipment_id, tenant_id).await
+            .map_err(AppError::Internal)?
+            .filter(OtpCode::is_valid)
+            .ok_or_else(|| AppError::BusinessRule(PinRejection::NotIssued.message()))?;
+
+        let max = self.pin_policy.max_attempts;
+        let used = self.otp_repo
+            .claim_attempt(otp.id, max).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::BusinessRule(PinRejection::Locked.message()))?;
+
+        if verify_otp(code, &otp.code_hash) {
+            self.otp_repo.release_attempt(otp.id).await.map_err(AppError::Internal)?;
+            Ok(otp)
+        } else {
+            tracing::warn!(shipment_id = %shipment_id, attempts_used = used, "Wrong delivery PIN");
+            Err(AppError::BusinessRule(
+                PinRejection::Wrong { attempts_left: attempts_left(max, used) }.message(),
+            ))
+        }
     }
 
     async fn load_pod(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {

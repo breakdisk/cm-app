@@ -291,6 +291,7 @@ mod otp_verification {
 
 mod otp_code {
     use super::*;
+    use logisticos_pod::domain::value_objects::delivery_pin::DeliveryPinPolicy;
 
     fn make_otp() -> OtpCode {
         OtpCode::new(
@@ -298,6 +299,7 @@ mod otp_code {
             Uuid::new_v4(),
             "+639170000001".to_string(),
             "e3b0c44298fc1c149afb4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            DeliveryPinPolicy::default().ttl(),
         )
     }
 
@@ -313,14 +315,17 @@ mod otp_code {
         assert!(!otp.is_used);
     }
 
+    // Decided 2026-09-15: the PIN is shown at booking, so it must live until
+    // delivery. It used to expire 15 minutes after issue.
     #[test]
-    fn new_otp_expires_15_minutes_from_creation() {
+    fn new_otp_lives_for_the_policy_ttl_not_15_minutes() {
         let otp = make_otp();
-        let expected_expiry_window = chrono::Duration::minutes(15);
+        let expected_expiry_window = DeliveryPinPolicy::default().ttl();
         let actual_window = otp.expires_at - otp.created_at;
         // Allow a 1-second tolerance for test execution time.
         assert!(actual_window >= expected_expiry_window - chrono::Duration::seconds(1));
         assert!(actual_window <= expected_expiry_window + chrono::Duration::seconds(1));
+        assert!(actual_window > chrono::Duration::days(1));
     }
 
     #[test]
@@ -329,6 +334,23 @@ mod otp_code {
         otp.mark_used();
         assert!(otp.is_used);
         assert!(!otp.is_valid(), "used OTP must no longer be valid");
+    }
+
+    #[test]
+    fn a_new_pin_has_no_failed_attempts_and_is_not_locked() {
+        let otp = make_otp();
+        assert_eq!(otp.failed_attempts, 0);
+        assert!(!otp.is_locked(DeliveryPinPolicy::default().max_attempts));
+    }
+
+    #[test]
+    fn a_pin_locks_once_every_attempt_is_spent() {
+        let max = DeliveryPinPolicy::default().max_attempts;
+        let mut otp = make_otp();
+        otp.failed_attempts = max - 1;
+        assert!(!otp.is_locked(max));
+        otp.failed_attempts = max;
+        assert!(otp.is_locked(max));
     }
 
     #[test]

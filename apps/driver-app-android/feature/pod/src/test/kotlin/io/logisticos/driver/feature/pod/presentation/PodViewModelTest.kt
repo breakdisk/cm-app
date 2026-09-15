@@ -6,6 +6,7 @@ import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.core.location.LatLng
 import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.feature.delivery.data.DeliveryRepository
+import io.logisticos.driver.feature.delivery.data.OtpGenerateResult
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -76,6 +77,80 @@ class PodViewModelTest {
     @AfterEach
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    // ── Delivery PIN ─────────────────────────────────────────────────────────
+
+    private fun requirePin() {
+        vm.setRequirements(
+            taskId = "t1",
+            shipmentId = "s1",
+            recipientName = "Ana Cruz",
+            requiresPhoto = true,
+            requiresSignature = true,
+            requiresOtp = true,
+        )
+    }
+
+    @Test
+    fun `a returned code is never verified on the driver's behalf`() = runTest {
+        // Dummy mode used to auto-confirm any code the server returned, which
+        // closed a delivery with no recipient involved.
+        requirePin()
+        coEvery { repo.generateOtp("s1", any(), false) } returns OtpGenerateResult(otpId = "o1", code = "123456")
+
+        vm.sendOtpToRecipient()
+
+        assertEquals(null, vm.uiState.value.otpToken)
+        coVerify(exactly = 0) { repo.verifyOtp(any(), any()) }
+    }
+
+    @Test
+    fun `a live PIN is reported, not replaced`() = runTest {
+        // The recipient's booking-screen PIN must survive the driver tapping send.
+        requirePin()
+        coEvery { repo.generateOtp("s1", any(), false) } returns
+            OtpGenerateResult(otpId = "o1", code = null, alreadyActive = true)
+
+        vm.sendOtpToRecipient()
+
+        assertTrue(vm.uiState.value.pinAlreadyIssued)
+        coVerify(exactly = 0) { repo.generateOtp(any(), any(), true) }
+    }
+
+    @Test
+    fun `send a new PIN asks pod to replace it`() = runTest {
+        requirePin()
+        coEvery { repo.generateOtp("s1", any(), true) } returns OtpGenerateResult(otpId = "o2", code = null)
+
+        vm.sendOtpToRecipient(reissue = true)
+
+        coVerify(exactly = 1) { repo.generateOtp("s1", any(), true) }
+        assertFalse(vm.uiState.value.pinAlreadyIssued)
+    }
+
+    @Test
+    fun `canSubmit waits for a verified PIN`() = runTest {
+        requirePin()
+        vm.onPhotoCaptured("/path/photo.jpg")
+        vm.onSignatureSaved("/path/sig.png")
+        assertFalse(vm.uiState.value.canSubmit)
+
+        coEvery { repo.verifyOtp("s1", "482913") } returns Unit
+        vm.confirmOtp("482913")
+
+        assertTrue(vm.uiState.value.canSubmit)
+    }
+
+    @Test
+    fun `a rejected PIN shows pod's reason and unlocks nothing`() = runTest {
+        requirePin()
+        coEvery { repo.verifyOtp("s1", "000000") } throws RuntimeException("Wrong PIN. 4 attempts left.")
+
+        vm.confirmOtp("000000")
+
+        assertEquals(null, vm.uiState.value.otpToken)
+        assertTrue(vm.uiState.value.otpError?.contains("4 attempts left") == true, "got ${vm.uiState.value.otpError}")
     }
 
     @Test

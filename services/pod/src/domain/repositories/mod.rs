@@ -14,6 +14,11 @@ pub trait PodRepository: Send + Sync {
 pub trait OtpRepository: Send + Sync {
     async fn find_active_by_shipment(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<OtpCode>>;
     async fn save(&self, otp: &OtpCode) -> anyhow::Result<()>;
+    /// Atomically spends one attempt against the PIN before it is compared.
+    /// Returns the attempts used including this one, or `None` when the PIN is locked.
+    async fn claim_attempt(&self, id: Uuid, max_attempts: i32) -> anyhow::Result<Option<i32>>;
+    /// Hands back the attempt claimed by a correct PIN, so a legitimate check never counts.
+    async fn release_attempt(&self, id: Uuid) -> anyhow::Result<()>;
 }
 
 // ── Proof of Pickup ────────────────────────────────────────────────────────────

@@ -76,8 +76,6 @@ const DEMO_SHIPMENTS: ShipmentRecord[] = [
 const PICKUP_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
 // Statuses where the customer can still cancel
 const CANCELLABLE_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
-// The driver is at or near the door — the only time a 15-minute PIN is any use
-const HANDOVER_STATUSES: ShipmentStatus[] = ["out_for_delivery", "delivery_attempted"];
 
 function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup, onCancel }: { item: ShipmentRecord; onShowQR: (awb: string) => void; onViewReceipt: (item: ShipmentRecord) => void; onTrackPickup: (item: ShipmentRecord) => void; onCancel: (item: ShipmentRecord) => void }) {
   const cfg       = STATUS_CONFIG[item.status] ?? { label: item.status, color: AMBER, icon: "time-outline" };
@@ -175,8 +173,8 @@ function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup, onCancel }
         </Pressable>
       )}
 
-      {/* Delivery PIN — at handover, for a shipment with a known UUID */}
-      {HANDOVER_STATUSES.includes(item.status) && !!item.id && (
+      {/* Delivery PIN — from booking until delivery, for a shipment with a known UUID */}
+      {ACTIVE_STATUSES.includes(item.status) && !!item.id && (
         <DeliveryPinCard shipmentId={item.id} recipientPhone={item.recipientPhone} compact />
       )}
 

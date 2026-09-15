@@ -18,15 +18,10 @@ jest.mock('../client', () => ({
   getPodClient: jest.fn(() => ({ post: mockPost })),
 }));
 
-import {
-  DELIVERY_PIN_TTL_MS,
-  getStoredDeliveryPin,
-  issueDeliveryPin,
-  onDeliveryPinIssued,
-  parseIssuedPin,
-} from '../pod';
+import { getStoredDeliveryPin, issueDeliveryPin, onDeliveryPinIssued, parseIssuedPin } from '../pod';
 
 const SHIPMENT = '0b9f3c1e-2f4a-4d7b-9a51-3c2e1f0a9b8c';
+const KEY = `delivery_pin_${SHIPMENT}`;
 
 beforeEach(() => {
   mockPost.mockReset();
@@ -34,7 +29,7 @@ beforeEach(() => {
 });
 
 describe('issueDeliveryPin', () => {
-  test('asks pod for the shipment, sends the recipient phone, and keeps the code', async () => {
+  test('asks pod for the shipment without replacing a live PIN, and keeps the code', async () => {
     mockPost.mockResolvedValue({ data: { data: { otp_id: 'o1', code: '042917' } } });
 
     const pin = await issueDeliveryPin(SHIPMENT, '+639171234567');
@@ -42,23 +37,39 @@ describe('issueDeliveryPin', () => {
     expect(mockPost).toHaveBeenCalledWith('/v1/otps/generate', {
       shipment_id: SHIPMENT,
       recipient_phone: '+639171234567',
+      reissue: false,
     });
     expect(pin).toMatchObject({ kind: 'code', code: '042917' });
     expect(await getStoredDeliveryPin(SHIPMENT)).toMatchObject({ kind: 'code', code: '042917' });
   });
 
-  // PR #161 withholds the code from roles that must not read it.
-  test('a withheld code is kept as sent, so the app does not re-issue it', async () => {
-    mockPost.mockResolvedValue({ data: { data: { otp_id: 'o1', sent: true } } });
+  test('"Get a new PIN" asks pod to replace it', async () => {
+    mockPost.mockResolvedValue({ data: { data: { otp_id: 'o2', code: '111222' } } });
+
+    await issueDeliveryPin(SHIPMENT, '', { reissue: true });
+
+    expect(mockPost).toHaveBeenCalledWith('/v1/otps/generate', expect.objectContaining({ reissue: true }));
+  });
+
+  // pod kept a PIN that was issued elsewhere. Storing "active" would hide the
+  // option to get one this device can show.
+  test('a live PIN that is not on this device comes back active and is not stored', async () => {
+    mockPost.mockResolvedValue({ data: { data: { otp_id: 'o1', active: true, sent: false } } });
 
     const pin = await issueDeliveryPin(SHIPMENT, '');
 
-    expect(pin.kind).toBe('sent');
+    expect(pin.kind).toBe('active');
+    expect(await getStoredDeliveryPin(SHIPMENT)).toBeNull();
+  });
+
+  test('a withheld code is kept as sent', async () => {
+    mockPost.mockResolvedValue({ data: { data: { otp_id: 'o1', sent: true } } });
+
+    expect((await issueDeliveryPin(SHIPMENT, '')).kind).toBe('sent');
     expect(await getStoredDeliveryPin(SHIPMENT)).toMatchObject({ kind: 'sent' });
   });
 
-  // Each call replaces the recipient's code. Two taps must be one request.
-  test('a second tap while the first request is open does not issue again', async () => {
+  test('two identical taps while the first request is open are one request', async () => {
     let resolve: (v: unknown) => void = () => {};
     mockPost.mockReturnValue(new Promise(r => { resolve = r; }));
 
@@ -90,16 +101,16 @@ describe('issueDeliveryPin', () => {
 });
 
 describe('getStoredDeliveryPin', () => {
-  // pod expires a PIN after 15 minutes. Showing a dead one would fail at the door.
-  test('an expired PIN is not shown', async () => {
-    const issuedAt = Date.now() - DELIVERY_PIN_TTL_MS - 1;
-    mockStore.set(`delivery_pin_${SHIPMENT}`, JSON.stringify({ kind: 'code', code: '123456', issuedAt }));
+  // Decided 2026-09-15: the PIN lives until delivery. A sea shipment takes weeks.
+  test('a PIN issued weeks ago is still shown', async () => {
+    const issuedAt = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    mockStore.set(KEY, JSON.stringify({ kind: 'code', code: '123456', issuedAt }));
 
-    expect(await getStoredDeliveryPin(SHIPMENT)).toBeNull();
+    expect(await getStoredDeliveryPin(SHIPMENT)).toMatchObject({ kind: 'code', code: '123456' });
   });
 
   test('a corrupt entry reads as no PIN', async () => {
-    mockStore.set(`delivery_pin_${SHIPMENT}`, '{not json');
+    mockStore.set(KEY, '{not json');
     expect(await getStoredDeliveryPin(SHIPMENT)).toBeNull();
   });
 });
