@@ -637,6 +637,8 @@ export function BookingScreen({ route }: { route?: any }) {
         status: "confirmed",
         origin, destination,
         destCountry: isIntl ? receiverCountry : undefined,
+        recipientName: receiverName,
+        recipientPhone: receiverPhone,
         description: isIntl ? intlDescStore : (description || "Parcel"),
         weight: isIntl ? intlWeightStr : (weight || undefined),
         isCOD: isCOD && !isIntl,

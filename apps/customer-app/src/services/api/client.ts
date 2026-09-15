@@ -101,6 +101,7 @@ export function createApiClient(baseURL: string): AxiosInstance {
 let cachedIdentityClient: AxiosInstance | null = null;
 let cachedOrderClient: AxiosInstance | null = null;
 let cachedTrackingClient: AxiosInstance | null = null;
+let cachedPodClient: AxiosInstance | null = null;
 
 export function getIdentityClient(): AxiosInstance {
   if (!cachedIdentityClient) {
@@ -121,6 +122,14 @@ export function getTrackingClient(): AxiosInstance {
     cachedTrackingClient = createApiClient(process.env.EXPO_PUBLIC_DELIVERY_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8007');
   }
   return cachedTrackingClient;
+}
+
+/** Proof of delivery — the delivery PIN (`/v1/otps`). */
+export function getPodClient(): AxiosInstance {
+  if (!cachedPodClient) {
+    cachedPodClient = createApiClient(process.env.EXPO_PUBLIC_POD_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000');
+  }
+  return cachedPodClient;
 }
 
 /**

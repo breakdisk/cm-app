@@ -14,13 +14,17 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDispatch, useSelector } from "react-redux";
 import { trackingActions } from "../../store";
 import type { RootState } from "../../store";
-import { useTracking } from "../../hooks/useTracking";
-import { useNavigation, useRoute } from "@react-navigation/native";
+import { useIsFocused, useNavigation, useRoute } from "@react-navigation/native";
 import { useNetInfo } from "@react-native-community/netinfo";
 import { getDatabase } from "../../db/sqlite";
 import OfflineIndicator from "../../components/OfflineIndicator";
 import { LiveDriverMap } from "../../components/LiveDriverMap";
 import { trackingApi } from "../../services/api/tracking";
+import { DeliveryPinCard } from "../../components/DeliveryPinCard";
+import {
+  LIVE_TRACKING_POLL_MS, isTerminalStatus, mapPublicTracking,
+  type ShipmentStatus, type TrackingResult,
+} from "./mapTracking";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -30,30 +34,6 @@ const PURPLE = "#A855F7";
 const RED    = "#FF3B5C";
 const GLASS  = "rgba(255,255,255,0.04)";
 const BORDER = "rgba(255,255,255,0.08)";
-
-type ShipmentStatus =
-  | "pending" | "confirmed" | "picked_up"
-  | "in_transit" | "out_for_delivery"
-  | "delivery_attempted" | "delivered" | "returned" | "cancelled";
-
-interface TimelineEvent {
-  status:      ShipmentStatus;
-  description: string;
-  location?:   string;
-  occurred_at: string;
-}
-
-interface TrackingResult {
-  awb:              string;
-  status:           ShipmentStatus;
-  origin_city:      string;
-  destination_city: string;
-  eta?:             string;
-  driver_name?:     string;
-  driver_phone?:    string;
-  driver_location?: { lat: number; lng: number };
-  timeline:         TimelineEvent[];
-}
 
 
 const STATUS_CONFIG: Record<ShipmentStatus, { label: string; color: string; icon: string }> = {
@@ -97,11 +77,10 @@ export function TrackingScreen() {
   const [confirmedInvoiceId, setConfirmedInvoiceId] = useState<string | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
-  // Use the tracking hook for the current AWB
-  const { data: trackingData, loading: hookLoading, error: hookError, refetch } = useTracking(
-    currentAwb,
-    { autoload: !!currentAwb && !!isConnected }
-  );
+  const [refreshing, setRefreshing] = useState(false);
+  // Tabs stay mounted, so focus — not mount — is what bounds the live refresh.
+  const isFocused = useIsFocused();
+  const bookedShipments = useSelector((s: RootState) => s.shipments.list);
 
   // Load offline tracking data when offline
   useEffect(() => {
@@ -139,25 +118,7 @@ export function TrackingScreen() {
     try {
       const tracking = await trackingApi.getByTrackingNumber(awb);
       const data = (tracking.data as any)?.data ?? tracking.data as any;
-      const mapped: TrackingResult = {
-        awb: data.tracking_number ?? awb,
-        status: (data.status ?? "pending") as ShipmentStatus,
-        origin_city: data.origin ?? data.origin_city ?? "",
-        destination_city: data.destination ?? data.destination_city ?? "",
-        eta: data.estimated_delivery ?? data.eta,
-        driver_name: data.driver?.name,
-        driver_phone: undefined,
-        driver_location: data.driver_location
-          ? { lat: Number(data.driver_location.lat), lng: Number(data.driver_location.lng) }
-          : undefined,
-        timeline: (data.history ?? data.events ?? []).map((e: any) => ({
-          status: (e.status ?? "pending") as ShipmentStatus,
-          description: e.description ?? e.status_label ?? "",
-          location: e.location,
-          occurred_at: e.occurred_at ?? e.timestamp ?? "",
-        })),
-      };
-      setResult(mapped);
+      setResult(mapPublicTracking(tracking.data, awb));
       setCurrentAwb(awb);
       dispatch(trackingActions.addToHistory({
         awb,
@@ -179,14 +140,48 @@ export function TrackingScreen() {
 
   // Use online data if connected, else use offline data
   const displayResult = isConnected ? result : (offlineData ? result : null);
-  const displayLoading = isConnected ? (localLoading || hookLoading) : false;
-  const displayError = isConnected ? (localError || hookError) : null;
+  const displayLoading = isConnected ? localLoading : false;
+  const displayError = isConnected ? localError : null;
+  // The PIN is only offered for a shipment this account booked — searching someone else's AWB shows none.
+  const pinShipment = displayResult ? bookedShipments.find(b => b.awb === displayResult.awb) : undefined;
 
   const handleRefresh = async () => {
-    if (isConnected && currentAwb) {
-      await refetch();
+    if (!isConnected || !currentAwb) return;
+    setRefreshing(true);
+    try {
+      const tracking = await trackingApi.getByTrackingNumber(currentAwb);
+      setResult(mapPublicTracking(tracking.data, currentAwb));
+      setLocalError("");
+    } catch (err: any) {
+      setLocalError(err?.message ?? "Failed to refresh tracking. Please try again.");
+    } finally {
+      setRefreshing(false);
     }
   };
+
+  // Live refresh while this screen is on top and the shipment is still moving.
+  const liveStatus = result?.status;
+  useEffect(() => {
+    if (!isFocused || !isConnected || !currentAwb || !liveStatus || isTerminalStatus(liveStatus)) return;
+    let stopped = false;
+    let busy = false;
+    const timer = setInterval(async () => {
+      if (busy) return; // a slow response must not stack requests
+      busy = true;
+      try {
+        const tracking = await trackingApi.getByTrackingNumber(currentAwb);
+        if (!stopped) setResult(mapPublicTracking(tracking.data, currentAwb));
+      } catch {
+        // Keep the last good result on screen; the next tick tries again.
+      } finally {
+        busy = false;
+      }
+    }, LIVE_TRACKING_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [isFocused, isConnected, currentAwb, liveStatus]);
 
   const handleConfirmReceipt = useCallback(async () => {
     if (!currentAwb) return;
@@ -300,15 +295,15 @@ export function TrackingScreen() {
         <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 8 }}>
           <Pressable
             onPress={handleRefresh}
-            disabled={displayLoading}
+            disabled={refreshing}
             style={({ pressed }) => [
               s.refreshBtn,
-              { opacity: pressed || displayLoading ? 0.6 : 1 },
+              { opacity: pressed || refreshing ? 0.6 : 1 },
             ]}
           >
             <Ionicons name="refresh-outline" size={16} color={CYAN} />
             <Text style={{ color: CYAN, fontSize: 13, fontWeight: "600", marginLeft: 6 }}>
-              {displayLoading ? "Refreshing..." : "Refresh"}
+              {refreshing ? "Refreshing..." : "Refresh"}
             </Text>
           </Pressable>
         </View>
@@ -379,6 +374,12 @@ export function TrackingScreen() {
               driverLocation={displayResult.driver_location}
               driverName={displayResult.driver_name}
             />
+          )}
+
+          {/* Delivery PIN — at handover only; a PIN lives 15 minutes */}
+          {pinShipment?.id && isConnected
+            && (displayResult.status === "out_for_delivery" || displayResult.status === "delivery_attempted") && (
+            <DeliveryPinCard shipmentId={pinShipment.id} recipientPhone={pinShipment.recipientPhone} />
           )}
 
           {/* Confirm Delivery CTA — shown when out for delivery or attempted */}
