@@ -261,6 +261,20 @@ pub async fn go_offline(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// `GET /v1/drivers/me/hos` — the authenticated driver's hours-of-service clock:
+/// on-duty minutes in the rolling window against the configured limit
+/// (`HOS__MAX_ON_DUTY_MINUTES`, `HOS__WINDOW_HOURS`). Shown and recorded only —
+/// the body says `enforced: false` and nothing is refused on it.
+pub async fn get_my_hos(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let clock = state.location_service.hours_of_service(&driver_id, &tenant_id).await?;
+    Ok(Json(serde_json::json!({ "data": clock })))
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct SetStatusRequest {
     /// "available" | "offline" | "on_break". Other transitions (en_route /

@@ -14,7 +14,31 @@ pub struct Config {
     /// Optional — if absent, FCM push is skipped (tasks still appear via polling).
     #[serde(default)]
     pub fcm: FcmConfig,
+    /// Hours-of-service clock — display and record only.
+    /// `HOS__MAX_ON_DUTY_MINUTES` (660) and `HOS__WINDOW_HOURS` (14).
+    #[serde(default)]
+    pub hos: HosConfig,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HosConfig {
+    #[serde(default = "default_hos_max_on_duty_minutes")]
+    pub max_on_duty_minutes: i64,
+    #[serde(default = "default_hos_window_hours")]
+    pub window_hours: i64,
+}
+
+impl Default for HosConfig {
+    fn default() -> Self {
+        Self {
+            max_on_duty_minutes: default_hos_max_on_duty_minutes(),
+            window_hours: default_hos_window_hours(),
+        }
+    }
+}
+
+fn default_hos_max_on_duty_minutes() -> i64 { 660 }
+fn default_hos_window_hours() -> i64 { 14 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct IdentityConfig {

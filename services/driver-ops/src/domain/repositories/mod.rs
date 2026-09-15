@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use logisticos_types::{DriverId, TenantId};
 use serde::Serialize;
 use uuid::Uuid;
-use crate::domain::entities::{Driver, DriverTask, DriverLocation};
+use crate::domain::entities::{Driver, DriverTask, DriverLocation, DutySession};
 
 /// Tenant-wide task counts for the admin summary KPI strip.
 #[derive(Debug, Clone, Serialize)]
@@ -153,4 +153,17 @@ pub trait LocationRepository: Send + Sync {
         from: chrono::DateTime<chrono::Utc>,
         to: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<DriverLocation>>;
+}
+
+/// Duty sessions behind the hours-of-service clock. At most one open session per
+/// driver, enforced by a partial unique index, so a repeated go-online cannot
+/// stack sessions and double-count the clock.
+#[async_trait]
+pub trait DutySessionRepository: Send + Sync {
+    /// Opens a session at `at` unless one is already open. True when it opened one.
+    async fn open(&self, tenant_id: Uuid, driver_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool>;
+    /// Closes the open session, if any, at `at`. True when it closed one.
+    async fn close_open(&self, tenant_id: Uuid, driver_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool>;
+    /// Sessions still open or ended after `since`, oldest first.
+    async fn list_overlapping(&self, tenant_id: Uuid, driver_id: Uuid, since: DateTime<Utc>) -> anyhow::Result<Vec<DutySession>>;
 }

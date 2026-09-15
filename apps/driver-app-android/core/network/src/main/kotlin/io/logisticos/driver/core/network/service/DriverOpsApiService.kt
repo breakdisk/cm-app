@@ -190,6 +190,25 @@ data class EarningEntryItem(
 @Serializable
 data class DriverProfileResponse(val data: DriverProfileData)
 
+// ─── Hours of service ────────────────────────────────────────────────────────
+
+@Serializable
+data class HosResponse(val data: HosData)
+
+/** GET /v1/drivers/me/hos. Shown and recorded only — [enforced] is false today. */
+@Serializable
+data class HosData(
+    @SerialName("window_hours")            val windowHours: Int = 14,
+    @SerialName("limit_minutes")           val limitMinutes: Long = 660,
+    @SerialName("on_duty_minutes")         val onDutyMinutes: Long = 0,
+    @SerialName("remaining_minutes")       val remainingMinutes: Long = 0,
+    @SerialName("over_limit")              val overLimit: Boolean = false,
+    /** ISO-8601; present only while the driver is on duty. */
+    @SerialName("on_duty_since")           val onDutySince: String? = null,
+    @SerialName("current_stretch_minutes") val currentStretchMinutes: Long = 0,
+    val enforced: Boolean = false,
+)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface DriverOpsApiService {
@@ -236,6 +255,10 @@ interface DriverOpsApiService {
     /** POST /v1/drivers/go-offline */
     @POST("v1/drivers/go-offline")
     suspend fun goOffline()
+
+    /** GET /v1/drivers/me/hos — hours-of-service clock over the rolling window. */
+    @GET("v1/drivers/me/hos")
+    suspend fun getMyHos(): HosResponse
 
     /**
      * GET /v1/drivers/me — returns the authenticated driver's own profile.

@@ -12,8 +12,12 @@ fun kilograms(grams: Long): String {
     return if (kg >= 100) String.format(Locale.US, "%,d kg", kg.toLong()) else String.format(Locale.US, "%.1f kg", kg)
 }
 
-/** "6h 12m" from minutes; never negative. */
+/** "6h 12m", "11h", "45m" from minutes; never negative. */
 fun hoursMinutes(minutes: Long): String {
     val m = minutes.coerceAtLeast(0)
-    return if (m >= 60) "${m / 60}h ${m % 60}m" else "${m}m"
+    return when {
+        m < 60 -> "${m}m"
+        m % 60 == 0L -> "${m / 60}h"
+        else -> "${m / 60}h ${m % 60}m"
+    }
 }

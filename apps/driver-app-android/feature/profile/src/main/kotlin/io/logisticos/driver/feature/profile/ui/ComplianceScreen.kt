@@ -60,6 +60,10 @@ fun ComplianceScreen(
             modifier = Modifier.padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            // Hours of service lead the screen, as in the design. Independent of
+            // the compliance profile: it still shows when that fails to load.
+            HosPanel()
+
             when {
                 state.loading && state.profile == null -> {
                     Box(

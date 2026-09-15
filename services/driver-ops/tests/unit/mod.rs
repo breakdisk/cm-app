@@ -397,3 +397,92 @@ mod geofence {
         assert!((ARRIVAL_GEOFENCE_METERS - 200.0).abs() < f64::EPSILON);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Hours of service
+// ---------------------------------------------------------------------------
+
+mod hours_of_service {
+    use chrono::{DateTime, Duration, TimeZone, Utc};
+    use logisticos_driver_ops::domain::entities::duty::{hos_clock, DutySession, HosPolicy};
+
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 15, 18, 0, 0).unwrap()
+    }
+
+    fn closed(started_hours_ago: i64, ended_hours_ago: i64) -> DutySession {
+        DutySession {
+            started_at: now() - Duration::hours(started_hours_ago),
+            ended_at: Some(now() - Duration::hours(ended_hours_ago)),
+        }
+    }
+
+    #[test]
+    fn no_sessions_is_the_whole_allowance() {
+        let clock = hos_clock(&[], HosPolicy::default(), now());
+        assert_eq!(clock.on_duty_minutes, 0);
+        assert_eq!(clock.remaining_minutes, 660);
+        assert_eq!(clock.window_hours, 14);
+        assert!(!clock.over_limit);
+        assert_eq!(clock.on_duty_since, None);
+        assert_eq!(clock.current_stretch_minutes, 0);
+        assert!(!clock.enforced);
+    }
+
+    #[test]
+    fn an_open_session_counts_up_to_now_and_is_the_current_stretch() {
+        let started = now() - Duration::minutes(372);
+        let clock = hos_clock(&[DutySession { started_at: started, ended_at: None }], HosPolicy::default(), now());
+        assert_eq!(clock.on_duty_minutes, 372);
+        assert_eq!(clock.remaining_minutes, 288);
+        assert_eq!(clock.on_duty_since, Some(started));
+        assert_eq!(clock.current_stretch_minutes, 372);
+    }
+
+    #[test]
+    fn only_the_part_inside_the_rolling_window_counts() {
+        // 20 h ago to 12 h ago: only 14 h ago to 12 h ago is inside a 14 h window.
+        let clock = hos_clock(&[closed(20, 12)], HosPolicy::default(), now());
+        assert_eq!(clock.on_duty_minutes, 120);
+    }
+
+    #[test]
+    fn a_session_that_ended_before_the_window_counts_nothing() {
+        let clock = hos_clock(&[closed(30, 16)], HosPolicy::default(), now());
+        assert_eq!(clock.on_duty_minutes, 0);
+    }
+
+    #[test]
+    fn several_stretches_add_up() {
+        let clock = hos_clock(&[closed(10, 7), closed(5, 3)], HosPolicy::default(), now());
+        assert_eq!(clock.on_duty_minutes, 300);
+        assert_eq!(clock.on_duty_since, None);
+    }
+
+    #[test]
+    fn past_the_limit_is_reported_not_enforced() {
+        let clock = hos_clock(&[closed(13, 1)], HosPolicy::default(), now());
+        assert_eq!(clock.on_duty_minutes, 720);
+        assert_eq!(clock.remaining_minutes, 0);
+        assert!(clock.over_limit);
+        assert!(!clock.enforced);
+    }
+
+    #[test]
+    fn an_end_stamped_after_now_is_clamped_to_now() {
+        let skewed = DutySession {
+            started_at: now() - Duration::hours(1),
+            ended_at: Some(now() + Duration::minutes(10)),
+        };
+        assert_eq!(hos_clock(&[skewed], HosPolicy::default(), now()).on_duty_minutes, 60);
+    }
+
+    #[test]
+    fn a_mistyped_policy_is_clamped() {
+        let policy = HosPolicy { max_on_duty_minutes: -5, window_hours: 100_000 };
+        let clock = hos_clock(&[closed(2, 1)], policy, now());
+        assert_eq!(clock.window_hours, 168);
+        assert_eq!(clock.limit_minutes, 0);
+        assert!(clock.over_limit);
+    }
+}

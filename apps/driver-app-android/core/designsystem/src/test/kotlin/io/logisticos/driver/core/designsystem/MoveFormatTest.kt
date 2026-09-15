@@ -21,6 +21,7 @@ class MoveFormatTest {
     @Test
     fun `hours and minutes never go negative`() {
         assertEquals("6h 12m", hoursMinutes(372))
+        assertEquals("11h", hoursMinutes(660))
         assertEquals("45m", hoursMinutes(45))
         assertEquals("0m", hoursMinutes(-5))
     }

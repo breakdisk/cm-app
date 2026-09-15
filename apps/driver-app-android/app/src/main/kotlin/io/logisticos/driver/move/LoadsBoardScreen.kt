@@ -60,6 +60,9 @@ import io.logisticos.driver.core.network.service.TaskItem
 import io.logisticos.driver.feature.home.presentation.HomeUiState
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
 import io.logisticos.driver.feature.profile.presentation.EarningsViewModel
+import io.logisticos.driver.feature.profile.presentation.HosUiState
+import io.logisticos.driver.feature.profile.presentation.HosViewModel
+import io.logisticos.driver.feature.profile.ui.HosSummaryLine
 import java.util.Locale
 
 /**
@@ -79,9 +82,13 @@ fun LoadsBoardScreen(
     onOpenProfile: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
     earningsViewModel: EarningsViewModel = hiltViewModel(),
+    hosViewModel: HosViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
     val earnings by earningsViewModel.uiState.collectAsState()
+    val hos by hosViewModel.uiState.collectAsState()
+    // The hours-of-service clock moves when duty does.
+    LaunchedEffect(state.isOnline) { hosViewModel.refresh() }
     RequestDriverPermissions(
         onGranted = viewModel::onLocationPermissionGranted,
         onDenied = viewModel::onLocationPermissionDenied,
@@ -123,6 +130,7 @@ fun LoadsBoardScreen(
                     onToggleDuty = viewModel::toggleOnlineStatus,
                     onOpenOffer = { reviewing = true },
                     onNavigateToTask = onNavigateToTask,
+                    hos = hos,
                 )
             }
         }
@@ -141,6 +149,7 @@ private fun Board(
     onToggleDuty: () -> Unit,
     onOpenOffer: () -> Unit,
     onNavigateToTask: (String) -> Unit,
+    hos: HosUiState,
 ) {
     val c = LocalMoveColors.current
     Column(
@@ -169,6 +178,7 @@ private fun Board(
                         if (onDuty) "Loads come to you while you're on duty" else "Board paused — dispatch routes around you",
                         color = c.muted, fontSize = 14.sp,
                     )
+                    hos.clock?.let { HosSummaryLine(it, hos.fetchedAtMillis, Modifier.padding(top = 4.dp)) }
                 }
             }
             Spacer(Modifier.height(16.dp))

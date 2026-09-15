@@ -124,10 +124,12 @@ pub async fn run() -> anyhow::Result<()> {
     let driver_repo   = Arc::new(PgDriverRepository::new(pool.clone()));
     let task_repo     = Arc::new(PgTaskRepository::new(pool.clone()));
     let location_repo = Arc::new(PgLocationRepository::new(pool.clone()));
+    let duty_repo     = Arc::new(crate::infrastructure::db::PgDutySessionRepository::new(pool.clone()));
 
     // Application services
     let driver_service = Arc::new(DriverService::new(
         Arc::clone(&driver_repo) as _,
+        Arc::clone(&duty_repo) as _,
     ));
     let task_service = Arc::new(TaskService::new(
         Arc::clone(&task_repo) as _,
@@ -138,6 +140,11 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&driver_repo) as _,
         Arc::clone(&location_repo) as _,
         Arc::clone(&kafka),
+        Arc::clone(&duty_repo) as _,
+        crate::domain::entities::HosPolicy {
+            max_on_duty_minutes: cfg.hos.max_on_duty_minutes,
+            window_hours:        cfg.hos.window_hours,
+        },
     ));
 
     // Broadcast channel for WebSocket roster streaming — location + status (capacity 512)
