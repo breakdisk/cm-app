@@ -53,6 +53,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.core.common.AssignmentPayload
+import io.logisticos.driver.core.designsystem.Condensed
+import io.logisticos.driver.core.designsystem.LocalMoveColors
+import io.logisticos.driver.core.designsystem.MoveTheme
 import io.logisticos.driver.core.network.service.TaskItem
 import io.logisticos.driver.feature.home.presentation.HomeUiState
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
@@ -88,7 +91,7 @@ fun LoadsBoardScreen(
     var reviewing by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(offer?.offerId) { if (offer == null) reviewing = false }
 
-    MoveTheme(sun) {
+    MoveTheme(sun, onToggleSun) {
         val c = LocalMoveColors.current
         Column(Modifier.fillMaxSize().background(c.ground)) {
             BoardHeader(

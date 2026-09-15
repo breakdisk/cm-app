@@ -41,12 +41,11 @@ import io.logisticos.driver.core.location.LocationForegroundService
 import io.logisticos.driver.feature.hub.domain.HubScanType
 import io.logisticos.driver.feature.hub.ui.HubScanScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
-import androidx.compose.runtime.saveable.rememberSaveable
 import io.logisticos.driver.BuildConfig
 import io.logisticos.driver.move.LoadsBoardScreen
 import io.logisticos.driver.move.MoveBottomBar
-import io.logisticos.driver.move.NightColors
-import io.logisticos.driver.move.SunColors
+import io.logisticos.driver.core.designsystem.LocalMoveColors
+import io.logisticos.driver.core.designsystem.LocalSunMode
 
 // ── Route constants ───────────────────────────────────────────────────────────
 private const val HOME_ROUTE             = "home"
@@ -110,14 +109,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
         }
     }
 
-    // Move build only: sun mode for direct sunlight, kept across tabs.
-    var sun by rememberSaveable { mutableStateOf(false) }
+    // Sun mode (Move build) is held by AppNavGraph and read from the theme.
+    val sunMode = LocalSunMode.current
+    val moveColors = LocalMoveColors.current
 
     Scaffold(
-        containerColor = if (BuildConfig.MOVE_UI) (if (sun) SunColors.ground else NightColors.ground) else NavCanvas,
+        containerColor = if (BuildConfig.MOVE_UI) moveColors.ground else NavCanvas,
         bottomBar = {
             if (BuildConfig.MOVE_UI) {
-                MoveBottomBar(navController = shiftNavController, sun = sun)
+                MoveBottomBar(navController = shiftNavController)
             } else {
                 BottomNavBar(navController = shiftNavController, unreadCount = unreadCount)
             }
@@ -133,8 +133,8 @@ fun ShiftScaffold(rootNavController: NavHostController) {
             composable(HOME_ROUTE) {
                 if (BuildConfig.MOVE_UI) {
                     LoadsBoardScreen(
-                        sun = sun,
-                        onToggleSun = { sun = !sun },
+                        sun = sunMode.on,
+                        onToggleSun = { sunMode.toggle?.invoke() },
                         onNavigateToTask = { taskId ->
                             shiftNavController.navigate(NAVIGATE_TO_STOP_ROUTE.replace("{taskId}", taskId))
                         },
@@ -163,7 +163,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onSelectTask = { taskId ->
                         shiftNavController.navigate("navigate/$taskId")
                     },
-                    onBack = { shiftNavController.popBackStack() },
+                    // A bottom tab in the Move build: no back affordance there.
+                    onBack = if (BuildConfig.MOVE_UI) null else ({ shiftNavController.popBackStack() }),
+                    onOpenHubScan = { shiftNavController.navigateToHubScan() },
                 )
             }
 
@@ -173,6 +175,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToStop = { taskId ->
                         shiftNavController.navigate("navigate/$taskId")
                     },
+                    onScanManifest = { shiftNavController.navigateToHubScan() },
                 )
             }
 
@@ -232,13 +235,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 )
             }
 
+            // Compliance and the wallet are bottom tabs in the Move build, so
+            // they carry no back affordance there.
             composable(COMPLIANCE_ROUTE) {
-                ComplianceScreen(onBack = { shiftNavController.popBackStack() })
+                ComplianceScreen(onBack = if (BuildConfig.MOVE_UI) null else ({ shiftNavController.popBackStack() }))
             }
 
             // ── Earnings & COD cash history (Profile → Earnings) ──────────
             composable(EARNINGS_ROUTE) {
-                EarningsScreen(onBack = { shiftNavController.popBackStack() })
+                EarningsScreen(onBack = if (BuildConfig.MOVE_UI) null else ({ shiftNavController.popBackStack() }))
             }
 
             // ── Assignment accept/reject ──────────────────────────────────

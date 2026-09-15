@@ -10,27 +10,21 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -38,28 +32,18 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import io.logisticos.driver.core.designsystem.*
 import io.logisticos.driver.feature.hub.domain.HubScanType
 import io.logisticos.driver.feature.hub.presentation.HubScanViewModel
 import io.logisticos.driver.feature.scanner.domain.ScanResult
 
-// ── Colour tokens (match global design system) ────────────────────────────────
-private val Canvas  = Color(0xFF050810)
-private val Surface = Color(0xFF0A0E1A)
-private val Cyan    = Color(0xFF00E5FF)
-private val Purple  = Color(0xFFA855F7)
-private val Green   = Color(0xFF00FF88)
-private val Amber   = Color(0xFFFFAB00)
-private val Red     = Color(0xFFFF3B5C)
-private val Border  = Color(0x14FFFFFF)
-private val TextMuted = Color(0x66FFFFFF)
-
 /**
- * Hub Mode scan screen.
+ * Hub Mode scan screen (driver design, "hub").
  *
  * Provides:
- * - Scan-type selector (INBOUND_RECEIVE → LOCAL_SORT_ASSIGN)
+ * - Scan-type selector (INBOUND_RECEIVE → LOCAL_SORT_ASSIGN), scrolling sideways
+ * - Live camera barcode scanner in the bracketed viewfinder, or manual entry
  * - Context fields (hub ID, master AWB, shipment ID, pallet/container IDs)
- * - Live camera barcode scanner (piece AWB) or manual entry
  * - Submit button with inline success/queued/error feedback
  *
  * @param initialHubId  Pre-filled from auth claims or hub session config.
@@ -73,9 +57,8 @@ fun HubScanScreen(
     onBack:         () -> Unit,
     viewModel: HubScanViewModel = hiltViewModel(),
 ) {
-    val state  by viewModel.uiState.collectAsState()
-    val context       = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val state by viewModel.uiState.collectAsState()
+    val c = LocalMoveColors.current
 
     // Pre-fill hub ID and scan type from caller on first composition.
     LaunchedEffect(Unit) {
@@ -86,223 +69,142 @@ fun HubScanScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Canvas)
+            .background(c.ground)
             .verticalScroll(rememberScrollState())
             .padding(bottom = 32.dp),
     ) {
-        // ── Header ──────────────────────────────────────────────────────────
+        MoveScreenHeader(label = "Hub mode · ${state.scanType.label}", title = "Scan at the hub", onBack = onBack)
+
+        // ── Scan type ────────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White.copy(alpha = 0.6f))
+            HubScanType.entries.forEach { type ->
+                MoveChip(label = type.label, selected = type == state.scanType, onClick = { viewModel.setScanType(type) })
             }
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Hub Mode", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text(state.scanType.label, color = Cyan, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            }
-            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = Cyan, modifier = Modifier.size(24.dp))
         }
-
-        // ── Scan Type Selector ───────────────────────────────────────────────
-        ScanTypeSelector(
-            selected  = state.scanType,
-            onSelect  = viewModel::setScanType,
-            modifier  = Modifier.padding(horizontal = 16.dp),
+        Text(
+            text = state.scanType.description,
+            color = c.muted,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
         )
 
         if (state.scanType == HubScanType.EXCEPTION_FLAG) {
-            ExceptionSubTypeSelector(
-                selected = state.exception,
-                onSelect = viewModel::setException,
-                modifier = Modifier.padding(horizontal = 16.dp),
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+                MoveLabel("Exception type *", dot = c.amber)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()).padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    exceptionOptions.forEach { (value, label) ->
+                        MoveChip(label = label, selected = value == state.exception, onClick = { viewModel.setException(value) }, tone = MoveTone.Amber)
+                    }
+                }
+            }
+        }
+
+        // ── Camera viewfinder ────────────────────────────────────────────────
+        MoveViewfinder(Modifier.padding(horizontal = 16.dp).height(228.dp)) {
+            CameraSection(
+                onScanResult = { result ->
+                    // System.currentTimeMillis() captured at scan result callback — closest
+                    // available proxy to the hardware shutter moment on soft-camera devices.
+                    viewModel.onPieceScan(result, System.currentTimeMillis())
+                },
             )
         }
 
-        Spacer(Modifier.height(12.dp))
+        if (state.pieceAwb.isNotBlank()) {
+            MovePanel(Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp), tone = MoveTone.Accent) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = c.accent, modifier = Modifier.size(20.dp))
+                    Text("SCANNED", color = c.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.4.sp)
+                }
+                Text(
+                    state.pieceAwb,
+                    color = c.ink,
+                    fontFamily = Condensed,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 30.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Text("Piece AWB · ${state.scanType.label}", color = c.muted, fontSize = 14.sp)
+            }
+        }
 
-        // ── Camera Viewfinder ────────────────────────────────────────────────
-        CameraSection(
-            onScanResult = { result ->
-                // System.currentTimeMillis() captured at scan result callback — closest
-                // available proxy to the hardware shutter moment on soft-camera devices.
-                viewModel.onPieceScan(result, System.currentTimeMillis())
-            },
-            scannedAwb = state.pieceAwb,
-            modifier   = Modifier
-                .fillMaxWidth()
-                .height(220.dp)
-                .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(16.dp)),
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        // ── Context Fields ───────────────────────────────────────────────────
-        Column(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            HubField(label = "Hub ID *", value = state.hubId, onValueChange = viewModel::setHubId,
-                placeholder = "UUID of this hub")
-            HubField(label = "Master AWB *", value = state.masterAwb, onValueChange = viewModel::setMasterAwb,
-                placeholder = "e.g. CM-PHL-S0012345")
+        // ── Context fields ───────────────────────────────────────────────────
+        Column(
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            MoveTextField(value = state.hubId, onValueChange = viewModel::setHubId, label = "Hub ID *",
+                placeholder = "UUID of this hub", mono = true)
+            MoveTextField(value = state.masterAwb, onValueChange = viewModel::setMasterAwb, label = "Master AWB *",
+                placeholder = "e.g. CM-PHL-S0012345", mono = true)
             ShipmentIdField(
                 value         = state.shipmentId,
                 isResolving   = state.isResolvingShipment,
                 resolveFailed = state.shipmentResolveFailed,
                 onValueChange = viewModel::setShipmentId,
             )
-            HubField(label = "Piece AWB (scanned)", value = state.pieceAwb, onValueChange = {
+            MoveTextField(value = state.pieceAwb, onValueChange = {
                 viewModel.onPieceScan(ScanResult(it, "manual"), System.currentTimeMillis())
-            }, placeholder = "Scan or type child AWB")
+            }, label = "Piece AWB (scanned)", placeholder = "Scan, or type the child AWB", mono = true)
             if (state.scanType.requiresPallet) {
-                HubField(label = "Pallet ID *", value = state.palletId, onValueChange = viewModel::setPalletId,
-                    placeholder = "UUID of the target pallet")
+                MoveTextField(value = state.palletId, onValueChange = viewModel::setPalletId, label = "Pallet ID *",
+                    placeholder = "UUID of the target pallet", mono = true)
             }
             if (state.scanType.requiresContainer) {
-                HubField(label = "Container ID *", value = state.containerId, onValueChange = viewModel::setContainerId,
-                    placeholder = "UUID of the container / vehicle")
+                MoveTextField(value = state.containerId, onValueChange = viewModel::setContainerId, label = "Container ID *",
+                    placeholder = "UUID of the container / vehicle", mono = true)
             }
         }
 
         Spacer(Modifier.height(16.dp))
 
         // ── Submit ───────────────────────────────────────────────────────────
-        Button(
+        MoveBigButton(
+            label = "SUBMIT SCAN",
             onClick = { viewModel.submitScan() },
+            modifier = Modifier.padding(horizontal = 16.dp),
             enabled = state.canSubmit,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .height(52.dp),
-            shape  = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor         = Cyan.copy(alpha = 0.15f),
-                contentColor           = Cyan,
-                disabledContainerColor = Color.White.copy(alpha = 0.05f),
-                disabledContentColor   = Color.White.copy(alpha = 0.25f),
-            ),
-        ) {
-            if (state.isSubmitting) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Cyan, strokeWidth = 2.dp)
-            } else {
-                Text("Submit Scan", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            }
-        }
+            loading = state.isSubmitting,
+        )
 
         // ── Feedback ─────────────────────────────────────────────────────────
-        Spacer(Modifier.height(8.dp))
-        AnimatedVisibility(
-            visible = state.lastSubmitSuccess == true,
-            enter = fadeIn(), exit = fadeOut(),
-        ) {
-            FeedbackRow(
-                icon  = Icons.Default.CheckCircle,
-                color = Green,
-                text  = if (state.lastSubmitQueued) "Queued — will sync when online" else "Scan recorded",
+        AnimatedVisibility(visible = state.lastSubmitSuccess == true, enter = fadeIn(), exit = fadeOut()) {
+            MoveNotice(
+                title = if (state.lastSubmitQueued) "Queued offline" else "Scan recorded",
+                body = if (state.lastSubmitQueued) "It syncs as soon as you're back online." else "Logged against the manifest.",
+                tone = MoveTone.Accent,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
             )
         }
         AnimatedVisibility(visible = state.error != null, enter = fadeIn(), exit = fadeOut()) {
-            FeedbackRow(icon = Icons.Default.Warning, color = Red, text = state.error ?: "")
-        }
-
-        // ── Scan type description hint ────────────────────────────────────────
-        Text(
-            text = state.scanType.description,
-            color = TextMuted,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        )
-    }
-}
-
-// ── Scan type chip row ────────────────────────────────────────────────────────
-
-@Composable
-private fun ScanTypeSelector(
-    selected: HubScanType,
-    onSelect: (HubScanType) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier          = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        HubScanType.entries.forEach { type ->
-            val isSelected = type == selected
-            Text(
-                text     = type.label,
-                color    = if (isSelected) Cyan else TextMuted,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                modifier = Modifier
-                    .border(
-                        width = 1.dp,
-                        color = if (isSelected) Cyan.copy(alpha = 0.5f) else Border,
-                        shape = RoundedCornerShape(8.dp),
-                    )
-                    .background(
-                        color = if (isSelected) Cyan.copy(alpha = 0.08f) else Color.Transparent,
-                        shape = RoundedCornerShape(8.dp),
-                    )
-                    .clickable { onSelect(type) }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            MoveNotice(
+                title = "Scan not recorded",
+                body = state.error ?: "",
+                tone = MoveTone.Penalty,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
             )
         }
     }
 }
 
-// ── Exception sub-type selector (shown only for EXCEPTION_FLAG) ───────────────
+// ── Exception sub-types (shown only for EXCEPTION_FLAG) ───────────────────────
 
 private val exceptionOptions = listOf(
     "missing"         to "Missing",
     "damaged"         to "Damaged",
     "weight_mismatch" to "Weight Mismatch",
 )
-
-@Composable
-private fun ExceptionSubTypeSelector(
-    selected: String?,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier = modifier) {
-        Text(
-            "Exception type *",
-            color      = Amber,
-            fontFamily = FontFamily.Monospace,
-            fontSize   = 11.sp,
-            modifier   = Modifier.padding(bottom = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            exceptionOptions.forEach { (value, label) ->
-                val isSelected = value == selected
-                Text(
-                    text       = label,
-                    color      = if (isSelected) Amber else TextMuted,
-                    fontSize   = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    modifier   = Modifier
-                        .border(
-                            width = 1.dp,
-                            color = if (isSelected) Amber.copy(alpha = 0.5f) else Border,
-                            shape = RoundedCornerShape(8.dp),
-                        )
-                        .background(
-                            color = if (isSelected) Amber.copy(alpha = 0.08f) else Color.Transparent,
-                            shape = RoundedCornerShape(8.dp),
-                        )
-                        .clickable { onSelect(value) }
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-        }
-    }
-}
 
 // ── Shipment ID field with auto-resolve feedback ──────────────────────────────
 
@@ -313,70 +215,33 @@ private fun ShipmentIdField(
     resolveFailed: Boolean,
     onValueChange: (String) -> Unit,
 ) {
-    val borderColor = when {
-        resolveFailed      -> Amber.copy(alpha = 0.55f)
-        value.isNotBlank() -> Green.copy(alpha = 0.45f)
-        else               -> Border
+    val c = LocalMoveColors.current
+    val trailing: (@Composable () -> Unit)? = when {
+        isResolving -> {
+            { CircularProgressIndicator(modifier = Modifier.size(18.dp), color = c.accent, strokeWidth = 2.dp) }
+        }
+        value.isNotBlank() && !resolveFailed -> {
+            { Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = c.success, modifier = Modifier.size(20.dp)) }
+        }
+        resolveFailed -> {
+            { Icon(Icons.Filled.Warning, contentDescription = null, tint = c.amber, modifier = Modifier.size(20.dp)) }
+        }
+        else -> null
     }
-    Column {
-        Text(
-            "Shipment ID *",
-            color      = TextMuted,
-            fontFamily = FontFamily.Monospace,
-            fontSize   = 11.sp,
-            modifier   = Modifier.padding(bottom = 4.dp),
-        )
-        OutlinedTextField(
-            value         = value,
-            onValueChange = onValueChange,
-            enabled       = !isResolving,
-            placeholder   = {
-                Text(
-                    text = when {
-                        isResolving   -> "Resolving…"
-                        resolveFailed -> "AWB not found — enter manually"
-                        else          -> "Scan master AWB to auto-fill"
-                    },
-                    color      = TextMuted,
-                    fontSize   = 12.sp,
-                    fontFamily = FontFamily.Monospace,
-                )
-            },
-            trailingIcon = {
-                when {
-                    isResolving                           ->
-                        CircularProgressIndicator(
-                            modifier    = Modifier.size(16.dp).padding(2.dp),
-                            color       = Cyan,
-                            strokeWidth = 1.5.dp,
-                        )
-                    value.isNotBlank() && !resolveFailed ->
-                        Icon(Icons.Default.CheckCircle, contentDescription = null,
-                            tint = Green, modifier = Modifier.size(18.dp))
-                    resolveFailed                        ->
-                        Icon(Icons.Default.Warning, contentDescription = null,
-                            tint = Amber, modifier = Modifier.size(18.dp))
-                    else -> {}
-                }
-            },
-            textStyle = LocalTextStyle.current.copy(
-                color      = Color.White,
-                fontFamily = FontFamily.Monospace,
-                fontSize   = 13.sp,
-            ),
-            colors = OutlinedTextFieldDefaults.colors(
-                unfocusedBorderColor    = borderColor,
-                focusedBorderColor      = Cyan.copy(alpha = 0.6f),
-                unfocusedContainerColor = Surface,
-                focusedContainerColor   = Surface,
-                disabledBorderColor     = Cyan.copy(alpha = 0.3f),
-                disabledContainerColor  = Surface,
-                disabledTextColor       = Color.White.copy(alpha = 0.6f),
-            ),
-            shape    = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(50.dp),
-        )
-    }
+    MoveTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = "Shipment ID *",
+        placeholder = when {
+            isResolving   -> "Resolving…"
+            resolveFailed -> "AWB not found — enter manually"
+            else          -> "Scan master AWB to auto-fill"
+        },
+        enabled = !isResolving,
+        mono = true,
+        supportingText = if (resolveFailed) "The master AWB didn't match a shipment. Type its ID." else null,
+        trailingIcon = trailing,
+    )
 }
 
 // ── Camera section ────────────────────────────────────────────────────────────
@@ -384,9 +249,8 @@ private fun ShipmentIdField(
 @Composable
 private fun CameraSection(
     onScanResult: (ScanResult) -> Unit,
-    scannedAwb:   String,
-    modifier:     Modifier = Modifier,
 ) {
+    val c = LocalMoveColors.current
     val context       = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val hasCameraPermission = remember(context) {
@@ -394,103 +258,44 @@ private fun CameraSection(
                 PackageManager.PERMISSION_GRANTED
     }
 
-    Box(modifier = modifier.background(Surface)) {
-        if (hasCameraPermission) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory  = { ctx ->
-                    val previewView = PreviewView(ctx)
-                    val executor    = ContextCompat.getMainExecutor(ctx)
-                    ProcessCameraProvider.getInstance(ctx).addListener({
-                        val provider  = ProcessCameraProvider.getInstance(ctx).get()
-                        val preview   = androidx.camera.core.Preview.Builder().build()
-                            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-                        val analyzer  = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build()
-                        val scanner   = BarcodeScanning.getClient()
-                        analyzer.setAnalyzer(executor) { imageProxy ->
-                            val media = imageProxy.image ?: run { imageProxy.close(); return@setAnalyzer }
-                            val image = InputImage.fromMediaImage(media, imageProxy.imageInfo.rotationDegrees)
-                            scanner.process(image)
-                                .addOnSuccessListener { codes ->
-                                    codes.firstOrNull()?.rawValue?.let { raw ->
-                                        onScanResult(ScanResult(raw, "qr"))
-                                    }
+    if (hasCameraPermission) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory  = { ctx ->
+                val previewView = PreviewView(ctx)
+                val executor    = ContextCompat.getMainExecutor(ctx)
+                ProcessCameraProvider.getInstance(ctx).addListener({
+                    val provider  = ProcessCameraProvider.getInstance(ctx).get()
+                    val preview   = androidx.camera.core.Preview.Builder().build()
+                        .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                    val analyzer  = ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
+                    val scanner   = BarcodeScanning.getClient()
+                    analyzer.setAnalyzer(executor) { imageProxy ->
+                        val media = imageProxy.image ?: run { imageProxy.close(); return@setAnalyzer }
+                        val image = InputImage.fromMediaImage(media, imageProxy.imageInfo.rotationDegrees)
+                        scanner.process(image)
+                            .addOnSuccessListener { codes ->
+                                codes.firstOrNull()?.rawValue?.let { raw ->
+                                    onScanResult(ScanResult(raw, "qr"))
                                 }
-                                .addOnCompleteListener { imageProxy.close() }
-                        }
-                        try {
-                            provider.unbindAll()
-                            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analyzer)
-                        } catch (e: Exception) {
-                            android.util.Log.e("HubScan", "Camera bind failed: ${e.message}")
-                        }
-                    }, executor)
-                    previewView
-                }
-            )
-        } else {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Camera permission required", color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            }
+                            .addOnCompleteListener { imageProxy.close() }
+                    }
+                    try {
+                        provider.unbindAll()
+                        provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analyzer)
+                    } catch (e: Exception) {
+                        android.util.Log.e("HubScan", "Camera bind failed: ${e.message}")
+                    }
+                }, executor)
+                previewView
             }
-        }
-
-        // Scanned AWB overlay
-        if (scannedAwb.isNotBlank()) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(8.dp)
-                    .background(Surface.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-            ) {
-                Text(scannedAwb, color = Cyan, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            }
-        }
-    }
-}
-
-// ── Small helpers ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun HubField(
-    label:       String,
-    value:       String,
-    onValueChange: (String) -> Unit,
-    placeholder: String = "",
-) {
-    Column {
-        Text(label, color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-            modifier = Modifier.padding(bottom = 4.dp))
-        OutlinedTextField(
-            value         = value,
-            onValueChange = onValueChange,
-            placeholder   = { Text(placeholder, color = TextMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
-            singleLine    = true,
-            textStyle     = LocalTextStyle.current.copy(color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 13.sp),
-            colors        = OutlinedTextFieldDefaults.colors(
-                unfocusedBorderColor = Border,
-                focusedBorderColor   = Cyan.copy(alpha = 0.6f),
-                unfocusedContainerColor = Surface,
-                focusedContainerColor   = Surface,
-            ),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(50.dp),
         )
-    }
-}
-
-@Composable
-private fun FeedbackRow(icon: androidx.compose.ui.graphics.vector.ImageVector, color: Color, text: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
-        Text(text, color = color, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+    } else {
+        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+            Text("Camera permission is off — type the AWB below.", color = c.muted, fontSize = 14.sp)
+        }
     }
 }

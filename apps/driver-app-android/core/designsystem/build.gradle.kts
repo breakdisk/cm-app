@@ -2,12 +2,14 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.hilt)
-    alias(libs.plugins.ksp)
 }
 
+// The driver design system (mobile design handoff): colour roles for night and
+// sun mode, the condensed heading face, and the glove-sized pieces every screen
+// is built from. No Mapbox, no network — so it and the screens using it compile
+// without the Mapbox download token the :app module needs.
 android {
-    namespace = "io.logisticos.driver.feature.route"
+    namespace = "io.logisticos.driver.core.designsystem"
     compileSdk = 35
     defaultConfig { minSdk = 26 }
     buildFeatures { compose = true }
@@ -19,17 +21,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":core:network"))
-    implementation(project(":core:database"))
-    implementation(project(":core:common"))
-    implementation(project(":core:designsystem"))
     implementation(platform(libs.compose.bom))
     implementation(libs.bundles.compose)
-    implementation(libs.hilt.android)
-    implementation(libs.hilt.navigation.compose)
-    ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.testing.unit)
-    androidTestImplementation(libs.compose.ui.test)
-    androidTestImplementation(libs.hilt.testing)
-    kspAndroidTest(libs.hilt.compiler)
 }

@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
+import io.logisticos.driver.core.designsystem.LocalMoveColors
 
 private data class MoveTab(val route: String, val label: String, val icon: ImageVector)
 
@@ -46,8 +47,8 @@ private val MOVE_TABS = listOf(
 
 /** Glove-sized (60 dp) tab bar. The handoff: do not shrink driver controls. */
 @Composable
-fun MoveBottomBar(navController: NavController, sun: Boolean) {
-    val c = if (sun) SunColors else NightColors
+fun MoveBottomBar(navController: NavController) {
+    val c = LocalMoveColors.current
     val entry by navController.currentBackStackEntryAsState()
     val current = entry?.destination?.route
 

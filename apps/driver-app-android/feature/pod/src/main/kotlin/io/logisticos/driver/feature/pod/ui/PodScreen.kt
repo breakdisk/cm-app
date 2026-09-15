@@ -9,13 +9,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
@@ -23,16 +25,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.core.common.ImageCompressor
+import io.logisticos.driver.core.designsystem.*
 import io.logisticos.driver.feature.pod.presentation.FailureReason
 import io.logisticos.driver.feature.pod.presentation.PodViewModel
 import java.io.File
@@ -41,14 +45,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val Canvas = Color(0xFF050810)
-private val Cyan   = Color(0xFF00E5FF)
-private val Green  = Color(0xFF00FF88)
-private val Amber  = Color(0xFFFFAB00)
-private val Red    = Color(0xFFFF3B5C)
-private val Glass  = Color(0x0AFFFFFF)
-private val Border = Color(0x14FFFFFF)
+/** pod issues 6-digit delivery PINs. */
+private const val PIN_LENGTH = 6
 
+/**
+ * Proof of delivery (driver design, "pin"): cash, the recipient's PIN on a
+ * glove-sized keypad, the doorstep photo and a signature — whichever this stop
+ * requires — then submit. Behaviour is [PodViewModel]'s; only the presentation
+ * is the design's.
+ */
 @Composable
 fun PodScreen(
     taskId: String,
@@ -66,6 +71,7 @@ fun PodScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val c = LocalMoveColors.current
 
     LaunchedEffect(taskId) {
         viewModel.setRequirements(
@@ -85,45 +91,11 @@ fun PodScreen(
 
     // Success state
     if (state.isSubmitted) {
-        Box(
-            modifier = Modifier.fillMaxSize().background(Canvas),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(80.dp)
-                        .clip(RoundedCornerShape(40.dp))
-                        .background(Green.copy(alpha = 0.12f))
-                        .border(2.dp, Green.copy(alpha = 0.4f), RoundedCornerShape(40.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Check, contentDescription = null, tint = Green, modifier = Modifier.size(40.dp))
-                }
-                Text("POD Submitted", color = Green, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                if (isCod && state.codCollected) {
-                    val actualAmount = state.partialCodAmountInput.toDoubleOrNull()
-                        ?.takeIf { it > 0 } ?: codAmount
-                    Text(
-                        "COD ₱${"%,.2f".format(actualAmount)} collected",
-                        color = Amber,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                Button(
-                    onClick = onCompleted,
-                    modifier = Modifier.width(200.dp).height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Green),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Continue", color = Canvas, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
+        val collected = state.partialCodAmountInput.toDoubleOrNull()?.takeIf { it > 0 } ?: codAmount
+        SubmittedPane(
+            codLine = if (isCod && state.codCollected) "COD ₱${"%,.2f".format(collected)} collected" else null,
+            onContinue = onCompleted,
+        )
         return
     }
 
@@ -141,213 +113,161 @@ fun PodScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Canvas)
+            .background(c.ground)
             .verticalScroll(rememberScrollState())
     ) {
-        // Header
+        MoveScreenHeader(label = "Proof of delivery", title = "Hand it over", onBack = onBack)
+
+        // What this handover needs, ticked off as each is done.
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.size(36.dp),
-                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White.copy(alpha = 0.7f)),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-                Column {
-                    Text("PROOF OF DELIVERY", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                    Text("Capture evidence", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-            // Step indicators
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (requiresPhoto)     StepDot("P", state.photoPath != null)
-                if (requiresSignature) StepDot("S", state.signaturePath != null)
-                if (requiresOtp)       StepDot("O", state.otpToken != null)
-                if (isCod)             StepDot("₱", state.codCollected)
-            }
-        }
-
-        // COD section
-        if (isCod) {
-            CodSection(
-                amount = codAmount,
-                collected = state.codCollected,
-                onToggle = viewModel::onCodToggled,
-                partialAmountInput = state.partialCodAmountInput,
-                onPartialAmountChanged = viewModel::onPartialCodAmountChanged,
-            )
-            Spacer(Modifier.height(12.dp))
-        }
-
-        // Photo capture
-        if (requiresPhoto) {
-            PhotoSection(
-                captured = state.photoPath != null,
-                onCaptured = { path ->
-                    viewModel.onPhotoCaptured(path)
-                },
-                taskId = taskId,
-                context = context
-            )
-            Spacer(Modifier.height(12.dp))
-        }
-
-        // Signature
-        if (requiresSignature) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Glass)
-                    .border(
-                        1.dp,
-                        if (state.signaturePath != null) Green.copy(alpha = 0.3f) else Border,
-                        RoundedCornerShape(14.dp)
-                    )
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Signature", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
-                    if (state.signaturePath != null) Text("Captured ✓", color = Green, fontSize = 11.sp)
-                }
-                SignatureCanvas(
-                    onSigned = { bitmap ->
-                        val path = saveBitmap(context, bitmap, "sig_$taskId.png")
-                        viewModel.onSignatureSaved(path)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(160.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-        }
-
-        // Delivery PIN — pod refuses a POD without it
-        if (requiresOtp) {
-            OtpPodSection(
-                otpToken = state.otpToken,
-                otpSent = state.otpSent,
-                pinAlreadyIssued = state.pinAlreadyIssued,
-                isSendingOtp = state.isSendingOtp,
-                isVerifyingOtp = state.isVerifyingOtp,
-                otpError = state.otpError,
-                onSendPin = { viewModel.sendOtpToRecipient() },
-                onSendNewPin = { viewModel.sendOtpToRecipient(reissue = true) },
-                onConfirmOtp = viewModel::confirmOtp
-            )
-            Spacer(Modifier.height(12.dp))
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // Surface submit-time failures so the user sees the real error instead
-        // of the old silent-enqueue-to-sync-queue behaviour.
-        state.error?.let { err ->
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
-                color = Red.copy(alpha = 0.12f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Red.copy(alpha = 0.4f)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = err,
-                    color = Red,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(12.dp)
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        // Submit POD
-        Button(
-            onClick = { viewModel.submit(taskId) },
-            enabled = state.canSubmit && !state.isSubmitting,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .height(56.dp),
-            shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Cyan,
-                disabledContainerColor = Color.White.copy(alpha = 0.08f)
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (isCod)             StepPill("Cash", state.codCollected)
+            if (requiresOtp)       StepPill("PIN", state.otpToken != null)
+            if (requiresPhoto)     StepPill("Photo", state.photoPath != null)
+            if (requiresSignature) StepPill("Signature", state.signaturePath != null)
+        }
+
+        Column(
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            if (isCod) {
+                CodSection(
+                    amount = codAmount,
+                    collected = state.codCollected,
+                    onToggle = viewModel::onCodToggled,
+                    partialAmountInput = state.partialCodAmountInput,
+                    onPartialAmountChanged = viewModel::onPartialCodAmountChanged,
+                )
+            }
+
+            // Delivery PIN — pod refuses a POD without it
+            if (requiresOtp) {
+                PinSection(
+                    otpToken = state.otpToken,
+                    otpSent = state.otpSent,
+                    pinAlreadyIssued = state.pinAlreadyIssued,
+                    isSendingOtp = state.isSendingOtp,
+                    isVerifyingOtp = state.isVerifyingOtp,
+                    otpError = state.otpError,
+                    onSendPin = { viewModel.sendOtpToRecipient() },
+                    onSendNewPin = { viewModel.sendOtpToRecipient(reissue = true) },
+                    onConfirmOtp = viewModel::confirmOtp
+                )
+            }
+
+            if (requiresPhoto) {
+                PhotoSection(
+                    captured = state.photoPath != null,
+                    onCaptured = { path -> viewModel.onPhotoCaptured(path) },
+                    taskId = taskId,
+                    context = context
+                )
+            }
+
+            if (requiresSignature) {
+                MovePanel(tone = if (state.signaturePath != null) MoveTone.Accent else MoveTone.Neutral) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        MoveLabel("Signature")
+                        if (state.signaturePath != null) Text("Captured ✓", color = c.success, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                    SignatureCanvas(
+                        onSigned = { bitmap ->
+                            val path = saveBitmap(context, bitmap, "sig_$taskId.png")
+                            viewModel.onSignatureSaved(path)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            // Surface submit-time failures so the user sees the real error instead
+            // of the old silent-enqueue-to-sync-queue behaviour.
+            state.error?.let { err ->
+                MoveNotice(title = "Proof not submitted", body = err, tone = MoveTone.Penalty)
+            }
+
+            MoveBigButton(
+                label = "SUBMIT PROOF",
+                onClick = { viewModel.submit(taskId) },
+                enabled = state.canSubmit,
+                loading = state.isSubmitting,
             )
-        ) {
-            if (state.isSubmitting) {
-                CircularProgressIndicator(color = Canvas, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                Text(
-                    "Submit POD",
-                    color = if (state.canSubmit) Canvas else Color.White.copy(alpha = 0.3f),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
+
+            // Hint listing what's still required when the submit button is disabled
+            if (!state.canSubmit) {
+                val missing = buildList {
+                    if (requiresPhoto && state.photoPath == null)         add("parcel photo")
+                    if (requiresSignature && state.signaturePath == null) add("signature")
+                    if (requiresOtp && state.otpToken == null)            add("delivery PIN")
+                }
+                if (missing.isNotEmpty()) {
+                    Text(
+                        "Still needed: ${missing.joinToString(", ")}",
+                        color = c.muted,
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
+
+            MoveBigButton(
+                label = "COULDN'T DELIVER",
+                onClick = { viewModel.showFailureSheet() },
+                filled = false,
+                tone = MoveTone.Penalty,
+                height = 56.dp,
+            )
         }
 
-        // Hint listing what's still required when the submit button is disabled
-        if (!state.canSubmit) {
-            val missing = buildList {
-                if (requiresPhoto && state.photoPath == null)         add("parcel photo")
-                if (requiresSignature && state.signaturePath == null) add("signature")
-                if (requiresOtp && state.otpToken == null)            add("OTP verification")
-            }
-            if (missing.isNotEmpty()) {
-                Text(
-                    "Still needed: ${missing.joinToString(", ")}",
-                    color = Color.White.copy(alpha = 0.35f),
-                    fontSize = 12.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 4.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // Failed delivery button
-        TextButton(
-            onClick = { viewModel.showFailureSheet() },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
-        ) {
-            Text("Mark as Failed Delivery", color = Red.copy(alpha = 0.7f), fontSize = 14.sp)
-        }
-
-        Spacer(Modifier.navigationBarsPadding().height(16.dp))
+        Spacer(Modifier.navigationBarsPadding().height(24.dp))
     }
 }
 
 @Composable
-private fun StepDot(label: String, done: Boolean) {
-    Box(
+private fun StepPill(label: String, done: Boolean) {
+    val c = LocalMoveColors.current
+    MovePill(text = if (done) "✓ $label" else label, fg = if (done) c.success else c.muted, bg = c.chip)
+}
+
+@Composable
+private fun SubmittedPane(codLine: String?, onContinue: () -> Unit) {
+    val c = LocalMoveColors.current
+    Column(
         modifier = Modifier
-            .size(28.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (done) Green.copy(alpha = 0.15f) else Glass)
-            .border(1.dp, if (done) Green.copy(alpha = 0.4f) else Border, RoundedCornerShape(14.dp)),
-        contentAlignment = Alignment.Center
+            .fillMaxSize()
+            .background(c.ground)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Text(label, color = if (done) Green else Color.White.copy(alpha = 0.4f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Box(
+            modifier = Modifier
+                .size(112.dp)
+                .clip(CircleShape)
+                .background(c.chip)
+                .border(2.dp, c.success, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Filled.Check, contentDescription = null, tint = c.success, modifier = Modifier.size(56.dp))
+        }
+        Text("Proof submitted", color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 40.sp, modifier = Modifier.padding(top = 24.dp))
+        Text("This stop is done.", color = c.muted, fontSize = 16.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp))
+        codLine?.let {
+            Text(it, color = c.amber, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
+        }
+        Spacer(Modifier.height(32.dp))
+        MoveBigButton(label = "CONTINUE", onClick = onContinue)
     }
 }
 
@@ -359,37 +279,32 @@ private fun CodSection(
     partialAmountInput: String,
     onPartialAmountChanged: (String) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (collected) Amber.copy(alpha = 0.08f) else Glass)
-            .border(
-                1.dp,
-                if (collected) Amber.copy(alpha = 0.3f) else Border,
-                RoundedCornerShape(14.dp)
-            )
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    val c = LocalMoveColors.current
+    MovePanel(tone = if (collected) MoveTone.Amber else MoveTone.Neutral) {
+        // The whole row toggles — a switch alone is too small for gloves.
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .toggleable(value = collected, onValueChange = onToggle, role = Role.Switch),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Column {
-                Text("Cash on Delivery", color = Amber, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Text("₱${"%,.2f".format(amount)}", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Column(Modifier.weight(1f)) {
+                Text("CASH ON DELIVERY", color = c.amber, fontSize = 12.sp, letterSpacing = 2.4.sp)
+                Text("₱${"%,.2f".format(amount)}", color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 34.sp)
+                Text(if (collected) "Collected" else "Switch on once the cash is in hand", color = c.muted, fontSize = 13.sp)
             }
             Switch(
                 checked = collected,
-                onCheckedChange = onToggle,
+                onCheckedChange = null,
                 colors = SwitchDefaults.colors(
-                    checkedThumbColor = Canvas,
-                    checkedTrackColor = Amber,
-                    uncheckedThumbColor = Color.White.copy(alpha = 0.4f),
-                    uncheckedTrackColor = Color.White.copy(alpha = 0.08f)
+                    checkedThumbColor = c.amberInk,
+                    checkedTrackColor = c.amber,
+                    checkedBorderColor = c.amber,
+                    uncheckedThumbColor = c.muted,
+                    uncheckedTrackColor = c.chip,
+                    uncheckedBorderColor = c.hairline,
                 )
             )
         }
@@ -397,33 +312,22 @@ private fun CodSection(
         // record a partial collection (customer only had partial cash).
         // Blank = full amount collected; any positive value overrides the total.
         if (collected) {
-            OutlinedTextField(
+            Spacer(Modifier.height(12.dp))
+            MoveTextField(
                 value = partialAmountInput,
                 onValueChange = onPartialAmountChanged,
-                label = { Text("Amount collected (₱)") },
-                placeholder = { Text("%,.2f".format(amount)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Amber,
-                    unfocusedBorderColor = Amber.copy(alpha = 0.4f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedLabelColor = Amber,
-                    unfocusedLabelColor = Amber.copy(alpha = 0.6f),
-                    cursorColor = Amber,
-                    focusedPlaceholderColor = Color.White.copy(alpha = 0.3f),
-                    unfocusedPlaceholderColor = Color.White.copy(alpha = 0.3f),
-                )
+                label = "Amount collected (₱)",
+                placeholder = "%,.2f".format(amount),
+                keyboardType = KeyboardType.Decimal,
             )
             if (partialAmountInput.isNotEmpty()) {
                 val partial = partialAmountInput.toDoubleOrNull()
                 if (partial != null && partial < amount) {
                     Text(
                         "Partial collection — shortfall ₱${"%,.2f".format(amount - partial)}",
-                        color = Amber.copy(alpha = 0.75f),
-                        fontSize = 11.sp,
+                        color = c.amber,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 8.dp),
                     )
                 }
             }
@@ -434,12 +338,11 @@ private fun CodSection(
 /**
  * Photo capture section backed by the system camera (ActivityResultContracts.TakePicture).
  *
- * Tapping anywhere on the preview/placeholder area — including the camera icon —
- * immediately fires the system camera app. No intermediate "Open Camera" button
- * and no embedded CameraX preview inside the scrollable form.
+ * Tapping the viewfinder or the capture button fires the system camera app.
+ * No embedded CameraX preview inside the scrollable form.
  *
  * Flow:
- *   1. Tap placeholder  →  request CAMERA permission if not yet granted
+ *   1. Tap  →  request CAMERA permission if not yet granted
  *   2. Permission granted  →  create a FileProvider URI in context.filesDir
  *   3. System camera launches full-screen (familiar UX, no re-implementation)
  *   4. On confirm in camera app  →  TakePicture returns true  →  onCaptured(path)
@@ -453,6 +356,7 @@ private fun PhotoSection(
     taskId: String,
     context: Context
 ) {
+    val c = LocalMoveColors.current
     // Stable file path — same name on retake so old file is overwritten cleanly.
     val photoFile = remember(taskId) { File(context.filesDir, "photo_$taskId.jpg") }
 
@@ -491,80 +395,52 @@ private fun PhotoSection(
         else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Glass)
-            .border(
-                1.dp,
-                if (captured) Green.copy(alpha = 0.3f) else Border,
-                RoundedCornerShape(14.dp)
-            )
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Parcel Photo", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
-            if (captured) Text("Captured ✓", color = Green, fontSize = 11.sp)
+            MoveLabel("Parcel photo")
+            if (captured) Text("Captured ✓", color = c.success, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
-
-        // Single tappable area — tapping anywhere (icon, text, or empty space) launches
-        // the system camera immediately with no intermediate button required.
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(160.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(
-                    if (captured) Green.copy(alpha = 0.05f) else Color(0x08FFFFFF)
-                )
-                .border(
-                    1.dp,
-                    if (captured) Green.copy(alpha = 0.25f) else Border,
-                    RoundedCornerShape(10.dp)
-                )
-                .clickable { launchCamera() },
-            contentAlignment = Alignment.Center
+        MoveViewfinder(
+            Modifier
+                .height(220.dp)
+                .clickable(role = Role.Button, onClickLabel = "Take photo") { launchCamera() }
         ) {
-            if (captured) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(
-                        Icons.Default.CameraAlt,
-                        contentDescription = null,
-                        tint = Green.copy(alpha = 0.7f),
-                        modifier = Modifier.size(36.dp)
-                    )
-                    Text("Photo captured ✓", color = Green, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    Text("Tap to retake", color = Color.White.copy(alpha = 0.3f), fontSize = 11.sp)
-                }
-            } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        Icons.Default.CameraAlt,
-                        contentDescription = "Take photo",
-                        tint = Cyan.copy(alpha = 0.6f),
-                        modifier = Modifier.size(40.dp)
-                    )
-                    Text("Tap to take photo", color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
-                    Text(
-                        "System camera will open",
-                        color = Color.White.copy(alpha = 0.25f),
-                        fontSize = 11.sp
-                    )
-                }
+            Column(
+                modifier = Modifier.fillMaxSize().padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    Icons.Filled.CameraAlt,
+                    contentDescription = null,
+                    tint = if (captured) c.success else c.accent,
+                    modifier = Modifier.size(44.dp)
+                )
+                Text(
+                    if (captured) "Photo taken" else "Frame the parcel at the door",
+                    color = c.ink,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                Text(
+                    if (captured) "Tap to retake" else "The system camera opens",
+                    color = c.muted,
+                    fontSize = 13.sp,
+                )
             }
         }
+        MoveBigButton(
+            label = if (captured) "RETAKE PHOTO" else "TAKE THE PHOTO",
+            onClick = { launchCamera() },
+            filled = !captured,
+            icon = Icons.Filled.CameraAlt,
+        )
     }
 }
 
@@ -572,8 +448,8 @@ private fun PhotoSection(
  * Delivery PIN section.
  *
  * The recipient normally has the PIN already — the customer app shows it from
- * booking — so the entry field is shown straight away and 6 digits verify
- * automatically (POST /v1/otps/verify). "Send one" asks pod to text a PIN; pod
+ * booking — so the keypad is shown straight away and the sixth digit verifies
+ * automatically (POST /v1/otps/verify). "Text one" asks pod to send a PIN; pod
  * keeps a live PIN rather than replacing it, and says so. "Send a new PIN"
  * replaces it, which is why it is its own button.
  *
@@ -581,7 +457,7 @@ private fun PhotoSection(
  * inline so the rest of the form stays usable.
  */
 @Composable
-private fun OtpPodSection(
+private fun PinSection(
     otpToken: String?,
     otpSent: Boolean,
     pinAlreadyIssued: Boolean,
@@ -592,120 +468,152 @@ private fun OtpPodSection(
     onSendNewPin: () -> Unit,
     onConfirmOtp: (String) -> Unit,
 ) {
+    val c = LocalMoveColors.current
     var entered by remember { mutableStateOf("") }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Glass)
-            .border(
-                1.dp,
-                if (otpToken != null) Green.copy(alpha = 0.3f) else Border,
-                RoundedCornerShape(14.dp)
-            )
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Section header
+    // A PIN pod turned down is cleared once the check finishes, so the next
+    // attempt starts from empty slots rather than six stale digits.
+    LaunchedEffect(isVerifyingOtp) {
+        if (!isVerifyingOtp && otpToken == null && entered.length == PIN_LENGTH) entered = ""
+    }
+
+    MovePanel(tone = if (otpToken != null) MoveTone.Accent else MoveTone.Neutral) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Delivery PIN", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
-            if (otpToken != null) Text("Verified ✓", color = Green, fontSize = 11.sp)
+            MoveLabel("Delivery PIN")
+            if (otpToken != null) MovePill("Verified", fg = c.success, bg = c.chip)
         }
 
-        when {
-            // ── Step 3: already verified ──────────────────────────────────────
-            otpToken != null -> {
-                Text(
-                    "PIN verified — the recipient confirmed delivery.",
-                    color = Green.copy(alpha = 0.85f),
-                    fontSize = 13.sp
-                )
-            }
+        if (otpToken != null) {
+            Text("PIN verified", color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 30.sp, modifier = Modifier.padding(top = 8.dp))
+            Text("The recipient confirmed the handover.", color = c.muted, fontSize = 15.sp)
+        } else {
+            Text("Ask for their PIN", color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 30.sp, modifier = Modifier.padding(top = 8.dp))
+            Text(
+                when {
+                    pinAlreadyIssued ->
+                        "The recipient already has a PIN — from their booking or an earlier text. Ask them for it."
+                    otpSent ->
+                        "A new PIN was texted to the recipient. Earlier PINs no longer work."
+                    else ->
+                        "Ask the recipient for the 6-digit delivery PIN from their booking or text message."
+                },
+                color = c.muted,
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
 
-            // ── Ask for the PIN; send one only if the recipient has none ──────
-            else -> {
-                Text(
-                    when {
-                        pinAlreadyIssued ->
-                            "The recipient already has a PIN — from their booking or an earlier text. Ask them for it."
-                        otpSent ->
-                            "A new PIN was texted to the recipient. Earlier PINs no longer work."
-                        else ->
-                            "Ask the recipient for the 6-digit delivery PIN from their booking or text message."
-                    },
-                    color = Color.White.copy(alpha = 0.6f),
-                    fontSize = 13.sp
-                )
-                OutlinedTextField(
-                    value = entered,
-                    onValueChange = { raw ->
-                        val input = raw.filter(Char::isDigit)
-                        if (input.length <= 6) {
-                            entered = input
-                            // Verifies as soon as 6 digits are entered.
-                            if (input.length == 6 && !isVerifyingOtp) onConfirmOtp(input)
-                        }
-                    },
-                    label = { Text("6-digit PIN") },
-                    singleLine = true,
-                    enabled = !isVerifyingOtp,
-                    modifier = Modifier.fillMaxWidth(),
-                    trailingIcon = {
-                        if (isVerifyingOtp) {
-                            CircularProgressIndicator(
-                                color = Cyan,
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                        }
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Cyan,
-                        unfocusedBorderColor = Border,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedLabelColor = Cyan,
-                        unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
-                        cursorColor = Cyan,
-                        disabledTextColor = Color.White.copy(alpha = 0.4f),
-                        disabledBorderColor = Border,
-                        disabledLabelColor = Color.White.copy(alpha = 0.3f)
-                    )
-                )
-                // Glove-sized, per the driver design (56–64 dp). "Send one" keeps a
-                // live PIN; once pod has answered, the only send left is a replacement.
-                TextButton(
-                    onClick = if (otpSent) onSendNewPin else onSendPin,
-                    enabled = !isSendingOtp,
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) {
-                    if (isSendingOtp) {
-                        CircularProgressIndicator(
-                            color = Cyan,
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text(
-                            if (otpSent) "Send a new PIN" else "Recipient has no PIN? Send one",
-                            color = Cyan,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
-                        )
+            // Slots
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                repeat(PIN_LENGTH) { i ->
+                    val digit = entered.getOrNull(i)
+                    val isCursor = i == entered.length && !isVerifyingOtp
+                    val shape = RoundedCornerShape(16.dp)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(72.dp)
+                            .clip(shape)
+                            .background(if (digit != null) c.accentPanel else c.chip)
+                            .border(
+                                2.dp,
+                                when {
+                                    digit != null -> c.accentBorder
+                                    isCursor -> c.accent
+                                    else -> c.hairline
+                                },
+                                shape
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(digit?.toString() ?: "", color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 34.sp)
                     }
                 }
             }
-        }
 
-        // Inline OTP error (wrong code, network failure, expired OTP).
-        // Shown inside the section so the global error surface stays clean.
-        otpError?.let { err ->
-            Text(err, color = Red, fontSize = 12.sp, lineHeight = 17.sp)
+            // Keypad — 64 dp keys, no soft keyboard to fight with gloves on.
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", KEY_CLEAR, "0", KEY_DELETE).chunked(3).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        row.forEach { key ->
+                            PinKey(key = key, enabled = !isVerifyingOtp, modifier = Modifier.weight(1f)) {
+                                when (key) {
+                                    KEY_CLEAR -> entered = ""
+                                    KEY_DELETE -> entered = entered.dropLast(1)
+                                    else -> if (entered.length < PIN_LENGTH) {
+                                        entered += key
+                                        // Verifies as soon as the sixth digit is in.
+                                        if (entered.length == PIN_LENGTH) onConfirmOtp(entered)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (isVerifyingOtp) {
+                Row(
+                    modifier = Modifier.padding(top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    CircularProgressIndicator(color = c.accent, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text("Checking the PIN…", color = c.muted, fontSize = 14.sp)
+                }
+            }
+
+            // Inline PIN error (wrong code, network failure, expired or locked).
+            // Shown inside the section so the global error surface stays clean.
+            otpError?.let { err ->
+                Text(err, color = c.penalty, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 12.dp))
+            }
+
+            Spacer(Modifier.height(14.dp))
+            // "Text one" keeps a live PIN; once pod has answered, the only send
+            // left is a replacement.
+            MoveBigButton(
+                label = if (otpSent) "SEND A NEW PIN" else "NO PIN? TEXT THEM ONE",
+                onClick = if (otpSent) onSendNewPin else onSendPin,
+                filled = false,
+                loading = isSendingOtp,
+                height = 56.dp,
+            )
+        }
+    }
+}
+
+private const val KEY_CLEAR = "CLEAR"
+private const val KEY_DELETE = "DELETE"
+
+@Composable
+private fun PinKey(key: String, enabled: Boolean, modifier: Modifier, onPress: () -> Unit) {
+    val c = LocalMoveColors.current
+    val shape = RoundedCornerShape(18.dp)
+    val fg = if (enabled) c.ink else c.muted
+    Box(
+        modifier = modifier
+            .height(64.dp)
+            .clip(shape)
+            .background(c.chip)
+            .border(1.dp, c.hairline, shape)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onPress),
+        contentAlignment = Alignment.Center,
+    ) {
+        when (key) {
+            KEY_DELETE -> Icon(Icons.AutoMirrored.Filled.Backspace, contentDescription = "Delete digit", tint = fg, modifier = Modifier.size(26.dp))
+            KEY_CLEAR -> Text("CLEAR", color = c.muted, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+            else -> Text(key, color = fg, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 30.sp)
         }
     }
 }
@@ -715,40 +623,35 @@ private fun FailureReasonSheet(
     onSelect: (FailureReason) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val c = LocalMoveColors.current
+    val shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.6f)),
+            .background(c.scrim),
         contentAlignment = Alignment.BottomCenter
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                .background(Color(0xFF0D1220))
-                .border(1.dp, Border, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .clip(shape)
+                .background(c.surface)
+                .border(1.dp, c.hairline, shape)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("Failure Reason", color = Red, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text("Select the reason this delivery could not be completed", color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
+            Text("COULDN'T DELIVER", color = c.penalty, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.4.sp)
+            Text("What happened?", color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 30.sp)
+            Text("Pick the reason this delivery could not be completed.", color = c.muted, fontSize = 15.sp)
             Spacer(Modifier.height(4.dp))
 
             FailureReason.entries.forEach { reason ->
-                Button(
-                    onClick = { onSelect(reason) },
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Glass)
-                ) {
-                    Text(reason.displayName, color = Color.White, fontSize = 14.sp)
-                }
+                MoveBigButton(label = reason.displayName, onClick = { onSelect(reason) }, filled = false, tone = MoveTone.Neutral, height = 60.dp)
             }
 
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
-                Text("Cancel", color = Color.White.copy(alpha = 0.4f))
-            }
+            Spacer(Modifier.height(6.dp))
+            MoveBigButton(label = "CANCEL", onClick = onDismiss, filled = false, tone = MoveTone.Neutral, height = 56.dp)
             Spacer(Modifier.navigationBarsPadding())
         }
     }

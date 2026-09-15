@@ -5,7 +5,6 @@ import android.net.Uri
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -13,7 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,24 +25,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.core.designsystem.*
 import io.logisticos.driver.core.network.service.DocumentTypeDto
 import io.logisticos.driver.core.network.service.DriverDocumentDto
 import io.logisticos.driver.feature.profile.presentation.ComplianceViewModel
 
-private val Canvas = Color(0xFF050810)
-private val Cyan   = Color(0xFF00E5FF)
-private val Green  = Color(0xFF00FF88)
-private val Amber  = Color(0xFFFFAB00)
-private val Red    = Color(0xFFFF3B5C)
-private val Glass  = Color(0x0AFFFFFF)
-private val Border = Color(0x14FFFFFF)
-
+/**
+ * Credentials (driver design, "compliance"): overall verification status and
+ * each required document with its state, uploaded or replaced from here.
+ *
+ * @param onBack null where this is a bottom tab (no back affordance).
+ */
 @Composable
 fun ComplianceScreen(
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
     viewModel: ComplianceViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val c = LocalMoveColors.current
 
     LaunchedEffect(Unit) { viewModel.load() }
 
@@ -52,82 +51,78 @@ fun ComplianceScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Canvas)
+            .background(c.ground)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        MoveScreenHeader(label = "Compliance · verification", title = "Your credentials", onBack = onBack)
+
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White.copy(alpha = 0.7f),
-                )
-            }
-            Column {
-                Text(
-                    "VERIFICATION",
-                    color = Cyan,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp,
-                )
-                Text(
-                    "Compliance Documents",
-                    color = Color.White,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
-
-        when {
-            state.loading && state.profile == null -> {
-                Box(
-                    Modifier.fillMaxWidth().padding(top = 64.dp),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator(color = Cyan) }
-            }
-            state.error != null && state.profile == null -> {
-                ErrorBanner(text = state.error!!, onRetry = { viewModel.load() })
-            }
-            state.profile != null -> {
-                OverallStatusCard(status = state.profile!!.overallStatus)
-                Spacer(Modifier.height(12.dp))
-
-                state.error?.let {
-                    ErrorBanner(text = it, onDismiss = viewModel::clearError)
-                    Spacer(Modifier.height(8.dp))
+            when {
+                state.loading && state.profile == null -> {
+                    Box(
+                        Modifier.fillMaxWidth().padding(top = 64.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { CircularProgressIndicator(color = c.accent) }
                 }
+                state.error != null && state.profile == null -> {
+                    MoveNotice(title = "Couldn't load your credentials", body = state.error!!, tone = MoveTone.Penalty)
+                    MoveBigButton("TRY AGAIN", onClick = { viewModel.load() }, filled = false, height = 56.dp)
+                }
+                state.profile != null -> {
+                    OverallStatusCard(status = state.profile!!.overallStatus)
 
-                if (state.requiredTypes.isEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Glass),
-                        border = BorderStroke(1.dp, Border),
-                    ) {
-                        Text(
-                            "No documents required for this jurisdiction.",
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(20.dp),
-                        )
+                    state.error?.let {
+                        MoveNotice(title = "That didn't go through", body = it, tone = MoveTone.Penalty)
+                        MoveBigButton("DISMISS", onClick = viewModel::clearError, filled = false, height = 56.dp)
                     }
-                } else {
-                    val byType = state.latestByTypeId
-                    state.requiredTypes.forEach { type ->
-                        val current = byType[type.id]
-                        DocumentRow(
-                            type = type,
-                            current = current,
-                            isUploading = state.uploadingTypeCode == type.code,
-                            onUpload = { pendingType = type },
+
+                    if (state.requiredTypes.isEmpty()) {
+                        MoveNotice(
+                            title = "Nothing to upload",
+                            body = "No documents are required for this jurisdiction.",
+                            tone = MoveTone.Neutral,
                         )
-                        Spacer(Modifier.height(10.dp))
+                    } else {
+                        val byType = state.latestByTypeId
+                        val needAttention = state.requiredTypes.count { type ->
+                            type.isRequired && byType[type.id]?.status !in setOf("approved", "submitted")
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            MoveLabel("Credentials")
+                            if (needAttention > 0) {
+                                Text("$needAttention need attention", color = c.amber, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        val shape = RoundedCornerShape(20.dp)
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(shape)
+                                .background(c.panel)
+                                .border(1.dp, c.hairline, shape)
+                        ) {
+                            state.requiredTypes.forEachIndexed { i, type ->
+                                DocumentRow(
+                                    type = type,
+                                    current = byType[type.id],
+                                    isUploading = state.uploadingTypeCode == type.code,
+                                    onUpload = { pendingType = type },
+                                )
+                                if (i < state.requiredTypes.lastIndex) MoveDivider()
+                            }
+                        }
+                        Text(
+                            "Photograph or pick a clear JPG, PNG or PDF. Ops reviews each one before it counts.",
+                            color = c.muted,
+                            fontSize = 13.sp,
+                        )
                     }
                 }
             }
@@ -157,23 +152,13 @@ fun ComplianceScreen(
 
 @Composable
 private fun OverallStatusCard(status: String) {
-    val (label, color) = statusPalette(status)
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.08f)),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.3f)),
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text("Overall Status", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
-            Text(label, color = color, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text(
-                statusHelp(status),
-                color = Color.White.copy(alpha = 0.6f),
-                fontSize = 12.sp,
-            )
+    val c = LocalMoveColors.current
+    val (label, kind) = statusKind(status)
+    MovePanel(tone = kind.panelTone) {
+        Text("OVERALL STATUS", color = c.muted, fontSize = 12.sp, letterSpacing = 2.4.sp)
+        Text(label, color = kind.color(c), fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 30.sp)
+        statusHelp(status).takeIf { it.isNotBlank() }?.let {
+            Text(it, color = c.muted, fontSize = 15.sp, modifier = Modifier.padding(top = 2.dp))
         }
     }
 }
@@ -185,111 +170,45 @@ private fun DocumentRow(
     isUploading: Boolean,
     onUpload: () -> Unit,
 ) {
-    val (label, color) = statusPalette(current?.status ?: "missing")
+    val c = LocalMoveColors.current
+    val (label, kind) = statusKind(current?.status ?: "missing")
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Glass)
-            .border(1.dp, Border, RoundedCornerShape(14.dp))
-            .padding(16.dp),
+            .padding(horizontal = 17.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(type.name, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(type.name, color = c.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (type.isRequired) "Required" else "Optional",
-                    color = if (type.isRequired) Amber else Color.White.copy(alpha = 0.4f),
-                    fontSize = 11.sp,
+                    listOfNotNull(
+                        if (type.isRequired) "Required" else "Optional",
+                        current?.expiryDate?.let { "expires $it" },
+                    ).joinToString(" · "),
+                    color = if (type.isRequired && current == null) c.amber else c.muted,
+                    fontSize = 13.sp,
                 )
             }
-            StatusBadge(label = label, color = color)
+            MoveStatePill(text = label, color = kind.color(c))
         }
 
         current?.rejectionReason?.takeIf { current.status == "rejected" }?.let { reason ->
-            Text(
-                "Rejected: $reason",
-                color = Red,
-                fontSize = 12.sp,
-            )
-        }
-        current?.expiryDate?.let { expiry ->
-            Text(
-                "Expires $expiry",
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 11.sp,
-            )
+            Text("Rejected: $reason", color = c.penalty, fontSize = 13.sp)
         }
 
-        Button(
+        MoveBigButton(
+            label = if (current == null) "UPLOAD" else "REPLACE",
             onClick = onUpload,
-            enabled = !isUploading,
-            modifier = Modifier.fillMaxWidth().height(44.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Cyan.copy(alpha = 0.12f)),
-            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.4f)),
-            shape = RoundedCornerShape(10.dp),
-        ) {
-            if (isUploading) {
-                CircularProgressIndicator(
-                    color = Cyan,
-                    strokeWidth = 2.dp,
-                    modifier = Modifier.size(18.dp),
-                )
-            } else {
-                Icon(
-                    Icons.Default.CloudUpload,
-                    contentDescription = null,
-                    tint = Cyan,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (current == null) "Upload" else "Replace",
-                    color = Cyan,
-                    fontSize = 14.sp,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun StatusBadge(label: String, color: Color) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(color.copy(alpha = 0.15f))
-            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    ) {
-        Text(label, color = color, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun ErrorBanner(text: String, onDismiss: (() -> Unit)? = null, onRetry: (() -> Unit)? = null) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = Red.copy(alpha = 0.1f),
-        border = BorderStroke(1.dp, Red.copy(alpha = 0.4f)),
-        shape = RoundedCornerShape(12.dp),
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(text, color = Red, fontSize = 12.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                onRetry?.let {
-                    TextButton(onClick = it) { Text("Retry", color = Cyan) }
-                }
-                onDismiss?.let {
-                    TextButton(onClick = it) { Text("Dismiss", color = Color.White.copy(alpha = 0.6f)) }
-                }
-            }
-        }
+            filled = false,
+            icon = Icons.Filled.CloudUpload,
+            loading = isUploading,
+            height = 56.dp,
+        )
     }
 }
 
@@ -305,6 +224,7 @@ private fun UploadDialog(
         expiryDate: String?,
     ) -> Unit,
 ) {
+    val c = LocalMoveColors.current
     val context = LocalContext.current
     var documentNumber by remember { mutableStateOf("") }
     var issueDate by remember { mutableStateOf("") }
@@ -330,55 +250,43 @@ private fun UploadDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF0D1220),
-        titleContentColor = Color.White,
-        textContentColor = Color.White.copy(alpha = 0.7f),
-        title = { Text("Upload ${type.name}", fontWeight = FontWeight.Bold) },
+        containerColor = c.surface,
+        titleContentColor = c.ink,
+        textContentColor = c.muted,
+        title = { Text("Upload ${type.name}", fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 24.sp) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                MoveTextField(
                     value = documentNumber,
                     onValueChange = { documentNumber = it },
-                    label = { Text("Document number") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = textFieldColors(),
+                    label = "Document number",
                 )
                 if (type.requiresExpiry) {
-                    OutlinedTextField(
+                    MoveTextField(
                         value = issueDate,
                         onValueChange = { issueDate = it },
-                        label = { Text("Issue date (YYYY-MM-DD, optional)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = textFieldColors(),
+                        label = "Issue date (YYYY-MM-DD, optional)",
                     )
-                    OutlinedTextField(
+                    MoveTextField(
                         value = expiryDate,
                         onValueChange = { expiryDate = it },
-                        label = { Text("Expiry date (YYYY-MM-DD)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = textFieldColors(),
+                        label = "Expiry date (YYYY-MM-DD)",
                     )
                 }
-                Button(
+                MoveBigButton(
+                    label = if (pickedFileBase64 != null) "FILE SELECTED · ${pickedContentType}" else "PICK A FILE",
                     onClick = {
                         // Image and PDF MIME types — server enforces actual allow-list.
                         launcher.launch(arrayOf("image/jpeg", "image/png", "application/pdf"))
                     },
-                    modifier = Modifier.fillMaxWidth().height(44.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Cyan.copy(alpha = 0.12f)),
-                    border = BorderStroke(1.dp, Cyan.copy(alpha = 0.4f)),
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Text(
-                        if (pickedFileBase64 != null) "File selected (${pickedContentType})" else "Pick file (JPG / PNG / PDF)",
-                        color = Cyan,
-                        fontSize = 13.sp,
-                    )
-                }
-                pickError?.let { Text(it, color = Red, fontSize = 11.sp) }
+                    filled = false,
+                    icon = Icons.Filled.AttachFile,
+                    height = 56.dp,
+                )
+                pickError?.let { Text(it, color = c.penalty, fontSize = 13.sp) }
             }
         },
         confirmButton = {
@@ -393,35 +301,40 @@ private fun UploadDialog(
                     )
                 },
                 enabled = canSubmit,
-            ) { Text("Submit", color = if (canSubmit) Green else Color.White.copy(alpha = 0.3f)) }
+                modifier = Modifier.heightIn(min = 56.dp),
+            ) { Text("SUBMIT", color = if (canSubmit) c.accent else c.muted, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White.copy(alpha = 0.5f)) }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 56.dp)) {
+                Text("CANCEL", color = c.muted, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+            }
         },
     )
 }
 
-@Composable
-private fun textFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor = Cyan,
-    unfocusedBorderColor = Border,
-    focusedTextColor = Color.White,
-    unfocusedTextColor = Color.White,
-    focusedLabelColor = Cyan,
-    unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
-    cursorColor = Cyan,
-)
+/** How a document or profile state reads: good, in review, needs action, blocked. */
+private enum class StatusKind(val panelTone: MoveTone) {
+    Good(MoveTone.Neutral), Review(MoveTone.Accent), Warn(MoveTone.Amber), Bad(MoveTone.Penalty), Muted(MoveTone.Neutral);
 
-private fun statusPalette(status: String): Pair<String, Color> = when (status) {
-    "approved"            -> "Approved"  to Green
-    "submitted"           -> "Submitted" to Cyan
-    "pending_submission"  -> "Pending"   to Amber
-    "rejected"            -> "Rejected"  to Red
-    "expired"             -> "Expired"   to Red
-    "suspended"           -> "Suspended" to Red
-    "superseded"          -> "Replaced"  to Color.White.copy(alpha = 0.4f)
-    "missing"             -> "Missing"   to Amber
-    else                  -> status      to Color.White.copy(alpha = 0.5f)
+    fun color(c: MoveColors): Color = when (this) {
+        Good -> c.success
+        Review -> c.accent
+        Warn -> c.amber
+        Bad -> c.penalty
+        Muted -> c.muted
+    }
+}
+
+private fun statusKind(status: String): Pair<String, StatusKind> = when (status) {
+    "approved"            -> "Approved"  to StatusKind.Good
+    "submitted"           -> "Submitted" to StatusKind.Review
+    "pending_submission"  -> "Pending"   to StatusKind.Warn
+    "rejected"            -> "Rejected"  to StatusKind.Bad
+    "expired"             -> "Expired"   to StatusKind.Bad
+    "suspended"           -> "Suspended" to StatusKind.Bad
+    "superseded"          -> "Replaced"  to StatusKind.Muted
+    "missing"             -> "Missing"   to StatusKind.Warn
+    else                  -> status      to StatusKind.Muted
 }
 
 private fun statusHelp(status: String): String = when (status) {

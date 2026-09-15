@@ -1,28 +1,19 @@
 package io.logisticos.driver.feature.auth.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.core.designsystem.*
 import io.logisticos.driver.feature.auth.BuildConfig
 import io.logisticos.driver.feature.auth.presentation.OtpViewModel
 import kotlinx.coroutines.delay
-
-private val Canvas = Color(0xFF050810)
-private val Cyan = Color(0xFF00E5FF)
-private val BorderWhite = Color(0x14FFFFFF)
 
 @Composable
 fun OtpScreen(
@@ -32,6 +23,7 @@ fun OtpScreen(
     viewModel: OtpViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val c = LocalMoveColors.current
     var resendSeconds by remember { mutableIntStateOf(60) }
     var resendTrigger by remember { mutableIntStateOf(0) }
 
@@ -55,89 +47,56 @@ fun OtpScreen(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Canvas)
-            .imePadding(),
-        contentAlignment = Alignment.TopCenter
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 32.dp)
-                .padding(vertical = 48.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            Text("Verify OTP", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+    AuthColumn {
+        AuthBrandRow()
+
+        Column(Modifier.padding(top = 20.dp, bottom = 4.dp)) {
+            Text("Enter your code", color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 40.sp, lineHeight = 44.sp)
             Text(
-                text = "Enter the 6-digit code sent to $identifier",
-                fontSize = 14.sp,
-                color = Color.White.copy(alpha = 0.6f),
-                textAlign = TextAlign.Center
+                text = "We sent a 6-digit code to $identifier",
+                color = c.muted,
+                fontSize = 16.sp,
+                modifier = Modifier.padding(top = 8.dp),
             )
+        }
 
-            OutlinedTextField(
-                value = state.otp,
-                onValueChange = viewModel::onOtpChanged,
-                label = { Text("6-digit OTP") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Cyan,
-                    unfocusedBorderColor = BorderWhite,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedLabelColor = Cyan,
-                    unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
-                    cursorColor = Cyan
-                )
-            )
+        MoveTextField(
+            value = state.otp,
+            onValueChange = viewModel::onOtpChanged,
+            label = "6-digit code",
+            keyboardType = KeyboardType.NumberPassword,
+            large = true,
+        )
 
-            if (state.error != null) {
-                Text(text = state.error!!, color = Color(0xFFFF3B5C), fontSize = 14.sp)
-            }
+        state.error?.let {
+            MoveNotice(title = "Sign-in didn't work", body = it, tone = MoveTone.Penalty)
+        }
 
-            Button(
-                onClick = { viewModel.verifyOtp(identifier, state.otp) },
-                enabled = state.otp.length == 6 && !state.isLoading,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Cyan)
-            ) {
-                if (state.isLoading) {
-                    CircularProgressIndicator(color = Canvas, modifier = Modifier.size(20.dp))
-                } else {
-                    Text("Verify", color = Canvas, fontWeight = FontWeight.Bold)
-                }
-            }
+        MoveBigButton(
+            label = "VERIFY",
+            onClick = { viewModel.verifyOtp(identifier, state.otp) },
+            enabled = state.otp.length == 6,
+            loading = state.isLoading,
+        )
 
+        MoveBigButton(
+            label = if (resendSeconds > 0) "RESEND IN ${resendSeconds}s" else "RESEND CODE",
+            onClick = { resendTrigger++; viewModel.resendOtp(identifier) },
+            filled = false,
+            enabled = resendSeconds == 0,
+            height = 56.dp,
+        )
+
+        // ── Dev shortcut — stripped from release builds ───────────────────
+        // Fills 123456 in one tap while waiting for Twilio approval.
+        // BuildConfig.DEBUG is false in release APKs so this block is
+        // dead-code-eliminated by ProGuard/R8 and never ships to production.
+        if (BuildConfig.DEBUG) {
             TextButton(
-                onClick = { resendTrigger++; viewModel.resendOtp(identifier) },
-                enabled = resendSeconds == 0
+                onClick = { viewModel.onOtpChanged("123456") },
+                modifier = Modifier.align(Alignment.CenterHorizontally).heightIn(min = 48.dp),
             ) {
-                Text(
-                    text = if (resendSeconds > 0) "Resend in ${resendSeconds}s" else "Resend OTP",
-                    color = if (resendSeconds == 0) Cyan else Color.White.copy(alpha = 0.4f)
-                )
-            }
-
-            // ── Dev shortcut — stripped from release builds ───────────────────
-            // Fills 123456 in one tap while waiting for Twilio approval.
-            // BuildConfig.DEBUG is false in release APKs so this block is
-            // dead-code-eliminated by ProGuard/R8 and never ships to production.
-            if (BuildConfig.DEBUG) {
-                TextButton(onClick = { viewModel.onOtpChanged("123456") }) {
-                    Text(
-                        text = "⚡ Dev: fill 123456",
-                        color = Cyan.copy(alpha = 0.45f),
-                        fontSize = 12.sp
-                    )
-                }
+                Text(text = "⚡ Dev: fill 123456", color = c.muted, fontSize = 12.sp)
             }
         }
     }
