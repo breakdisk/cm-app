@@ -24,9 +24,11 @@ import {
   type AccessorialCatalog, type MoveQuote,
 } from '../../services/api/move';
 import type { ParsedItem, ParsedMove } from './parsePrompt';
+import { ArMeasurementModule } from '../../../modules/ar-measurement/src';
+import { combineLoad, dimsFromScan, formatDims, formatVolume, volumeCm3, type ItemDims } from './scan';
 import { formatKg, formatMoney } from './format';
 import { HEADING, M } from './theme';
-import { Ambient, Field, Label, Panel, PrimaryButton, Stepper, Toggle, TopBar } from './ui';
+import { Ambient, Field, GhostButton, Label, Panel, PrimaryButton, Stepper, Toggle, TopBar } from './ui';
 
 function makeKey(): string {
   return `mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -63,6 +65,11 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
   const [quoting, setQuoting] = useState(false);
   const [booking, setBooking] = useState(false);
   const quoteSeq = useRef(0);
+  // Item scan: offered only where the AR module is linked and the device
+  // supports it. Anywhere else the buttons aren't there, rather than dead.
+  const [arAvailable, setArAvailable] = useState(false);
+  const [scanningIndex, setScanningIndex] = useState<number | null>(null);
+  const [pendingScan, setPendingScan] = useState<{ index: number; dims: ItemDims; confidence: number } | null>(null);
 
   useEffect(() => {
     getMyTenant()
@@ -72,7 +79,53 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
       })
       .catch(() => {});
     listAccessorials().then(setCatalog).catch(() => setCatalog(null));
+    ArMeasurementModule.isAvailable().then(setArAvailable).catch(() => setArAvailable(false));
   }, []);
+
+  // Scanned items size the load. Keyed on the size itself, so typing an item
+  // name does not overwrite a length the customer corrected by hand.
+  const scannedLoad = useMemo(() => combineLoad(items), [items]);
+  const scannedLoadKey = scannedLoad ? formatDims(scannedLoad) : '';
+  useEffect(() => {
+    if (!scannedLoad) return;
+    setLengthCm(String(scannedLoad.lengthCm));
+    setWidthCm(String(scannedLoad.widthCm));
+    setHeightCm(String(scannedLoad.heightCm));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scannedLoadKey]);
+
+  async function scanItem(index: number) {
+    if (scanningIndex !== null) return;
+    setScanningIndex(index);
+    try {
+      const box = await ArMeasurementModule.measureBox();
+      setPendingScan({ index, dims: dimsFromScan(box), confidence: box.confidence });
+    } catch (err: any) {
+      if (err?.code !== 'USER_CANCELLED') {
+        Alert.alert("Couldn't scan", err?.message ?? 'Type the size in instead.');
+      }
+    } finally {
+      setScanningIndex(null);
+    }
+  }
+
+  // Scan into the first blank row, or a new one.
+  function scanAnother() {
+    const blank = items.findIndex((i) => !i.name.trim() && !i.dims);
+    if (blank >= 0) {
+      scanItem(blank);
+      return;
+    }
+    setItems((l) => [...l, { name: '', qty: 1 }]);
+    scanItem(items.length);
+  }
+
+  function applyScan() {
+    if (!pendingScan) return;
+    const { index, dims } = pendingScan;
+    setItems((l) => l.map((x, j) => (j === index ? { ...x, dims } : x)));
+    setPendingScan(null);
+  }
 
   const grams = Math.round((parseFloat(weightKg) || 0) * 1000);
   const ready =
@@ -275,9 +328,16 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
 
         <Label
           right={
-            <Pressable onPress={() => setItems((l) => [...l, { name: '', qty: 1 }])} hitSlop={10} accessibilityRole="button">
-              <Text style={s.link}>Add item</Text>
-            </Pressable>
+            <View style={s.linkRow}>
+              {arAvailable && (
+                <Pressable onPress={scanAnother} disabled={scanningIndex !== null} hitSlop={10} accessibilityRole="button">
+                  <Text style={s.link}>Scan an item</Text>
+                </Pressable>
+              )}
+              <Pressable onPress={() => setItems((l) => [...l, { name: '', qty: 1 }])} hitSlop={10} accessibilityRole="button">
+                <Text style={s.link}>Add item</Text>
+              </Pressable>
+            </View>
           }
         >
           Manifest
@@ -286,13 +346,32 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
           {items.map((item, i) => (
             <View key={i} style={s.itemRow}>
               <View style={s.itemIcon}><Ionicons name="cube-outline" size={20} color={M.accent} /></View>
-              <TextInput
-                value={item.name}
-                onChangeText={(name) => setItems((l) => l.map((x, j) => (j === i ? { ...x, name } : x)))}
-                placeholder="Item"
-                placeholderTextColor={M.faint}
-                style={s.itemName}
-              />
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  value={item.name}
+                  onChangeText={(name) => setItems((l) => l.map((x, j) => (j === i ? { ...x, name } : x)))}
+                  placeholder="Item"
+                  placeholderTextColor={M.faint}
+                  style={s.itemName}
+                />
+                {!!item.dims && (
+                  <Text style={s.itemDims}>{formatDims(item.dims)} · {formatVolume(volumeCm3(item.dims))}</Text>
+                )}
+              </View>
+              {arAvailable && (
+                <Pressable
+                  onPress={() => scanItem(i)}
+                  disabled={scanningIndex !== null}
+                  hitSlop={4}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Scan ${item.name || 'this item'}`}
+                  style={({ pressed }) => [s.scanBtn, pressed && { transform: [{ scale: 0.92 }] }]}
+                >
+                  {scanningIndex === i
+                    ? <ActivityIndicator color={M.accent} size="small" />
+                    : <Ionicons name="scan-outline" size={20} color={M.accent} />}
+                </Pressable>
+              )}
               <Stepper
                 value={item.qty}
                 min={1}
@@ -301,7 +380,7 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
               />
               {items.length > 1 && (
                 <Pressable
-                  onPress={() => setItems((l) => l.filter((_, j) => j !== i))}
+                  onPress={() => { setPendingScan(null); setItems((l) => l.filter((_, j) => j !== i)); }}
                   hitSlop={8}
                   accessibilityRole="button"
                   accessibilityLabel={`Remove ${item.name || 'item'}`}
@@ -313,6 +392,32 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
           ))}
         </View>
 
+        {pendingScan && (
+          <Panel tone="accent" style={{ marginTop: 12 }}>
+            <Text style={s.scanKicker}>Scanned · {items[pendingScan.index]?.name.trim() || 'item'}</Text>
+            <View style={s.scanStats}>
+              <View style={s.scanStat}>
+                <Text style={s.scanStatLabel}>Volume</Text>
+                <Text style={s.scanStatValue}>{formatVolume(volumeCm3(pendingScan.dims))}</Text>
+              </View>
+              <View style={s.scanStat}>
+                <Text style={s.scanStatLabel}>Longest</Text>
+                <Text style={s.scanStatValue}>{pendingScan.dims.lengthCm} cm</Text>
+              </View>
+              <View style={s.scanStat}>
+                <Text style={s.scanStatLabel}>Tracking</Text>
+                <Text style={s.scanStatValue}>{Math.round(pendingScan.confidence * 100)}%</Text>
+              </View>
+            </View>
+            <Text style={s.note}>
+              {formatDims(pendingScan.dims)}
+              {pendingScan.confidence < 0.5 ? ' · tracking was weak; scan again in better light if this looks off' : ''}
+            </Text>
+            <PrimaryButton label="ADD TO THE PLAN" onPress={applyScan} style={{ marginTop: 14 }} />
+            <GhostButton label="Discard" onPress={() => setPendingScan(null)} style={{ marginTop: 10 }} />
+          </Panel>
+        )}
+
         <Label>The load</Label>
         <Panel>
           <Field label="Total weight (kg)" value={weightKg} onChangeText={setWeightKg} keyboardType="decimal-pad" placeholder="e.g. 187" />
@@ -323,6 +428,7 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
           </View>
           <Text style={[s.note, { marginTop: 10 }]}>
             Charged on the greater of scale weight and volumetric weight, at the standard 5000 cm³/kg factor.
+            {scannedLoad ? ' The size comes from your scans and holds their combined volume — the scan settles which weight applies.' : ''}
           </Text>
         </Panel>
 
@@ -442,6 +548,14 @@ const s = StyleSheet.create({
   itemRow:        { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.035)', borderWidth: 1, borderColor: M.hairline },
   itemIcon:       { width: 40, height: 40, borderRadius: 12, backgroundColor: M.accentTint, alignItems: 'center', justifyContent: 'center' },
   itemName:       { flex: 1, minHeight: 44, fontFamily: HEADING, fontWeight: '700', fontSize: 17, color: M.ink, padding: 0 },
+  itemDims:       { fontSize: 12, color: M.faint, marginTop: 2, fontVariant: ['tabular-nums'] },
+  scanBtn:        { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: M.accentTint, borderWidth: 1, borderColor: M.accentBorder },
+  linkRow:        { flexDirection: 'row', gap: 18 },
+  scanKicker:     { fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', color: M.accent },
+  scanStats:      { flexDirection: 'row', gap: 10, marginTop: 12 },
+  scanStat:       { flex: 1, borderRadius: 14, padding: 12, backgroundColor: M.panel, borderWidth: 1, borderColor: M.hairline },
+  scanStatLabel:  { fontSize: 9, letterSpacing: 1.6, textTransform: 'uppercase', color: M.label },
+  scanStatValue:  { fontFamily: HEADING, fontWeight: '700', fontSize: 19, color: M.ink, marginTop: 3, fontVariant: ['tabular-nums'] },
   lineRow:        { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 },
   lineLabel:      { fontSize: 14, color: M.ink },
   lineNote:       { fontSize: 11, lineHeight: 16, color: M.faint, marginTop: 2 },

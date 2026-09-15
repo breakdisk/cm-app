@@ -1,3 +1,5 @@
+import type { ItemDims } from './scan';
+
 /**
  * Reads a move request out of the Home prompt.
  *
@@ -26,6 +28,8 @@ export function classifyIntent(text: string, hasActiveJob: boolean): Intent {
 export interface ParsedItem {
   name: string;
   qty: number;
+  /** Set by an item scan on the plan screen; the prompt parser never sets it. */
+  dims?: ItemDims;
 }
 
 export interface ParsedMove {
