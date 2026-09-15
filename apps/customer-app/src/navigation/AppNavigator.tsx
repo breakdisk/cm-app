@@ -30,13 +30,13 @@ import { QuoteScreen }           from "../screens/quote/QuoteScreen";
 import { PaymentWebViewScreen }   from "../screens/booking/PaymentWebView";
 import { BookingConfirmationPendingScreen } from "../screens/booking/BookingConfirmationPending";
 import { MoveNavigator }          from "./MoveNavigator";
+import { IS_MOVE_APP }            from "../config/variant";
 
 /**
  * The "LogisticOS Move" build (eas.json profile `move`, app.config.js): the
  * consumer moving app from the mobile design, on the same sign-in and APIs.
  * Baked in at build time; the default build is unchanged.
  */
-const IS_MOVE_APP = process.env.EXPO_PUBLIC_APP_VARIANT === "move";
 
 // ── Design tokens ───────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
