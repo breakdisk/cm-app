@@ -108,6 +108,36 @@ export async function cancelShipment(id: string, reason: string): Promise<void> 
   await client.post(`/v1/shipments/${id}/cancel`, { reason });
 }
 
+/** `GET /v1/shipments/:id/cancellation-preview` — server-priced, see utils/cancellation.ts. */
+export interface CancellationPreview {
+  cancellable:     boolean;
+  /** False for a shipment with no scheduled pickup: the policy does not price it. */
+  policy_applies:  boolean;
+  tier:            'unscheduled' | 'early' | 'late' | 'same_day';
+  hours_to_pickup: number | null;
+  fee_bps:         number;
+  /** Estimates from the paid total; payments applies the rate to what it captured. Null for a cash booking. */
+  fee_cents:       number | null;
+  refund_cents:    number | null;
+  currency:        string | null;
+  policy_version:  string | null;
+}
+
+/**
+ * Null when the server predates the endpoint (404), so the sheet falls back to
+ * the unpriced confirm. Any other failure throws.
+ */
+export async function getCancellationPreview(id: string): Promise<CancellationPreview | null> {
+  const client = getOrderClient();
+  try {
+    const response = await client.get<CancellationPreview>(`/v1/shipments/${id}/cancellation-preview`);
+    return response.data;
+  } catch (err: any) {
+    if (err?.status === 404) return null;
+    throw err;
+  }
+}
+
 // ── Legacy shape used by BookingScreen ────────────────────────────────────────
 // BookingScreen collects flat strings; this helper maps them to AddressInput.
 

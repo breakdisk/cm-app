@@ -2,7 +2,7 @@
  * Customer App — Shipment History Screen
  * Lists all booked shipments from Redux, grouped by active / delivered / other.
  */
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
@@ -16,7 +16,9 @@ import type { ShipmentRecord, ShipmentStatus } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
 import SkeletonLoader from "../../components/SkeletonLoader";
 import { useShipments } from "../../hooks/useShipments";
-import { cancelShipment } from "../../services/api/shipments";
+import { cancelShipment, getCancellationPreview, type CancellationPreview } from "../../services/api/shipments";
+import { describeCancellation } from "../../utils/cancellation";
+import { DeliveryPinCard } from "../../components/DeliveryPinCard";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -74,6 +76,8 @@ const DEMO_SHIPMENTS: ShipmentRecord[] = [
 const PICKUP_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
 // Statuses where the customer can still cancel
 const CANCELLABLE_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
+// The driver is at or near the door — the only time a 15-minute PIN is any use
+const HANDOVER_STATUSES: ShipmentStatus[] = ["out_for_delivery", "delivery_attempted"];
 
 function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup, onCancel }: { item: ShipmentRecord; onShowQR: (awb: string) => void; onViewReceipt: (item: ShipmentRecord) => void; onTrackPickup: (item: ShipmentRecord) => void; onCancel: (item: ShipmentRecord) => void }) {
   const cfg       = STATUS_CONFIG[item.status] ?? { label: item.status, color: AMBER, icon: "time-outline" };
@@ -171,6 +175,11 @@ function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup, onCancel }
         </Pressable>
       )}
 
+      {/* Delivery PIN — at handover, for a shipment with a known UUID */}
+      {HANDOVER_STATUSES.includes(item.status) && !!item.id && (
+        <DeliveryPinCard shipmentId={item.id} recipientPhone={item.recipientPhone} compact />
+      )}
+
       {/* Cancel button — only for pending/confirmed with a known UUID */}
       {CANCELLABLE_STATUSES.includes(item.status) && !!item.id && (
         <Pressable
@@ -201,6 +210,10 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
   const [qrAwb,        setQrAwb]        = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<ShipmentRecord | null>(null);
   const [cancelling,   setCancelling]   = useState(false);
+  // undefined while loading; null when the server has no preview (the sheet keeps its old wording).
+  const [cancelPreview, setCancelPreview] = useState<CancellationPreview | null | undefined>(undefined);
+  // The shipment the open preview request is for, so a slow answer cannot land on the next sheet.
+  const previewFor = useRef<string | null>(null);
 
   function handleViewReceipt(item: ShipmentRecord) {
     navigation.navigate("Receipt", { shipment: item });
@@ -216,6 +229,24 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
 
   function handleCancelPress(item: ShipmentRecord) {
     setCancelTarget(item);
+    setCancelPreview(undefined);
+    const id = item.id;
+    previewFor.current = id ?? null;
+    if (!id) {
+      setCancelPreview(null);
+      return;
+    }
+    getCancellationPreview(id)
+      // A failed preview must not block a cancel the server would allow; it enforces the rules either way.
+      .catch(() => null)
+      .then(preview => {
+        if (previewFor.current === id) setCancelPreview(preview);
+      });
+  }
+
+  function closeCancelSheet() {
+    previewFor.current = null;
+    setCancelTarget(null);
   }
 
   async function handleCancelConfirm() {
@@ -223,15 +254,21 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
     setCancelling(true);
     try {
       await cancelShipment(cancelTarget.id, "Cancelled by customer");
-      setCancelTarget(null);
+      closeCancelSheet();
       // Refresh the list so the updated status shows immediately
       refetch();
     } catch (err: any) {
-      Alert.alert("Cancel Failed", err?.message ?? "Could not cancel shipment. Please try again.");
+      // A backend without the cancel-scoping fix (PR #162) refuses every customer cancel with 403.
+      const message = err?.status === 403
+        ? "This account can't cancel shipments yet. Contact support to cancel this one."
+        : err?.message ?? "Could not cancel shipment. Please try again.";
+      Alert.alert("Cancel Failed", message);
     } finally {
       setCancelling(false);
     }
   }
+
+  const cancelTerms = describeCancellation(cancelPreview ?? null);
 
   const filtered = shipments.filter((s) => {
     if (filter === "active") return ACTIVE_STATUSES.includes(s.status);
@@ -325,29 +362,41 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
     )}
 
     {/* Cancel confirmation modal */}
-    <Modal visible={!!cancelTarget} transparent animationType="fade" onRequestClose={() => setCancelTarget(null)}>
+    <Modal visible={!!cancelTarget} transparent animationType="fade" onRequestClose={closeCancelSheet}>
       <View style={s.modalOverlay}>
         <View style={s.modalSheet}>
           <View style={[s.modalIconWrap, { backgroundColor: RED + "18" }]}>
             <Ionicons name="close-circle-outline" size={36} color={RED} />
           </View>
           <Text style={s.modalTitle}>Cancel Shipment?</Text>
-          <Text style={s.modalBody}>
-            {cancelTarget?.awb}{"\n\n"}This cannot be undone. The shipment will be cancelled and a driver will not be dispatched.
-          </Text>
-          <Pressable
-            onPress={handleCancelConfirm}
-            disabled={cancelling}
-            style={({ pressed }) => [s.modalPrimaryBtn, { opacity: pressed || cancelling ? 0.75 : 1 }]}
-          >
-            <View style={[s.modalBtnInner, { backgroundColor: RED }]}>
-              {cancelling
-                ? <ActivityIndicator size="small" color="#FFF" />
-                : <Text style={s.modalBtnText}>Yes, Cancel It</Text>}
+          {cancelPreview === undefined ? (
+            <View style={s.previewLoading}>
+              <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
+              <Text style={s.modalDetail}>Checking cancellation terms…</Text>
             </View>
-          </Pressable>
-          <Pressable onPress={() => setCancelTarget(null)} style={s.modalSecondaryBtn}>
-            <Text style={s.modalSecondaryText}>Keep Shipment</Text>
+          ) : (
+            <>
+              <Text style={s.modalBody}>
+                {cancelTarget?.awb}{"\n\n"}{cancelTerms.headline}
+              </Text>
+              {cancelTerms.detail && <Text style={s.modalDetail}>{cancelTerms.detail}</Text>}
+            </>
+          )}
+          {cancelTerms.canCancel && (
+            <Pressable
+              onPress={handleCancelConfirm}
+              disabled={cancelling || cancelPreview === undefined}
+              style={({ pressed }) => [s.modalPrimaryBtn, { opacity: pressed || cancelling || cancelPreview === undefined ? 0.75 : 1 }]}
+            >
+              <View style={[s.modalBtnInner, { backgroundColor: RED }]}>
+                {cancelling
+                  ? <ActivityIndicator size="small" color="#FFF" />
+                  : <Text style={s.modalBtnText}>Yes, Cancel It</Text>}
+              </View>
+            </Pressable>
+          )}
+          <Pressable onPress={closeCancelSheet} style={s.modalSecondaryBtn}>
+            <Text style={s.modalSecondaryText}>{cancelTerms.canCancel ? "Keep Shipment" : "Close"}</Text>
           </Pressable>
         </View>
       </View>
@@ -406,6 +455,8 @@ const s = StyleSheet.create({
   modalIconWrap:     { width: 64, height: 64, borderRadius: 20, alignItems: "center", justifyContent: "center", marginBottom: 4 },
   modalTitle:        { fontSize: 20, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold", textAlign: "center" },
   modalBody:         { fontSize: 14, color: "rgba(255,255,255,0.5)", textAlign: "center", lineHeight: 20, paddingHorizontal: 8 },
+  modalDetail:       { fontSize: 13, color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18, paddingHorizontal: 8, fontVariant: ["tabular-nums"] },
+  previewLoading:    { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8 },
   modalPrimaryBtn:   { width: "100%", borderRadius: 14, overflow: "hidden", marginTop: 6 },
   modalBtnInner:     { paddingVertical: 16, alignItems: "center", justifyContent: "center", borderRadius: 14 },
   modalBtnText:      { fontSize: 15, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold" },
