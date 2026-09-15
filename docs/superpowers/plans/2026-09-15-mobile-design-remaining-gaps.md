@@ -78,3 +78,21 @@ Scope for P, D and A is already specified task-by-task in
 ---
 
 ## Execution notes
+
+### R — done 2026-09-15
+`e7e56b9b` driver screens on `:core:designsystem`; `95e86b33` customer sign-in on the Move
+tokens. Sun mode is held in `AppNavGraph` and offered in the Move build only. The restyle is
+not flavor-gated: the staging build shows the same screens at night.
+
+### H — done 2026-09-15
+driver-ops migration `0015_create_duty_sessions.sql`. Go-online opens a session; go-offline and
+an admin forcing a driver offline close it (one open per driver, partial unique index).
+`GET /v1/drivers/me/hos` returns the rolling-window clock with `enforced: false`. Config
+`HOS__MAX_ON_DUTY_MINUTES` (660), `HOS__WINDOW_HOURS` (14). Driver app: compliance panel and a
+duty-card line, both hidden when driver-ops has no clock. Deploy: the driver-ops image only —
+no topic, no gateway change (`/v1/drivers` already routes to driver-ops).
+
+### S — done 2026-09-15
+The Move plan screen scans items with `ArMeasurementModule.measureBox()` wherever
+`isAvailable()`; the load's L × W × H holds the scanned volume (`scan.ts`). Weight stays typed:
+the module measures size, not mass.
