@@ -44,6 +44,25 @@
         "EXPO_PUBLIC_AI_URL": "https://os-api.cargomarket.net"
       }
     },
+    "move": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_VARIANT": "move",
+        "EXPO_PUBLIC_APP_VARIANT": "move",
+        "EXPO_PUBLIC_API_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_IDENTITY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_COMPLIANCE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ORDER_INTAKE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_DELIVERY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph",
+        "EXPO_PUBLIC_PAYMENTS_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ENGAGEMENT_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_AI_URL": "https://os-api.cargomarket.net"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "android": {

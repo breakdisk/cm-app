@@ -45,6 +45,8 @@ on:
           - development
           - preview
           - production
+          # "LogisticOS Move" — the consumer moving app, its own package (app.config.js)
+          - move
       variant:
         description: "Gradle variant"
         type: choice

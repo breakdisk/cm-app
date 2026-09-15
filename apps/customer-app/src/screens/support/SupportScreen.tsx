@@ -10,7 +10,7 @@
  * offline/plan-gated fallback, used when the tenant's plan has no AI tier
  * (403) or the network call fails.
  */
-import React, { useState, useRef, useCallback, useMemo } from "react";
+import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
@@ -20,7 +20,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelector } from "react-redux";
-import { useNavigation, useFocusEffect } from "@react-navigation/native";
+import { useNavigation, useFocusEffect, useRoute } from "@react-navigation/native";
 import type { RootState } from "../../store";
 import {
   aiApi,
@@ -289,6 +289,21 @@ export function SupportScreen() {
     setTab("chat");
     void send(msg);
   }
+
+  /**
+   * The Move app's Home routes a support question here with the typed message
+   * as its first turn (the handoff's intent routing). Sent once per message.
+   */
+  const route = useRoute<any>();
+  const initialMessage: string | undefined = route.params?.initialMessage;
+  const sentInitial = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialMessage || sentInitial.current === initialMessage) return;
+    sentInitial.current = initialMessage;
+    askAgent(initialMessage);
+    // askAgent is recreated each render; this fires on a new message only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMessage]);
 
   /**
    * Dial the tenant's support line. The number is deployment configuration, not
