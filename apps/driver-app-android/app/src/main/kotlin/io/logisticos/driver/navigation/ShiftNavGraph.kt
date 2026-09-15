@@ -41,6 +41,12 @@ import io.logisticos.driver.core.location.LocationForegroundService
 import io.logisticos.driver.feature.hub.domain.HubScanType
 import io.logisticos.driver.feature.hub.ui.HubScanScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
+import androidx.compose.runtime.saveable.rememberSaveable
+import io.logisticos.driver.BuildConfig
+import io.logisticos.driver.move.LoadsBoardScreen
+import io.logisticos.driver.move.MoveBottomBar
+import io.logisticos.driver.move.NightColors
+import io.logisticos.driver.move.SunColors
 
 // ── Route constants ───────────────────────────────────────────────────────────
 private const val HOME_ROUTE             = "home"
@@ -104,10 +110,17 @@ fun ShiftScaffold(rootNavController: NavHostController) {
         }
     }
 
+    // Move build only: sun mode for direct sunlight, kept across tabs.
+    var sun by rememberSaveable { mutableStateOf(false) }
+
     Scaffold(
-        containerColor = NavCanvas,
+        containerColor = if (BuildConfig.MOVE_UI) (if (sun) SunColors.ground else NightColors.ground) else NavCanvas,
         bottomBar = {
-            BottomNavBar(navController = shiftNavController, unreadCount = unreadCount)
+            if (BuildConfig.MOVE_UI) {
+                MoveBottomBar(navController = shiftNavController, sun = sun)
+            } else {
+                BottomNavBar(navController = shiftNavController, unreadCount = unreadCount)
+            }
         }
     ) { innerPadding ->
         NavHost(
@@ -118,16 +131,28 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             // ── Bottom tab destinations ───────────────────────────────────
             composable(HOME_ROUTE) {
-                HomeScreen(
-                    onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
-                    onNavigateToTask  = { taskId ->
-                        shiftNavController.navigate(ARRIVAL_ROUTE.replace("{taskId}", taskId))
-                    },
-                    onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
-                    onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
-                    onNavigateToHub = { shiftNavController.navigate(HUB_ROUTE) },
-                    onNavigateToHubScan = { hubId -> shiftNavController.navigateToHubScan(hubId = hubId) },
-                )
+                if (BuildConfig.MOVE_UI) {
+                    LoadsBoardScreen(
+                        sun = sun,
+                        onToggleSun = { sun = !sun },
+                        onNavigateToTask = { taskId ->
+                            shiftNavController.navigate(NAVIGATE_TO_STOP_ROUTE.replace("{taskId}", taskId))
+                        },
+                        onOpenNotifications = { shiftNavController.navigate(NOTIFICATIONS_ROUTE) },
+                        onOpenProfile = { shiftNavController.navigate(PROFILE_ROUTE) },
+                    )
+                } else {
+                    HomeScreen(
+                        onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
+                        onNavigateToTask  = { taskId ->
+                            shiftNavController.navigate(ARRIVAL_ROUTE.replace("{taskId}", taskId))
+                        },
+                        onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
+                        onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
+                        onNavigateToHub = { shiftNavController.navigate(HUB_ROUTE) },
+                        onNavigateToHubScan = { hubId -> shiftNavController.navigateToHubScan(hubId = hubId) },
+                    )
+                }
             }
 
             composable(HUB_ROUTE) {

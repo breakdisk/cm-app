@@ -31,6 +31,8 @@ android {
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
         val mapboxAccessToken = localProps.getProperty("MAPBOX_ACCESS_TOKEN") ?: ""
         buildConfigField("String", "MAPBOX_ACCESS_TOKEN", "\"$mapboxAccessToken\"")
+        // True only in the `move` flavor below.
+        buildConfigField("boolean", "MOVE_UI", "false")
     }
 
     signingConfigs {
@@ -98,6 +100,17 @@ android {
             // TENANT_ID is intentionally empty — resolved at runtime from invite
             // deep link or company code. Do NOT hardcode a tenant slug here.
             buildConfigField("String", "TENANT_ID", "\"\"")
+        }
+        // The mobile design handoff's driver app: load board, duty card, sun
+        // mode and the five-tab shell, over the same screens and endpoints.
+        // Same application id as staging/prod — google-services.json has no
+        // client for another package — so it installs over the existing app.
+        create("move") {
+            dimension = "env"
+            versionNameSuffix = "-move"
+            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
+            buildConfigField("String", "TENANT_ID", "\"\"")
+            buildConfigField("boolean", "MOVE_UI", "true")
         }
     }
 

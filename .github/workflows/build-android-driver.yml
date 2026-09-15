@@ -130,6 +130,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # ── Move build: the mobile design's driver app, debug-signed for testing ──
+      - name: Build moveDebug APK
+        working-directory: apps/driver-app-android
+        run: ./gradlew assembleMoveDebug --no-daemon
+
+      - name: Upload moveDebug APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: driver-app-move-debug-${{ github.run_number }}
+          path: apps/driver-app-android/app/build/outputs/apk/move/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
       # ── Release build (signed when keystore secrets are present) ──
       - name: Build stagingRelease + prodRelease APKs
         working-directory: apps/driver-app-android
