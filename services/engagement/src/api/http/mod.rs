@@ -5,6 +5,7 @@
 //! appropriate RBAC permissions.  Prometheus metrics are served at `/metrics`;
 //! liveness and readiness probes at `/health` and `/ready`.
 
+pub mod job_chat;
 pub mod webhook;
 
 use std::collections::HashMap;
@@ -98,6 +99,8 @@ fn effective_customer_filter(
 pub struct AppState {
     pub notification_svc: Arc<NotificationService>,
     pub db: PgPool,
+    /// Asks order-intake and driver-ops who is on a job, for the chat thread.
+    pub job_participants: Arc<crate::infrastructure::job_participants::JobParticipants>,
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +705,15 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/campaigns/:id/sends",    get(list_campaign_sends))
         // ── Customer communication history ──────────────────────────
         .route("/v1/customers/:customer_id/sends", get(customer_send_history))
+        // ── Job chat (customer ↔ driver, one thread per shipment) ───
+        // No permission gate: being on the job is the gate, and that is
+        // answered by order-intake and driver-ops, not by this service.
+        .route(
+            "/v1/engagement/jobs/:shipment_id/messages",
+            get(job_chat::list_messages).post(job_chat::send_message),
+        )
+        .route("/v1/engagement/jobs/:shipment_id/messages/read", post(job_chat::mark_read))
+        .route("/v1/engagement/jobs/:shipment_id/messages/unread", get(job_chat::unread_badge))
         .with_state(state)
 }
 

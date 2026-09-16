@@ -96,3 +96,19 @@ no topic, no gateway change (`/v1/drivers` already routes to driver-ops).
 The Move plan screen scans items with `ArMeasurementModule.measureBox()` wherever
 `isAvailable()`; the load's L × W × H holds the scanned volume (`scan.ts`). Weight stays typed:
 the module measures size, not mass.
+
+### V — done 2026-09-16
+`expo-speech-recognition` 3.1.x (the release built against SDK 54), plugin declared for the
+Move build only. `src/screens/move/voice.ts` guards every call, so the mic is offered only
+where the module is linked and the phone can listen.
+
+### C — done 2026-09-16 (no push yet)
+Stacked on #162: engagement asks order-intake ("this is my shipment") and driver-ops ("I am
+the driver on it") with the caller's own token, so no second rule set lives in engagement.
+Migration `0009_create_job_messages.sql`; routes under `/v1/engagement/jobs/:shipment_id/
+messages` (list, send, read, unread), which the gateway already routes. Both apps poll every
+4 s while the thread is open.
+**Not done:** push on either side. A driver push needs FCM credentials in engagement (the
+driver app is FCM, engagement only has Expo push), and the `job.message.sent` topic would
+have to be pre-created on the live broker. Until then a closed app learns nothing until it
+is opened. K (masked calling) is next and still needs the Twilio voice number.

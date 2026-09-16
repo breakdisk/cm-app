@@ -183,9 +183,18 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
+    // Job chat asks the service that owns each answer whether the caller is
+    // on the job — order-intake for the customer, driver-ops for the driver —
+    // with the caller's own token, so this service holds no second rule set.
+    let job_participants = Arc::new(crate::infrastructure::job_participants::JobParticipants::new(
+        std::env::var("SERVICES__ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8004".into()),
+        std::env::var("SERVICES__DRIVER_OPS_URL").unwrap_or_else(|_| "http://driver-ops:8006".into()),
+    ));
+
     let http_state = crate::api::http::AppState {
         notification_svc: notification_svc.clone(),
         db: pool,
+        job_participants,
     };
 
     use tower_http::cors::CorsLayer;

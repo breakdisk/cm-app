@@ -14,6 +14,7 @@ import { useSelector } from 'react-redux';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootState } from '../../store';
 import { trackingApi } from '../../services/api/tracking';
+import { unreadCount } from '../../services/api/chat';
 import { LiveDriverMap } from '../../components/LiveDriverMap';
 import { DeliveryPinCard } from '../../components/DeliveryPinCard';
 import { isTerminalStatus, LIVE_TRACKING_POLL_MS, mapPublicTracking, type TrackingResult } from '../tracking/mapTracking';
@@ -45,6 +46,7 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
   const [result, setResult] = useState<TrackingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showMap, setShowMap] = useState(false);
+  const [unread, setUnread] = useState(0);
 
   const load = useCallback(async () => {
     if (!awb) return;
@@ -70,6 +72,19 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
     }, LIVE_TRACKING_POLL_MS);
     return () => clearInterval(timer);
   }, [isFocused, awb, status, load]);
+
+  // The badge on the chat button, on the same rhythm as tracking. A failure
+  // here is silent: an unread count is not worth an error on this screen.
+  useEffect(() => {
+    if (!isFocused || !id || (status && isTerminalStatus(status))) return;
+    let cancelled = false;
+    const tick = () => {
+      unreadCount(id).then((n) => { if (!cancelled) setUnread(n); }).catch(() => {});
+    };
+    tick();
+    const timer = setInterval(tick, LIVE_TRACKING_POLL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [isFocused, id, status]);
 
   if (!awb) {
     const moves = shipments.filter((s) => ACTIVE_STATUSES.includes(s.status));
@@ -187,16 +202,23 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
                 </Pressable>
               )}
               <Pressable
-                onPress={() => navigation.navigate('Support')}
+                onPress={() => id && navigation.navigate('MoveChat', { id, driverName: result.driver_name, driverPhone: result.driver_phone })}
+                disabled={!id}
                 accessibilityRole="button"
+                accessibilityLabel={unread > 0 ? `Chat with your driver, ${unread} unread` : 'Chat with your driver'}
                 style={({ pressed }) => [s.contactBtn, s.contactBtnPrimary, pressed && { transform: [{ scale: 0.96 }] }]}
               >
                 <Ionicons name="chatbubble-outline" size={17} color={M.accentInk} />
                 <Text style={[s.contactText, { color: M.accentInk }]}>CHAT</Text>
+                {unread > 0 && (
+                  <View style={s.badge}>
+                    <Text style={s.badgeText}>{unread > 9 ? '9+' : unread}</Text>
+                  </View>
+                )}
               </Pressable>
             </View>
             <Text style={[s.feedTime, { marginTop: 12 }]}>
-              Chat goes to support for now — a direct thread with your driver isn't available yet.
+              Messages stay with this move. Calls still go out on your own line.
             </Text>
           </Panel>
         )}
@@ -244,6 +266,8 @@ const s = StyleSheet.create({
   contactBtn:       { flex: 1, height: 52, borderRadius: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: M.hairlineStrong },
   contactBtnPrimary:{ backgroundColor: M.accent, borderColor: M.accent },
   contactText:      { fontSize: 13, fontWeight: '700', letterSpacing: 0.8, color: M.ink },
+  badge:            { minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: M.accentInk },
+  badgeText:        { fontSize: 11, fontWeight: '700', color: M.accent },
   coverRow:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 56, marginTop: 16, paddingHorizontal: 18, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: M.hairline },
   coverText:        { fontSize: 14, color: M.ink },
   moveRow:          { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 18, backgroundColor: M.panel, borderWidth: 1, borderColor: M.hairline },

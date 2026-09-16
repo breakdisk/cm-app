@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,6 +36,8 @@ fun ArrivalScreen(
      *  and the driver saw a screen with no capture UI — the "no POD prompt"
      *  bug operations reported. */
     onStartTask: (taskId: String, taskType: TaskType, requiresPhoto: Boolean, requiresSignature: Boolean, requiresOtp: Boolean, isCod: Boolean, codAmount: Double) -> Unit,
+    /** Opens the thread with the customer on this job; hidden when null. */
+    onOpenChat: ((shipmentId: String, customerName: String, customerPhone: String) -> Unit)? = null,
     onBack: () -> Unit = {},
     viewModel: ArrivalViewModel = hiltViewModel()
 ) {
@@ -101,6 +104,17 @@ fun ArrivalScreen(
                 MoveDivider(Modifier.padding(vertical = 14.dp))
                 Text("ADDRESS", color = c.muted, fontSize = 12.sp, letterSpacing = 2.4.sp)
                 Text(task.address, color = c.ink, fontSize = 17.sp, lineHeight = 24.sp, modifier = Modifier.padding(top = 4.dp))
+            }
+
+            // The thread with the customer. Both sides keep it on the job.
+            if (onOpenChat != null && task.shipmentId.isNotBlank()) {
+                MoveBigButton(
+                    label = "MESSAGE THE CUSTOMER",
+                    onClick = { onOpenChat(task.shipmentId, task.recipientName, task.recipientPhone) },
+                    filled = false,
+                    icon = Icons.AutoMirrored.Filled.Chat,
+                    height = 60.dp,
+                )
             }
 
             // Phone — calls the recipient directly from this screen.

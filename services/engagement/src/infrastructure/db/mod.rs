@@ -1011,3 +1011,7 @@ pub struct ReceiptTransition {
     pub fresh_open:  bool,
     pub fresh_click: bool,
 }
+
+
+/// Job chat storage — the customer/driver thread on one shipment.
+pub mod job_chat;

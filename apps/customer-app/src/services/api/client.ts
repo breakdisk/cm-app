@@ -102,6 +102,7 @@ let cachedIdentityClient: AxiosInstance | null = null;
 let cachedOrderClient: AxiosInstance | null = null;
 let cachedTrackingClient: AxiosInstance | null = null;
 let cachedPodClient: AxiosInstance | null = null;
+let cachedEngagementClient: AxiosInstance | null = null;
 
 export function getIdentityClient(): AxiosInstance {
   if (!cachedIdentityClient) {
@@ -130,6 +131,14 @@ export function getPodClient(): AxiosInstance {
     cachedPodClient = createApiClient(process.env.EXPO_PUBLIC_POD_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000');
   }
   return cachedPodClient;
+}
+
+/** Engagement — the job chat thread (`/v1/engagement/jobs/...`). */
+export function getEngagementClient(): AxiosInstance {
+  if (!cachedEngagementClient) {
+    cachedEngagementClient = createApiClient(process.env.EXPO_PUBLIC_ENGAGEMENT_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8003');
+  }
+  return cachedEngagementClient;
 }
 
 /**

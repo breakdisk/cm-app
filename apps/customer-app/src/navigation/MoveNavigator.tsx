@@ -13,6 +13,7 @@ import { MoveThinkingScreen } from '../screens/move/MoveThinkingScreen';
 import { MovePlanScreen } from '../screens/move/MovePlanScreen';
 import { MoveBookedScreen } from '../screens/move/MoveBookedScreen';
 import { MoveTrackScreen } from '../screens/move/MoveTrackScreen';
+import { MoveChatScreen } from '../screens/move/MoveChatScreen';
 import { MoveCancelScreen } from '../screens/move/MoveCancelScreen';
 import { MoveCancelledScreen } from '../screens/move/MoveCancelledScreen';
 import { MovePaymentsScreen } from '../screens/move/MovePaymentsScreen';
@@ -42,6 +43,7 @@ export function MoveNavigator() {
       <Stack.Screen name="MovePlan" component={MovePlanScreen} />
       <Stack.Screen name="MoveBooked" component={MoveBookedScreen} options={{ gestureEnabled: false }} />
       <Stack.Screen name="Track" component={MoveTrackScreen} />
+      <Stack.Screen name="MoveChat" component={MoveChatScreen} />
       <Stack.Screen name="MoveCancel" component={MoveCancelScreen} />
       <Stack.Screen name="MoveCancelled" component={MoveCancelledScreen} options={{ gestureEnabled: false }} />
       <Stack.Screen name="MovePayments" component={MovePaymentsScreen} />
