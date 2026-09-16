@@ -147,6 +147,17 @@ pub async fn run() -> anyhow::Result<()> {
     cfg.accessorials
         .validate()
         .map_err(|e| anyhow::anyhow!("{e} - refusing to start order-intake"))?;
+    // A rate above 100% or crossed windows stops the deploy here, rather than
+    // mispricing every cancellation.
+    cfg.cancellation_policy
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e} - refusing to start order-intake"))?;
+    tracing::info!(
+        version = %cfg.cancellation_policy.version,
+        late_bps = cfg.cancellation_policy.late_bps,
+        same_day_bps = cfg.cancellation_policy.same_day_bps,
+        "cancellation policy loaded (applies to scheduled jobs only)"
+    );
 
     let svc = Arc::new(ShipmentService::new(
         repo.clone(),
@@ -156,6 +167,7 @@ pub async fn run() -> anyhow::Result<()> {
         payment,
         carrier,
         cfg.accessorials.clone(),
+        cfg.cancellation_policy.clone(),
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();

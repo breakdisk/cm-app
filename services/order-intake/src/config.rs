@@ -8,6 +8,10 @@ pub struct Config {
     pub kafka: KafkaConfig,
     #[serde(default)]
     pub geocoder: GeocoderConfig,
+    /// Cancellation fee policy. Every rate defaults to 0 bps, so a deployment
+    /// without `CANCELLATION_POLICY__*` set charges nothing on cancel.
+    #[serde(default)]
+    pub cancellation_policy: crate::domain::value_objects::cancellation_policy::CancellationPolicy,
     /// Base URL of the payments service. Part of the optional "pay online
     /// at booking" capability, together with `quote_token_secret` and
     /// `app.public_base_url` — see the doc comment on `payment_config()`
@@ -324,6 +328,7 @@ mod config_tests {
         let cfg = Config {
             services: ServicesConfig::default(),
             accessorials: AccessorialsConfig::default(),
+            cancellation_policy: Default::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,
@@ -350,6 +355,7 @@ mod config_tests {
         let cfg = Config {
             services: ServicesConfig::default(),
             accessorials: AccessorialsConfig::default(),
+            cancellation_policy: Default::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,

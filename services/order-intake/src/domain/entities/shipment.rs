@@ -83,6 +83,19 @@ pub struct Shipment {
     /// ShipmentStatus variant. `None` once paid (or if payment was never required).
     pub pending_dispatch_events: Option<serde_json::Value>,
     pub idempotency_key: Option<String>,
+    /// When the job is booked to start. `None` for a shipment booked without a
+    /// slot, which the cancellation policy does not price.
+    #[serde(default)]
+    pub scheduled_pickup_at: Option<DateTime<Utc>>,
+    /// The cancellation policy version in force when the customer booked.
+    #[serde(default)]
+    pub cancellation_policy_version: Option<String>,
+    /// The verified quote total. Display only, for the cancellation preview;
+    /// payments computes money on what it captured.
+    #[serde(default)]
+    pub booking_amount_cents: Option<i64>,
+    #[serde(default)]
+    pub booking_currency: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -98,12 +111,17 @@ impl Shipment {
         Ok(())
     }
 
-    /// Business rule: Shipment can only be cancelled before pickup
+    /// Business rule: a shipment can be cancelled before pickup assignment.
+    ///
+    /// A scheduled job can also be cancelled after its crew is assigned, because
+    /// the cancellation policy prices that case. An unscheduled shipment keeps
+    /// the old rule (decided 2026-09-14).
     pub fn can_cancel(&self) -> bool {
-        matches!(
-            self.status,
-            ShipmentStatus::Pending | ShipmentStatus::Confirmed
-        )
+        match self.status {
+            ShipmentStatus::Pending | ShipmentStatus::Confirmed => true,
+            ShipmentStatus::PickupAssigned => self.scheduled_pickup_at.is_some(),
+            _ => false,
+        }
     }
 
     /// Business rule: Reschedule only allowed on failed delivery
@@ -265,6 +283,10 @@ mod tests {
             idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
+            scheduled_pickup_at:         None,
+            cancellation_policy_version: None,
+            booking_amount_cents:        None,
+            booking_currency:            None,
         };
         assert_eq!(s.customer_name,  "Test Customer");
         assert_eq!(s.customer_phone, "+63912345678");
@@ -303,6 +325,10 @@ mod tests {
             idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
+            scheduled_pickup_at:         None,
+            cancellation_policy_version: None,
+            booking_amount_cents:        None,
+            booking_currency:            None,
         };
         let fee = s.compute_base_fee();
         assert_eq!(fee, logisticos_types::Money::new(8500, Currency::PHP));
@@ -370,6 +396,10 @@ mod tests {
             idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
+            scheduled_pickup_at:         None,
+            cancellation_policy_version: None,
+            booking_amount_cents:        None,
+            booking_currency:            None,
         };
         let fee = s.compute_base_fee_aed();
         assert_eq!(fee, ae_base_fee_for(ServiceType::Standard, 1_500));

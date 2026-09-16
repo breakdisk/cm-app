@@ -7,7 +7,8 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::ShipmentId;
 
 use crate::{
-    application::services::shipment_service::{ShipmentListFilter, ShipmentRepository},
+    application::services::shipment_service::{authorize_shipment, ShipmentListFilter, ShipmentRepository},
+    domain::value_objects::cancel_authority::ActingAs,
     domain::entities::shipment::Shipment,
 };
 
@@ -55,6 +56,15 @@ impl ShipmentQueryService {
         Self { repo }
     }
 
+    /// A user-facing read. Tenant always enforced; merchants and customers see
+    /// only their own. `get_by_id` below stays for mesh-internal callers.
+    pub async fn get_for(&self, id: Uuid, acting_as: &ActingAs) -> AppResult<Shipment> {
+        let shipment = self.get_by_id(id).await?;
+        authorize_shipment(acting_as, &shipment)?;
+        Ok(shipment)
+    }
+
+    /// Unscoped. Only for `/v1/internal/*` callers, which Istio asserts.
     pub async fn get_by_id(&self, id: Uuid) -> AppResult<Shipment> {
         self.repo
             .find_by_id(&ShipmentId::from_uuid(id))

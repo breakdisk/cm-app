@@ -36,6 +36,8 @@ struct PaymentIntentRow {
     expires_at: DateTime<Utc>,
     refund_requested_at: Option<DateTime<Utc>>,
     captured_amount_cents: Option<i64>,
+    refund_requested_cents: Option<i64>,
+    refunded_cents: Option<i64>,
 }
 
 impl TryFrom<PaymentIntentRow> for PaymentIntent {
@@ -61,13 +63,16 @@ impl TryFrom<PaymentIntentRow> for PaymentIntent {
             expires_at: row.expires_at,
             refund_requested_at: row.refund_requested_at,
             captured_amount_cents: row.captured_amount_cents,
+            refund_requested_cents: row.refund_requested_cents,
+            refunded_cents: row.refunded_cents,
         })
     }
 }
 
 const INTENT_COLS: &str = "id, tenant_id, purpose, reference_type, reference_id, \
     amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref, \
-    created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents";
+    created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents, \
+    refund_requested_cents, refunded_cents";
 
 #[async_trait]
 impl PaymentIntentRepository for PgPaymentIntentRepository {
@@ -103,15 +108,18 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             r#"INSERT INTO payments.payment_intents (
                 id, tenant_id, purpose, reference_type, reference_id,
                 amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref,
-                created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents,
+                refund_requested_cents, refunded_cents
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
             ON CONFLICT (id) DO UPDATE SET
                 status               = EXCLUDED.status,
                 gateway_order_ref    = EXCLUDED.gateway_order_ref,
                 gateway_payment_ref  = EXCLUDED.gateway_payment_ref,
                 updated_at           = EXCLUDED.updated_at,
                 refund_requested_at  = EXCLUDED.refund_requested_at,
-                captured_amount_cents = EXCLUDED.captured_amount_cents"#,
+                captured_amount_cents = EXCLUDED.captured_amount_cents,
+                refund_requested_cents = EXCLUDED.refund_requested_cents,
+                refunded_cents       = EXCLUDED.refunded_cents"#,
         )
         .bind(intent.id)
         .bind(intent.tenant_id)
@@ -129,6 +137,8 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         .bind(intent.expires_at)
         .bind(intent.refund_requested_at)
         .bind(intent.captured_amount_cents)
+        .bind(intent.refund_requested_cents)
+        .bind(intent.refunded_cents)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -165,16 +175,23 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         row.map(PaymentIntent::try_from).transpose()
     }
 
-    async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()> {
+    async fn mark_refund_requested(&self, id: Uuid, amount_cents: Option<i64>) -> anyhow::Result<()> {
         // COALESCE keeps this idempotent — a redelivered cancellation event
         // (or a duplicate call) must not push the clock forward and reset
         // how long the obligation has been outstanding.
+        //
+        // The amount follows the timestamp: it is written only when this call
+        // is the one recording the obligation. Every SET expression reads the
+        // pre-update row, so both check the same `refund_requested_at`.
         sqlx::query(
             "UPDATE payments.payment_intents \
-             SET refund_requested_at = COALESCE(refund_requested_at, NOW()) \
+             SET refund_requested_at = COALESCE(refund_requested_at, NOW()), \
+                 refund_requested_cents = CASE WHEN refund_requested_at IS NULL \
+                                               THEN $2 ELSE refund_requested_cents END \
              WHERE id = $1",
         )
         .bind(id)
+        .bind(amount_cents)
         .execute(&self.pool)
         .await?;
         Ok(())

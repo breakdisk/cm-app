@@ -476,6 +476,7 @@ fn build_test_server_with_publisher_and_payments(
         }),
         None,
         Default::default(),
+        Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -518,6 +519,7 @@ fn build_test_server_with_payment_disabled(
         awb_gen,
         None,
         None,
+        Default::default(),
         Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
@@ -692,6 +694,10 @@ fn make_shipment(
         idempotency_key:         None,
         created_at:           now,
         updated_at:           now,
+        scheduled_pickup_at:         None,
+        cancellation_policy_version: None,
+        booking_amount_cents:        None,
+        booking_currency:            None,
     }
 }
 
@@ -2569,6 +2575,14 @@ mod payment_consumer_tests {
         repo: Arc<InMemoryShipmentRepository>,
         publisher: Arc<dyn EventPublisher>,
     ) -> Arc<ShipmentService> {
+        build_service_with_policy(repo, publisher, CancellationPolicy::default())
+    }
+
+    fn build_service_with_policy(
+        repo: Arc<InMemoryShipmentRepository>,
+        publisher: Arc<dyn EventPublisher>,
+        policy: CancellationPolicy,
+    ) -> Arc<ShipmentService> {
         Arc::new(ShipmentService::new(
             Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
             publisher,
@@ -2581,6 +2595,7 @@ mod payment_consumer_tests {
             }),
             None,
             Default::default(),
+            policy,
         ))
     }
 
@@ -2864,6 +2879,209 @@ mod payment_consumer_tests {
             recorder.published.lock().unwrap().len(), 0,
             "must not re-publish shipment.cancelled for an already-cancelled shipment"
         );
+    }
+
+    // ========================================================================
+    // By-id authority. `find_by_id` is `WHERE id = $1` and nothing sets the
+    // RLS tenant, so the service itself is what stops a caller acting on a
+    // shipment that is not theirs. These drive the real `cancel()`, not the
+    // pure rule, to prove the check is wired.
+    // ========================================================================
+
+    use logisticos_errors::AppError;
+    use logisticos_order_intake::application::commands::CancelShipmentCommand;
+    use logisticos_order_intake::domain::value_objects::cancel_authority::{ActingAs, Actor};
+
+    fn cancel_as(shipment_id: uuid::Uuid, acting_as: ActingAs) -> CancelShipmentCommand {
+        CancelShipmentCommand { shipment_id, reason: "test".into(), acting_as }
+    }
+
+    /// The live bug: an operator in one tenant cancelling another tenant's
+    /// shipment by uuid, which payments then refunded in full.
+    #[tokio::test]
+    async fn a_cancel_from_another_tenant_is_not_found_and_changes_nothing() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let owner = uuid::Uuid::new_v4();
+        let shipment = make_shipment(uuid::Uuid::new_v4(), owner, ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let intruder = Actor { tenant_id: uuid::Uuid::new_v4(), user_id: owner, tenant_wide: true };
+        let err = svc.cancel(cancel_as(shipment_id, ActingAs::User(intruder))).await
+            .expect_err("another tenant must not cancel this shipment");
+
+        assert!(matches!(err, AppError::NotFound { .. }), "must be 404, not 403, so ids cannot be probed: {err:?}");
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Confirmed);
+        assert!(recorder.published.lock().unwrap().is_empty(), "nothing may reach payments");
+    }
+
+    #[tokio::test]
+    async fn a_customer_cannot_cancel_another_customers_shipment() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let shipment = make_shipment(tenant_id, uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let other_customer = Actor { tenant_id, user_id: uuid::Uuid::new_v4(), tenant_wide: false };
+        let err = svc.cancel(cancel_as(shipment_id, ActingAs::User(other_customer))).await
+            .expect_err("a customer may cancel only their own shipment");
+
+        assert!(matches!(err, AppError::NotFound { .. }), "{err:?}");
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Confirmed);
+    }
+
+    /// The owner can cancel, and the event now names the shipment's tenant.
+    /// It carried `Uuid::nil()` before.
+    #[tokio::test]
+    async fn an_owner_cancel_publishes_the_shipments_real_tenant() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let (tenant_id, owner) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let shipment = make_shipment(tenant_id, owner, ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let me = Actor { tenant_id, user_id: owner, tenant_wide: false };
+        svc.cancel(cancel_as(shipment_id, ActingAs::User(me))).await.expect("the owner may cancel");
+
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Cancelled);
+        let records = recorder.records.lock().unwrap();
+        let (_, _, payload) = records.iter()
+            .find(|(topic, _, _)| topic == topics::SHIPMENT_CANCELLED)
+            .expect("shipment.cancelled must be published");
+        let envelope: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(envelope["tenant_id"], serde_json::json!(tenant_id), "the event must carry the real tenant");
+    }
+
+    /// A command nobody stamped with an actor is refused, not trusted.
+    #[tokio::test]
+    async fn a_cancel_with_no_actor_is_refused() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let shipment = make_shipment(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let err = svc.cancel(cancel_as(shipment_id, ActingAs::default())).await
+            .expect_err("an unset actor must be refused");
+
+        assert!(matches!(err, AppError::Internal(_)), "{err:?}");
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Confirmed);
+    }
+
+    // ========================================================================
+    // Cancellation policy. order-intake states the rate on shipment.cancelled;
+    // payments applies it to what it captured. Scheduled jobs only.
+    // ========================================================================
+
+    use logisticos_order_intake::domain::value_objects::cancellation_policy::CancellationPolicy;
+
+    /// Placeholder rates, only to exercise the tiers. The shipped default is 0%.
+    fn live_policy() -> CancellationPolicy {
+        CancellationPolicy {
+            version: "2026-09".into(),
+            free_until_hours: 48,
+            late_from_hours: 24,
+            late_bps: 1_500,
+            same_day_bps: 10_000,
+        }
+    }
+
+    fn cancelled_data(recorder: &RecordingEventPublisher) -> serde_json::Value {
+        let records = recorder.records.lock().unwrap();
+        let (_, _, payload) = records.iter()
+            .find(|(topic, _, _)| topic == topics::SHIPMENT_CANCELLED)
+            .expect("shipment.cancelled must be published");
+        serde_json::from_str::<serde_json::Value>(payload).unwrap()["data"].clone()
+    }
+
+    /// Returns the published event data after the owner cancels.
+    async fn cancel_as_owner(
+        policy: CancellationPolicy,
+        status: ShipmentStatus,
+        scheduled_in: Option<chrono::Duration>,
+    ) -> (Result<(), AppError>, Arc<RecordingEventPublisher>) {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service_with_policy(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            policy,
+        );
+        let (tenant_id, owner) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let shipment = Shipment {
+            scheduled_pickup_at: scheduled_in.map(|d| chrono::Utc::now() + d),
+            ..make_shipment(tenant_id, owner, status)
+        };
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+        let me = Actor { tenant_id, user_id: owner, tenant_wide: false };
+        (svc.cancel(cancel_as(shipment_id, ActingAs::User(me))).await, recorder)
+    }
+
+    /// Every parcel booked today has no scheduled time. Its cancellation must
+    /// carry no retention, so payments refunds in full, as it always has.
+    #[tokio::test]
+    async fn an_unscheduled_cancellation_carries_no_retention() {
+        let (result, recorder) = cancel_as_owner(live_policy(), ShipmentStatus::Confirmed, None).await;
+        result.expect("cancel must succeed");
+        let data = cancelled_data(&recorder);
+        assert!(data.get("retention_bps").is_none(), "unscheduled must not be priced: {data}");
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_cancellation_19_hours_out_states_the_late_rate() {
+        let (result, recorder) =
+            cancel_as_owner(live_policy(), ShipmentStatus::Confirmed, Some(chrono::Duration::hours(19))).await;
+        result.expect("cancel must succeed");
+        let data = cancelled_data(&recorder);
+        assert_eq!(data["retention_bps"], 1_500);
+        assert_eq!(data["cancellation_tier"], "late");
+    }
+
+    /// The shipped default: rates are 0 until finance confirms them, so a
+    /// scheduled cancellation states a zero rate and payments refunds in full.
+    #[tokio::test]
+    async fn the_default_policy_states_a_zero_rate() {
+        let (result, recorder) = cancel_as_owner(
+            CancellationPolicy::default(),
+            ShipmentStatus::Confirmed,
+            Some(chrono::Duration::hours(19)),
+        ).await;
+        result.expect("cancel must succeed");
+        assert_eq!(cancelled_data(&recorder)["retention_bps"], 0);
+    }
+
+    /// A scheduled job can be cancelled after its crew is assigned, because the
+    /// policy prices that case.
+    #[tokio::test]
+    async fn a_scheduled_job_can_be_cancelled_after_crew_assignment() {
+        let (result, _) = cancel_as_owner(
+            live_policy(),
+            ShipmentStatus::PickupAssigned,
+            Some(chrono::Duration::hours(3)),
+        ).await;
+        result.expect("a scheduled job past assignment is cancellable");
+    }
+
+    /// Decided 2026-09-14: an unscheduled shipment keeps the old rule.
+    #[tokio::test]
+    async fn an_unscheduled_shipment_still_cannot_be_cancelled_after_assignment() {
+        let (result, recorder) = cancel_as_owner(live_policy(), ShipmentStatus::PickupAssigned, None).await;
+        let err = result.expect_err("the old rule refuses this");
+        assert!(matches!(err, AppError::BusinessRule(_)), "{err:?}");
+        assert!(recorder.published.lock().unwrap().is_empty());
     }
 
     // ========================================================================
