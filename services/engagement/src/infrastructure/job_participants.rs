@@ -1,6 +1,6 @@
-//! Who is on this job.
+//! Who is on this job, and how to reach them.
 //!
-//! engagement does not own that answer and must not invent one. order-intake
+//! engagement does not own those answers and must not invent them. order-intake
 //! says whether a shipment is the caller's; driver-ops says whether this driver
 //! is on it. Both are asked with the caller's own token, so the answer is
 //! exactly what those services would give the caller directly — there is no
@@ -21,15 +21,31 @@ pub struct Participation {
     pub shipment_status: Option<String>,
 }
 
+/// The two lines for a masked call. Neither is ever returned to an app — they
+/// go from here straight to the call bridge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobContacts {
+    /// The caller's own line: the leg the platform rings first.
+    pub mine: Option<String>,
+    /// The other party's line.
+    pub theirs: Option<String>,
+}
+
 pub struct JobParticipants {
     order_intake_url: String,
     driver_ops_url: String,
+    delivery_experience_url: String,
     client: reqwest::Client,
 }
 
 impl JobParticipants {
-    pub fn new(order_intake_url: String, driver_ops_url: String) -> Self {
-        Self { order_intake_url, driver_ops_url, client: reqwest::Client::new() }
+    pub fn new(order_intake_url: String, driver_ops_url: String, delivery_experience_url: String) -> Self {
+        Self {
+            order_intake_url,
+            driver_ops_url,
+            delivery_experience_url,
+            client: reqwest::Client::new(),
+        }
     }
 
     /// The caller's place on this job, or `Forbidden` when they have none.
@@ -60,6 +76,64 @@ impl JobParticipants {
             }
         }
         Err(AppError::Forbidden { resource: "job chat".to_owned() })
+    }
+
+    /// Each side's number, from the service that holds it, with the caller's
+    /// own token. A number that cannot be found comes back as `None` and the
+    /// bridge declines rather than guessing.
+    pub async fn contacts(&self, shipment_id: Uuid, role: SenderRole, bearer: &str) -> AppResult<JobContacts> {
+        match role {
+            SenderRole::Customer => {
+                let shipment = self
+                    .get_json(&format!("{}/v1/shipments/{shipment_id}", self.order_intake_url.trim_end_matches('/')), bearer)
+                    .await
+                    .unwrap_or(Value::Null);
+                // The driver's line lives on the tracking record. It reaches
+                // this bridge and nothing else — the customer app is never
+                // given it.
+                let tracking = self
+                    .get_json(&format!("{}/v1/tracking/{shipment_id}", self.delivery_experience_url.trim_end_matches('/')), bearer)
+                    .await
+                    .unwrap_or(Value::Null);
+                Ok(JobContacts {
+                    mine: string_field(&shipment, "customer_phone"),
+                    theirs: string_field(&tracking, "driver_phone"),
+                })
+            }
+            SenderRole::Driver => {
+                let me = self
+                    .get_json(&format!("{}/v1/drivers/me", self.driver_ops_url.trim_end_matches('/')), bearer)
+                    .await
+                    .unwrap_or(Value::Null);
+                let tasks = self
+                    .get_json(&format!("{}/v1/tasks", self.driver_ops_url.trim_end_matches('/')), bearer)
+                    .await
+                    .unwrap_or(Value::Null);
+                let theirs = tasks
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .and_then(|list| list.iter().find(|task| uuid_field(task, "shipment_id") == Some(shipment_id)))
+                    .and_then(|task| string_field(task, "customer_phone"));
+                Ok(JobContacts { mine: string_field(&me, "phone"), theirs })
+            }
+        }
+    }
+
+    async fn get_json(&self, url: &str, bearer: &str) -> AppResult<Value> {
+        let response = self
+            .client
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, bearer)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("{url} unreachable: {e}")))?;
+        if !response.status().is_success() {
+            return Err(AppError::Internal(anyhow::anyhow!("{url} answered {}", response.status())));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("{url} sent no json: {e}")))
     }
 
     async fn customer_of_job(
@@ -158,6 +232,17 @@ fn uuid_field(value: &Value, key: &str) -> Option<Uuid> {
         .find_map(|inner| inner.as_str().and_then(|text| Uuid::parse_str(text).ok()))
 }
 
+/// A string from a response that may or may not wrap its payload in `data`.
+/// An empty string is nothing, not a value.
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    let body = value.get("data").unwrap_or(value);
+    body.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
+
 /// A job that is finished keeps its thread readable and stops taking messages.
 pub fn job_is_open(status: &str) -> bool {
     !matches!(
@@ -184,6 +269,22 @@ mod tests {
         assert_eq!(uuid_field(&json!({ "customer_id": id.to_string() }), "merchant_id"), None);
         assert_eq!(uuid_field(&json!({ "merchant_id": "not-a-uuid" }), "merchant_id"), None);
         assert_eq!(uuid_field(&json!({ "merchant_id": 7 }), "merchant_id"), None);
+    }
+
+    #[test]
+    fn a_number_is_read_through_a_data_wrapper_or_without_one() {
+        assert_eq!(string_field(&json!({ "phone": "+639171234567" }), "phone").as_deref(), Some("+639171234567"));
+        assert_eq!(
+            string_field(&json!({ "data": { "phone": "+639171234567" } }), "phone").as_deref(),
+            Some("+639171234567"),
+        );
+    }
+
+    #[test]
+    fn a_blank_number_is_no_number() {
+        assert_eq!(string_field(&json!({ "phone": "   " }), "phone"), None);
+        assert_eq!(string_field(&json!({ "phone": null }), "phone"), None);
+        assert_eq!(string_field(&json!({}), "phone"), None);
     }
 
     #[test]

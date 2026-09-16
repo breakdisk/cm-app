@@ -1,4 +1,4 @@
-import { makeClientMessageId, mergeMessages, type JobMessage } from '../chat';
+import { callMessage, makeClientMessageId, mergeMessages, type JobMessage } from '../chat';
 
 function message(id: string, minute: number, role: 'customer' | 'driver' = 'driver'): JobMessage {
   return {
@@ -48,5 +48,18 @@ describe('makeClientMessageId', () => {
     const b = makeClientMessageId();
     expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(a).not.toBe(b);
+  });
+});
+
+describe('callMessage', () => {
+  test('a bridged call names the number that will ring', () => {
+    expect(callMessage({ bridged: true, masked_number: '+15005550006' })).toContain('+15005550006');
+    expect(callMessage({ bridged: true })).toMatch(/Your phone will ring/);
+  });
+
+  // Neither of these is a failure to apologise for; both say what to do instead.
+  test('no driver number and no bridge both point at messaging', () => {
+    expect(callMessage({ bridged: false, reason: 'no_number' })).toMatch(/message instead/i);
+    expect(callMessage({ bridged: false, reason: 'not_configured' })).toMatch(/message instead/i);
   });
 });

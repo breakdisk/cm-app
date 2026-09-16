@@ -7,14 +7,14 @@
  * heading, so the driver marker does not rotate.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootState } from '../../store';
 import { trackingApi } from '../../services/api/tracking';
-import { unreadCount } from '../../services/api/chat';
+import { callMessage, startCall, unreadCount } from '../../services/api/chat';
 import { LiveDriverMap } from '../../components/LiveDriverMap';
 import { DeliveryPinCard } from '../../components/DeliveryPinCard';
 import { isTerminalStatus, LIVE_TRACKING_POLL_MS, mapPublicTracking, type TrackingResult } from '../tracking/mapTracking';
@@ -47,6 +47,7 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
   const [error, setError] = useState<string | null>(null);
   const [showMap, setShowMap] = useState(false);
   const [unread, setUnread] = useState(0);
+  const [calling, setCalling] = useState(false);
 
   const load = useCallback(async () => {
     if (!awb) return;
@@ -85,6 +86,21 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
     const timer = setInterval(tick, LIVE_TRACKING_POLL_MS);
     return () => { cancelled = true; clearInterval(timer); };
   }, [isFocused, id, status]);
+
+  // A masked call: the platform rings this phone, then the driver. The
+  // driver's number is never sent to this app, so there is nothing to dial.
+  async function callDriver() {
+    if (!id || calling) return;
+    setCalling(true);
+    try {
+      const attempt = await startCall(id);
+      Alert.alert(attempt.bridged ? 'Connecting you' : 'Call not available', callMessage(attempt));
+    } catch (err: any) {
+      Alert.alert("Couldn't call", err?.message ?? 'Try a message instead.');
+    } finally {
+      setCalling(false);
+    }
+  }
 
   if (!awb) {
     const moves = shipments.filter((s) => ACTIVE_STATUSES.includes(s.status));
@@ -191,16 +207,18 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
               </View>
             </View>
             <View style={s.contactRow}>
-              {!!result.driver_phone && (
-                <Pressable
-                  onPress={() => Linking.openURL(`tel:${result.driver_phone}`)}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [s.contactBtn, pressed && { transform: [{ scale: 0.96 }] }]}
-                >
-                  <Ionicons name="call-outline" size={17} color={M.accent} />
-                  <Text style={s.contactText}>CALL</Text>
-                </Pressable>
-              )}
+              <Pressable
+                onPress={callDriver}
+                disabled={!id || calling}
+                accessibilityRole="button"
+                accessibilityLabel="Call your driver on a masked line"
+                style={({ pressed }) => [s.contactBtn, pressed && { transform: [{ scale: 0.96 }] }]}
+              >
+                {calling
+                  ? <ActivityIndicator color={M.accent} size="small" />
+                  : <Ionicons name="call-outline" size={17} color={M.accent} />}
+                <Text style={s.contactText}>CALL</Text>
+              </Pressable>
               <Pressable
                 onPress={() => id && navigation.navigate('MoveChat', { id, driverName: result.driver_name, driverPhone: result.driver_phone })}
                 disabled={!id}
@@ -218,7 +236,7 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
               </Pressable>
             </View>
             <Text style={[s.feedTime, { marginTop: 12 }]}>
-              Messages stay with this move. Calls still go out on your own line.
+              Messages and calls stay on this move. Neither of you sees the other’s number.
             </Text>
           </Panel>
         )}

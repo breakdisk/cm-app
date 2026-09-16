@@ -28,6 +28,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.core.designsystem.*
 import io.logisticos.driver.core.network.service.JobMessageItem
 import io.logisticos.driver.feature.delivery.presentation.ChatViewModel
+import kotlinx.coroutines.launch
 
 /** What a driver most often needs to say, one tap each. */
 private val QUICK_REPLIES = listOf(
@@ -61,7 +62,10 @@ fun ChatScreen(
     val c = LocalMoveColors.current
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     var draft by rememberSaveable { mutableStateOf("") }
+    var calling by remember { mutableStateOf(false) }
+    var callNote by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(shipmentId) {
         viewModel.startPolling(shipmentId)
@@ -83,13 +87,37 @@ fun ChatScreen(
             title = customerName.ifBlank { "The customer" },
             onBack = onBack,
             actions = {
-                if (customerPhone.isNotBlank()) {
-                    MoveSquareButton(Icons.Filled.Phone, "Call $customerPhone", {
-                        context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$customerPhone")))
-                    })
-                }
+                // Masked first: the platform rings this phone, then the
+                // customer, showing its own number to both. Where that is not
+                // switched on, the driver still has the number, so it dials.
+                MoveSquareButton(Icons.Filled.Phone, "Call the customer", {
+                    if (!calling) {
+                        scope.launch {
+                            calling = true
+                            val bridged = viewModel.placeCall(shipmentId)
+                            calling = false
+                            callNote = when {
+                                bridged -> "Your phone will ring. Answer it and the customer is dialled."
+                                customerPhone.isNotBlank() -> {
+                                    context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$customerPhone")))
+                                    null
+                                }
+                                else -> "Calling through the app is not switched on here. Send a message instead."
+                            }
+                        }
+                    }
+                })
             },
         )
+
+        callNote?.let { note ->
+            MoveNotice(
+                title = "Calling",
+                body = note,
+                tone = MoveTone.Accent,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
 
         LazyColumn(
             state = listState,

@@ -112,3 +112,18 @@ messages` (list, send, read, unread), which the gateway already routes. Both app
 driver app is FCM, engagement only has Expo push), and the `job.message.sent` topic would
 have to be pre-created on the live broker. Until then a closed app learns nothing until it
 is opened. K (masked calling) is next and still needs the Twilio voice number.
+
+### K — done 2026-09-16 (off until a voice number is set)
+`POST /v1/engagement/jobs/:shipment_id/call` rings the caller's own phone, then dials the other
+party with `TWILIO_VOICE_NUMBER` as the caller id (Twilio Calls API, inline TwiML — no public
+webhook needed). Same participant check as the thread. Each side's number is fetched from the
+service that holds it with the caller's own token: order-intake (`customer_phone`),
+delivery-experience (`driver_phone`), driver-ops (`/v1/drivers/me`, and the task's
+`customer_phone`). Neither number is ever returned to an app.
+Off without `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_VOICE_NUMBER`: the response
+says `not_configured`, the driver app falls back to a normal dial (it has the number), and the
+customer app says to send a message (it never had one).
+**Found while wiring:** delivery-experience `GET /v1/tracking/:shipment_id` checks the tenant
+but not the owner, so any tenant user with `shipments:read` can read another customer's
+tracking record — driver phone included. Same class as the #162 order-intake bug. Not fixed
+here; flagged.

@@ -96,6 +96,14 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Asks the platform to ring this phone and then the customer, showing the
+     * platform number to both. False when the bridge is off or refuses, which
+     * is the screen's cue to dial the number it already has.
+     */
+    suspend fun placeCall(shipmentId: String): Boolean =
+        runCatching { api.startCall(shipmentId).data.bridged }.getOrDefault(false)
+
     override fun onCleared() {
         stopPolling()
         super.onCleared()

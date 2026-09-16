@@ -5,6 +5,7 @@
 //! appropriate RBAC permissions.  Prometheus metrics are served at `/metrics`;
 //! liveness and readiness probes at `/health` and `/ready`.
 
+pub mod job_call;
 pub mod job_chat;
 pub mod webhook;
 
@@ -101,6 +102,8 @@ pub struct AppState {
     pub db: PgPool,
     /// Asks order-intake and driver-ops who is on a job, for the chat thread.
     pub job_participants: Arc<crate::infrastructure::job_participants::JobParticipants>,
+    /// Masked calling between the two people on a job. Off without a voice number.
+    pub masked_calls: Arc<crate::infrastructure::masked_calls::MaskedCalls>,
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +717,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/engagement/jobs/:shipment_id/messages/read", post(job_chat::mark_read))
         .route("/v1/engagement/jobs/:shipment_id/messages/unread", get(job_chat::unread_badge))
+        // Masked call: the platform rings the caller, then dials the other
+        // side showing its own number. Neither app is given the other line.
+        .route("/v1/engagement/jobs/:shipment_id/call", post(job_call::start_call))
         .with_state(state)
 }
 

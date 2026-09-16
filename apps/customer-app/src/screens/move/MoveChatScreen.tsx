@@ -8,15 +8,15 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView,
+  ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  CHAT_POLL_MS, listMessages, makeClientMessageId, markThreadRead, mergeMessages, sendMessage,
-  type JobMessage,
+  callMessage, CHAT_POLL_MS, listMessages, makeClientMessageId, markThreadRead, mergeMessages,
+  sendMessage, startCall, type JobMessage,
 } from '../../services/api/chat';
 import { initials } from './format';
 import { HEADING, M } from './theme';
@@ -47,6 +47,7 @@ export function MoveChatScreen({ navigation, route }: { navigation: any; route: 
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [calling, setCalling] = useState(false);
   const scroller = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
@@ -76,6 +77,21 @@ export function MoveChatScreen({ navigation, route }: { navigation: any; route: 
     if (!isFocused || !shipmentId || messages.length === 0) return;
     markThreadRead(shipmentId).catch(() => {});
   }, [isFocused, shipmentId, messages.length]);
+
+  // The platform rings this phone first, then the driver, showing its own
+  // number to both. The driver's line is never sent to this app.
+  const placeCall = useCallback(async () => {
+    if (!shipmentId || calling) return;
+    setCalling(true);
+    try {
+      const attempt = await startCall(shipmentId);
+      Alert.alert(attempt.bridged ? 'Connecting you' : 'Call not available', callMessage(attempt));
+    } catch (err) {
+      Alert.alert("Couldn't call", apiMessage(err));
+    } finally {
+      setCalling(false);
+    }
+  }, [shipmentId, calling]);
 
   const send = useCallback(async (text: string) => {
     const body = text.trim();
@@ -112,17 +128,18 @@ export function MoveChatScreen({ navigation, route }: { navigation: any; route: 
           <Text style={s.who} numberOfLines={1}>{driverName ?? 'Your driver'}</Text>
           <Text style={s.presence}>On this move</Text>
         </View>
-        {!!driverPhone && (
-          <Pressable
-            onPress={() => Linking.openURL(`tel:${driverPhone}`)}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Call ${driverName ?? 'your driver'}`}
-            style={({ pressed }) => [s.iconBtn, s.callBtn, pressed && { transform: [{ scale: 0.92 }] }]}
-          >
-            <Ionicons name="call-outline" size={18} color={M.accent} />
-          </Pressable>
-        )}
+        <Pressable
+          onPress={placeCall}
+          disabled={calling}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Call ${driverName ?? 'your driver'} on a masked line`}
+          style={({ pressed }) => [s.iconBtn, s.callBtn, pressed && { transform: [{ scale: 0.92 }] }]}
+        >
+          {calling
+            ? <ActivityIndicator color={M.accent} size="small" />
+            : <Ionicons name="call-outline" size={18} color={M.accent} />}
+        </Pressable>
       </View>
 
       <ScrollView

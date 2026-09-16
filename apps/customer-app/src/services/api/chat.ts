@@ -81,3 +81,33 @@ export function makeClientMessageId(): string {
   const hex = (n: number) => Math.floor(Math.random() * 16 ** n).toString(16).padStart(n, '0');
   return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
 }
+
+export interface CallAttempt {
+  bridged: boolean;
+  reason?: 'not_configured' | 'no_number';
+  call_sid?: string;
+  masked_number?: string | null;
+}
+
+/**
+ * Asks the platform to ring you, and the driver when you answer. The driver's
+ * number never comes back here: if the bridge is off, the app says so rather
+ * than offering a dial it cannot make.
+ */
+export async function startCall(shipmentId: string): Promise<CallAttempt> {
+  const res = await getEngagementClient().post(`/v1/engagement/jobs/${shipmentId}/call`, {});
+  return unwrap<CallAttempt>(res.data);
+}
+
+/** What to tell the customer about a call attempt. */
+export function callMessage(attempt: CallAttempt): string {
+  if (attempt.bridged) {
+    return attempt.masked_number
+      ? `Your phone will ring from ${attempt.masked_number}. Answer it and your driver is dialled.`
+      : 'Your phone will ring. Answer it and your driver is dialled.';
+  }
+  if (attempt.reason === 'no_number') {
+    return "There's no number for your driver yet. Send a message instead.";
+  }
+  return 'Calling through the app is not switched on here yet. Send a message instead.';
+}

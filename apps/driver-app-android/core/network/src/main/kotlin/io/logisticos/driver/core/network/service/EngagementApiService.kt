@@ -45,6 +45,19 @@ data class SendJobMessageRequest(
 data class JobMessageResponse(val data: JobMessageItem)
 
 @Serializable
+data class JobCallResponse(val data: JobCallData)
+
+/** A masked call: the platform rings this phone, then the customer. */
+@Serializable
+data class JobCallData(
+    val bridged: Boolean = false,
+    /** "not_configured" or "no_number" when [bridged] is false. */
+    val reason: String? = null,
+    @SerialName("call_sid")      val callSid: String? = null,
+    @SerialName("masked_number") val maskedNumber: String? = null,
+)
+
+@Serializable
 data class JobUnreadResponse(val data: JobUnreadData)
 
 @Serializable
@@ -73,4 +86,11 @@ interface EngagementApiService {
     /** GET /v1/engagement/jobs/{id}/messages/unread — the badge; marks nothing. */
     @GET("v1/engagement/jobs/{shipmentId}/messages/unread")
     suspend fun unread(@Path("shipmentId") shipmentId: String): JobUnreadResponse
+
+    /** POST /v1/engagement/jobs/{id}/call — masked call, this phone first. */
+    @POST("v1/engagement/jobs/{shipmentId}/call")
+    suspend fun startCall(
+        @Path("shipmentId") shipmentId: String,
+        @Body body: Map<String, String> = emptyMap(),
+    ): JobCallResponse
 }

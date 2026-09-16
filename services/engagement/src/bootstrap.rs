@@ -189,12 +189,28 @@ pub async fn run() -> anyhow::Result<()> {
     let job_participants = Arc::new(crate::infrastructure::job_participants::JobParticipants::new(
         std::env::var("SERVICES__ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8004".into()),
         std::env::var("SERVICES__DRIVER_OPS_URL").unwrap_or_else(|_| "http://driver-ops:8006".into()),
+        std::env::var("SERVICES__DELIVERY_EXPERIENCE_URL")
+            .unwrap_or_else(|_| "http://delivery-experience:8007".into()),
     ));
+
+    // Masked calling. Logged either way: a deployment without a voice number
+    // answers every call request with "not configured", and that is worth
+    // seeing at startup rather than discovering from a driver.
+    let masked_calls = Arc::new(crate::infrastructure::masked_calls::MaskedCalls::from_env());
+    if masked_calls.configured() {
+        tracing::info!("engagement: masked calling ENABLED");
+    } else {
+        tracing::warn!(
+            "engagement: masked calling DISABLED — set TWILIO_VOICE_NUMBER (with \
+             TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN); the apps fall back to a normal dial"
+        );
+    }
 
     let http_state = crate::api::http::AppState {
         notification_svc: notification_svc.clone(),
         db: pool,
         job_participants,
+        masked_calls,
     };
 
     use tower_http::cors::CorsLayer;

@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// The caller's own token, forwarded to whichever service owns the answer.
-fn bearer(headers: &HeaderMap) -> Result<String, AppError> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Result<String, AppError> {
     headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -34,7 +34,7 @@ fn bearer(headers: &HeaderMap) -> Result<String, AppError> {
 
 /// driver-ops issues driver tokens with this role; it decides which service is
 /// asked first, never whether access is granted.
-fn is_driver(claims: &AuthClaims) -> bool {
+pub(crate) fn is_driver(claims: &AuthClaims) -> bool {
     claims.roles.iter().any(|role| role == "driver")
 }
 
