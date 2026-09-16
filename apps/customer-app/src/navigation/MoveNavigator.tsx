@@ -8,6 +8,7 @@
  */
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { MoveHomeScreen } from '../screens/move/MoveHomeScreen';
+import { MoveVoiceScreen } from '../screens/move/MoveVoiceScreen';
 import { MoveThinkingScreen } from '../screens/move/MoveThinkingScreen';
 import { MovePlanScreen } from '../screens/move/MovePlanScreen';
 import { MoveBookedScreen } from '../screens/move/MoveBookedScreen';
@@ -36,6 +37,7 @@ export function MoveNavigator() {
       screenOptions={{ headerShown: false, contentStyle: { backgroundColor: M.ground }, animation: 'fade_from_bottom' }}
     >
       <Stack.Screen name="MoveHome" component={MoveHomeScreen} />
+      <Stack.Screen name="MoveVoice" component={MoveVoiceScreen} options={{ animation: 'fade' }} />
       <Stack.Screen name="MoveThinking" component={MoveThinkingScreen} options={{ animation: 'fade' }} />
       <Stack.Screen name="MovePlan" component={MovePlanScreen} />
       <Stack.Screen name="MoveBooked" component={MoveBookedScreen} options={{ gestureEnabled: false }} />

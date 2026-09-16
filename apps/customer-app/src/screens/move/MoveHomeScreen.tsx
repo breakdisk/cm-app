@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { RootState } from '../../store';
 import { useShipments } from '../../hooks/useShipments';
 import { classifyIntent } from './parsePrompt';
+import { speechAvailable } from './voice';
 import { HEADING, HEADING_LIGHT, M } from './theme';
 import { Ambient, IconButton, Label, PrimaryButton } from './ui';
 
@@ -41,6 +42,8 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
   const brand = useSelector((s: RootState) => s.branding.displayName);
   const { list, refetch } = useShipments();
   const [prompt, setPrompt] = useState('');
+  // Offered only where this build and this phone can actually listen.
+  const [canSpeak] = useState(speechAvailable);
 
   useFocusEffect(useCallback(() => { refetch(); }, [refetch]));
 
@@ -141,7 +144,19 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
           style={s.composerInput}
           accessibilityLabel="What needs moving"
         />
-        <PrimaryButton label="PLAN IT  →" onPress={send} disabled={!prompt.trim()} style={{ marginTop: 12 }} />
+        <View style={s.composerRow}>
+          {canSpeak && (
+            <Pressable
+              onPress={() => navigation.navigate('MoveVoice')}
+              accessibilityRole="button"
+              accessibilityLabel="Say what needs moving"
+              style={({ pressed }) => [s.mic, pressed && { transform: [{ scale: 0.92 }] }]}
+            >
+              <Ionicons name="mic-outline" size={22} color={M.accent} />
+            </Pressable>
+          )}
+          <PrimaryButton label="PLAN IT  →" onPress={send} disabled={!prompt.trim()} style={{ flex: 1 }} />
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -176,4 +191,6 @@ const s = StyleSheet.create({
   liveMeta:       { fontSize: 11, color: M.faint, marginTop: 12 },
   composer:       { position: 'absolute', left: 14, right: 14, borderRadius: 26, padding: 14, backgroundColor: M.sheet, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
   composerInput:  { minHeight: 48, maxHeight: 110, fontSize: 16, lineHeight: 23, color: M.ink, padding: 0, textAlignVertical: 'top' },
+  composerRow:    { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12 },
+  mic:            { width: 52, height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: M.accentTint, borderWidth: 1, borderColor: M.accentBorder },
 });

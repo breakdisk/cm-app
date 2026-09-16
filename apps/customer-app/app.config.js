@@ -18,5 +18,18 @@ module.exports = ({ config }) => {
     scheme: 'logisticos-move',
     ios: { ...config.ios, bundleIdentifier: 'io.logisticos.customer.move' },
     android: { ...config.android, package: 'io.logisticos.customer.move' },
+    plugins: [
+      ...(config.plugins ?? []),
+      // Voice input on the Move home prompt. Move build only, so the default
+      // app does not start asking for the microphone.
+      [
+        'expo-speech-recognition',
+        {
+          microphonePermission: 'Allow LogisticOS Move to use the microphone so you can say what needs moving.',
+          speechRecognitionPermission: 'Allow LogisticOS Move to turn what you say into your move request.',
+          androidSpeechServicePackages: ['com.google.android.googlequicksearchbox'],
+        },
+      ],
+    ],
   };
 };
