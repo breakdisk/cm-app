@@ -195,3 +195,31 @@ api-gateway and order-intake. No new Kafka topic (consumes `order.shipment.cance
 **D2 next:** loyalty tiers (needs a completed-moves projection — consume `shipment.created` +
 `delivery.completed`, not a call back into order-intake, which would be circular at quote time),
 credit ledger + referral, corporate rate, campaign inbox (engagement).
+
+### D2 — tiers, credit, referrals, corporate rate, campaign inbox, done 2026-09-18
+`2efd9be1` promotions, `f122e67a` order-intake, `0bfc7408` + `28bb64cd` engagement,
+`b571adfe` app. **Every discount line promotions prices is now charged**, not only the code.
+- **promotions (migration 0002):** tier ladder by completed moves in 365 days (accessorial bps,
+  cap, referral multiplier; admin replaces it whole); append-only credit ledger (applied under an
+  advisory lock with a balance check, returned once on cancel); one referral code per account,
+  claimable only by an account with no booking yet, paying the referrer reward × tier multiplier
+  on the invitee's first completed move; corporate accounts linked by code or email domain.
+  One consumer (`promotions-events`, earliest) follows `shipment.created`, `delivery.completed`,
+  `shipment.cancelled`, retrying in place. Redeem commits every line in one transaction,
+  idempotent per shipment.
+- **order-intake:** every quote is priced by promotions (code or not, `loyalty_program` from
+  the plan); all lines signed into the token (`discounts[]`; old tokens read as one code line)
+  and redeemed together before the payment intent; credit spent since the quote → 409
+  `CREDIT_CHANGED`; the quote says when a corporate rate beat a valid code.
+- **engagement (migration 0010):** each campaign send keeps its rendered title/body, deep link
+  and normalised address; `GET /v1/engagement/inbox`, `POST …/:id/read`, `POST …/read-all`.
+  **Matching:** user id, or the email/phone on the token — campaign recipients are CDP profiles,
+  whose ids are never app user ids.
+- **App:** Offers gains member tier + ladder, company rate, referrals (Share, claim); Payments
+  gains the credit panel; new Inbox screen with a home dot; plan names every discount kind.
+**Config (all default off):** `PROMOTIONS__REFERRAL_REWARD_CENTS` (0),
+`PROMOTIONS__CREDIT_CURRENCY` (PHP); tiers exist only once a tenant PUTs a ladder; loyalty needs
+the tenant's plan to include `loyalty_program`.
+**Deploy:** redeploy promotions (0002), order-intake, engagement (0010). No new Kafka topic.
+The promotions consumer starts from earliest, so retained bookings/completions seed tier counts.
+**Not built:** admin portal UI for tiers/corporate/credit grants (API only); a tier-change push.
