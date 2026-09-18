@@ -72,6 +72,7 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
         <View style={s.headerIcons}>
           <IconButton name="chatbubble-ellipses-outline" label="Support" onPress={() => navigation.navigate('Support')} />
           <IconButton name="shield-checkmark-outline" label="Coverage and rules" onPress={() => navigation.navigate('MoveRules')} />
+          <IconButton name="pricetags-outline" label="Offers" onPress={() => navigation.navigate('MoveOffers')} />
           <IconButton name="wallet-outline" label="Payments" onPress={() => navigation.navigate('MovePayments')} />
           <IconButton name="person-circle-outline" label="Account" onPress={() => navigation.navigate('Profile')} />
         </View>

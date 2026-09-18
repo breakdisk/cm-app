@@ -60,6 +60,34 @@ describe('linesReconcile', () => {
   });
 });
 
+// Discounts are rows the server sends; the app subtracts nothing it wasn't told.
+describe('discounts', () => {
+  const discounted = () => quote({
+    amount_cents: 17_500,
+    gross_cents: 20_000,
+    discount_cents: 2_500,
+    discounts: [{ kind: 'code', label: 'MOVE20', amount_cents: 2_500, clipped: false }],
+    promo_code: 'MOVE20',
+  });
+
+  test('the total is the rows less the discount lines', () => {
+    expect(quoteTotal(discounted())).toEqual({ cents: 17_500, currency: 'USD' });
+  });
+
+  test('a discount that adds up reconciles', () => {
+    expect(linesReconcile(discounted())).toBe(true);
+  });
+
+  test('a discount the charge does not match does not reconcile', () => {
+    expect(linesReconcile({ ...discounted(), amount_cents: 18_000 })).toBe(false);
+  });
+
+  test('a quote from a server without promotions is unchanged', () => {
+    expect(quoteTotal(quote())).toEqual({ cents: 20_000, currency: 'USD' });
+    expect(linesReconcile(quote())).toBe(true);
+  });
+});
+
 describe('listAccessorials', () => {
   beforeEach(() => mockGet.mockReset());
 

@@ -64,6 +64,10 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quoting, setQuoting] = useState(false);
   const [booking, setBooking] = useState(false);
+  // The code priced into the quote, and what is being typed. Applying is a
+  // re-quote: the server decides whether it counts and what it takes off.
+  const [promoCode, setPromoCode] = useState<string>(route.params?.promoCode ?? '');
+  const [promoDraft, setPromoDraft] = useState<string>(route.params?.promoCode ?? '');
   const quoteSeq = useRef(0);
   // Item scan: offered only where the AR module is linked and the device
   // supports it. Anywhere else the buttons aren't there, rather than dead.
@@ -147,6 +151,15 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
     country_code: country.trim().toUpperCase(),
   });
 
+  // A code picked on the offers screen comes back as a param.
+  useEffect(() => {
+    const picked = route.params?.promoCode;
+    if (typeof picked === 'string' && picked) {
+      setPromoCode(picked);
+      setPromoDraft(picked);
+    }
+  }, [route.params?.promoCode]);
+
   // Re-price when anything priced changes. The latest request wins.
   useEffect(() => {
     if (!ready) {
@@ -167,6 +180,7 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
           origin: address(fromLine, fromCity),
           destination: address(toLine, toCity),
           accessorials,
+          promo_code: promoCode || undefined,
         });
         if (seq === quoteSeq.current) {
           setQuote(q);
@@ -184,7 +198,7 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
     return () => clearTimeout(timer);
     // address() reads the fields listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, grams, lengthCm, widthCm, heightCm, fromLine, fromCity, toLine, toCity, country, accessorials]);
+  }, [ready, grams, lengthCm, widthCm, heightCm, fromLine, fromCity, toLine, toCity, country, accessorials, promoCode]);
 
   const total = quote ? quoteTotal(quote) : null;
   const reconciles = quote ? linesReconcile(quote) : false;
@@ -254,7 +268,14 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
         });
       }
     } catch (err) {
-      Alert.alert("Couldn't book", apiMessage(err));
+      // The code was spent on another booking since this quote. Re-price
+      // without it rather than leave a price that no longer holds.
+      if (/PROMO_ALREADY_USED/.test(apiMessage(err))) {
+        setPromoCode('');
+        Alert.alert('That code is used up', "It went on another booking since you were quoted. Here's the price without it.");
+      } else {
+        Alert.alert("Couldn't book", apiMessage(err));
+      }
     } finally {
       setBooking(false);
     }
@@ -447,6 +468,28 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
                   </View>
                 ))}
               </View>
+              {(quote.discounts ?? []).length > 0 && (
+                <View style={{ gap: 12, marginTop: 12 }}>
+                  {(quote.discounts ?? []).map((d, i) => (
+                    <View key={`${d.kind}-${i}`} style={s.lineRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[s.lineLabel, { color: M.accent }]}>
+                          {d.kind === 'code' ? `Code ${d.label}` : d.label}
+                        </Text>
+                        {d.clipped && <Text style={s.lineNote}>Cut to the most any move can be discounted</Text>}
+                      </View>
+                      <Text style={[s.lineAmount, { color: M.accent }]}>
+                        −{formatMoney(d.amount_cents, total?.currency)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {quote.ceiling_binds && (
+                <Text style={[s.note, { marginTop: 10 }]}>
+                  Discounts on one move are capped, so not all of it applies here.
+                </Text>
+              )}
               <View style={s.divider} />
               <View style={s.lineRow}>
                 <Text style={s.lineMuted}>Billable weight</Text>
@@ -464,6 +507,38 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
           ) : (
             <Text style={s.note}>The server prices the move once the route and the load are filled in.</Text>
           )}
+        </Panel>
+
+        <Label right={<GhostButton label="Offers" onPress={() => navigation.navigate('MoveOffers', { returnTo: 'MovePlan' })} />}>
+          Promo code
+        </Label>
+        <Panel>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 10 }}>
+            <Field
+              label="Code"
+              value={promoDraft}
+              onChangeText={(t) => setPromoDraft(t.toUpperCase())}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              placeholder="MOVE20"
+              returnKeyType="done"
+              onSubmitEditing={() => setPromoCode(promoDraft.trim())}
+            />
+            {promoCode && promoDraft.trim() === promoCode ? (
+              <GhostButton label="Remove" onPress={() => { setPromoCode(''); setPromoDraft(''); }} />
+            ) : (
+              <GhostButton label="Apply" onPress={() => setPromoCode(promoDraft.trim())} color={M.accent} />
+            )}
+          </View>
+          {!!promoCode && quote?.promo_code && (
+            <Text style={[s.note, { color: M.accent, marginTop: 10 }]}>{quote.promo_code} is on this quote.</Text>
+          )}
+          {!!promoCode && quote && !quote.promo_code && (
+            <Text style={[s.note, { color: M.amberText, marginTop: 10 }]}>
+              {quote.promo_message ?? "That code doesn't apply to this move."}
+            </Text>
+          )}
+          {!promoCode && <Text style={[s.note, { marginTop: 10 }]}>One code a month, weekdays 11th–24th. The server checks it when it prices the move.</Text>}
         </Panel>
 
         <Label>Hands and muscle</Label>

@@ -133,6 +133,16 @@ export function getPodClient(): AxiosInstance {
   return cachedPodClient;
 }
 
+let cachedPromotionsClient: AxiosInstance | null = null;
+
+/** Promotions — offers and promo codes (`/v1/promotions/...`). */
+export function getPromotionsClient(): AxiosInstance {
+  if (!cachedPromotionsClient) {
+    cachedPromotionsClient = createApiClient(process.env.EXPO_PUBLIC_PROMOTIONS_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8022');
+  }
+  return cachedPromotionsClient;
+}
+
 /** Engagement — the job chat thread (`/v1/engagement/jobs/...`). */
 export function getEngagementClient(): AxiosInstance {
   if (!cachedEngagementClient) {

@@ -18,6 +18,7 @@ import { MoveCancelScreen } from '../screens/move/MoveCancelScreen';
 import { MoveCancelledScreen } from '../screens/move/MoveCancelledScreen';
 import { MovePaymentsScreen } from '../screens/move/MovePaymentsScreen';
 import { MoveRulesScreen } from '../screens/move/MoveRulesScreen';
+import { MoveOffersScreen } from '../screens/move/MoveOffersScreen';
 import { M } from '../screens/move/theme';
 import { SupportScreen } from '../screens/support/SupportScreen';
 import { ProfileScreen } from '../screens/profile/ProfileScreen';
@@ -49,6 +50,7 @@ export function MoveNavigator() {
       <Stack.Screen name="MovePayments" component={MovePaymentsScreen} />
       <Stack.Screen name="Invoices" component={MovePaymentsScreen} />
       <Stack.Screen name="MoveRules" component={MoveRulesScreen} />
+      <Stack.Screen name="MoveOffers" component={MoveOffersScreen} />
       <Stack.Screen name="Support" component={SupportScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen name="KYC" component={KYCScreen} />

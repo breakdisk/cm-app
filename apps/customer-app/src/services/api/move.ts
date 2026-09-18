@@ -56,6 +56,17 @@ export interface MoveQuoteRequest {
   origin: AddressInput;
   destination: AddressInput;
   accessorials: { code: string; units?: number }[];
+  /** Priced in by the server when it applies; refused with a reason when not. */
+  promo_code?: string;
+}
+
+/** One discount, as the server priced it. */
+export interface QuoteDiscount {
+  kind: 'code' | 'corporate' | 'tier' | 'credit' | string;
+  label: string;
+  amount_cents: number;
+  /** The discount ceiling cut this line short. */
+  clipped: boolean;
 }
 
 export interface MoveQuote {
@@ -69,6 +80,16 @@ export interface MoveQuote {
   billable_basis?: string | null;
   distance_km?: number | null;
   vehicle_label?: string | null;
+  /** Before discounts. Absent on servers without promotions. */
+  gross_cents?: number;
+  discount_cents?: number;
+  discounts?: QuoteDiscount[];
+  ceiling_binds?: boolean;
+  /** The code that took something off. */
+  promo_code?: string | null;
+  /** Why a requested code was not applied, e.g. "OUTSIDE_WINDOW_WEEKEND". */
+  promo_refusal?: string | null;
+  promo_message?: string | null;
 }
 
 /** What the tenant offers. Null when the server has no accessorials endpoint. */
@@ -119,20 +140,33 @@ export function quoteLines(q: MoveQuote): QuoteLine[] {
   ];
 }
 
-export function quoteTotal(q: MoveQuote): { cents: number; currency: string } {
+/** What the rows add up to, before any discount. */
+export function quoteGross(q: MoveQuote): { cents: number; currency: string } {
   return q.breakdown
     ? { cents: q.breakdown.total_cents, currency: q.breakdown.currency }
     : { cents: q.amount_cents, currency: q.currency };
 }
 
+export function discountTotal(q: MoveQuote): number {
+  return (q.discounts ?? []).reduce((n, d) => n + d.amount_cents, 0);
+}
+
+/** What the customer pays: the rows, less the server's discount lines. */
+export function quoteTotal(q: MoveQuote): { cents: number; currency: string } {
+  const gross = quoteGross(q);
+  return { cents: gross.cents - discountTotal(q), currency: gross.currency };
+}
+
 /**
  * Every visible row is in the total and the total is every visible row — the
- * invariant the handoff says broke twice in review. A total that does not
- * reconcile is not shown.
+ * invariant the handoff says broke twice in review. Discounts are rows too: the
+ * price rows less the discount lines must be exactly what the server will
+ * charge. A total that does not reconcile is not shown.
  */
 export function linesReconcile(q: MoveQuote): boolean {
   const sum = quoteLines(q).reduce((n, l) => n + l.amount_cents, 0);
-  return sum === quoteTotal(q).cents;
+  if (sum !== quoteGross(q).cents) return false;
+  return quoteTotal(q).cents === q.amount_cents;
 }
 
 /** Pickup country from the tenant's billing currency — the fallback when the
