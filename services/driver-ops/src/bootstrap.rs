@@ -135,6 +135,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&task_repo) as _,
         Arc::clone(&driver_repo) as _,
         Arc::new(crate::infrastructure::db::PgJobDropRepository::new(pool.clone())) as _,
+        Arc::clone(&location_repo) as _,
         Arc::clone(&kafka),
         crate::domain::value_objects::leave_policy::PenaltyPolicy {
             grace_minutes:              cfg.penalty.grace_minutes,

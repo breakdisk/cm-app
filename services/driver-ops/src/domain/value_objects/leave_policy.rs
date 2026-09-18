@@ -100,6 +100,25 @@ pub fn leave_mode(stop: &StopState, now: DateTime<Utc>) -> Result<LeaveMode, Lea
     Ok(LeaveMode::Drop)
 }
 
+/// Whether the driver is at the stop, by their last GPS fix. The clock starts
+/// only then. A clock started by a tap anywhere lets a driver start it on the
+/// way and walk away free on arrival, with the customer charged for a wait
+/// that never happened. No stop coordinates, or no fresh fix, means no clock:
+/// leaving stays a drop.
+pub fn at_the_stop(
+    stop: Option<(f64, f64)>,
+    fix: Option<(f64, f64, DateTime<Utc>)>,
+    now: DateTime<Utc>,
+) -> bool {
+    let (Some((stop_lat, stop_lng)), Some((lat, lng, fixed_at))) = (stop, fix) else {
+        return false;
+    };
+    if now - fixed_at > Duration::minutes(super::STALE_LOCATION_THRESHOLD_MINUTES) {
+        return false;
+    }
+    super::within_geofence(lat, lng, stop_lat, stop_lng)
+}
+
 /// Rounded down, in the driver's favour.
 pub fn drop_fee_cents(payout_cents: i64, pct: i64) -> i64 {
     payout_cents.max(0) * pct.clamp(0, 100) / 100
@@ -132,7 +151,14 @@ pub fn acceptance_pct(seen: i64, claimed: i64, drops: i64, weight: i64) -> Optio
 /// What leaving costs, stated before the driver commits.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LeaveQuote {
-    pub mode: LeaveMode,
+    /// None when the stop cannot be left this way; `refusal` says why.
+    pub mode: Option<LeaveMode>,
+    /// "GOODS_ABOARD" | "TASK_CLOSED" when `mode` is None.
+    pub refusal: Option<&'static str>,
+    /// The server's clock when this was worked out. The app counts down from
+    /// `grace_expires_at - as_of`, so a phone set to the wrong time cannot
+    /// move the deadline.
+    pub as_of: DateTime<Utc>,
     /// Charged to the driver (drop only).
     pub fee_cents: i64,
     /// The payout the fee is a share of.
@@ -201,6 +227,32 @@ mod tests {
         assert_eq!(off.grace_deadline(at(0)), None);
         let on = PenaltyPolicy { grace_minutes: 45, ..off };
         assert_eq!(on.grace_deadline(at(0)), Some(at(45)));
+    }
+
+    // Makati: a stop, a fix at its door, and one ~1.1 km up the road.
+    const STOP: (f64, f64) = (14.5547, 121.0244);
+
+    #[test]
+    fn the_clock_starts_at_the_door() {
+        assert!(at_the_stop(Some(STOP), Some((14.5549, 121.0245, at(0))), at(1)));
+    }
+
+    #[test]
+    fn a_tap_up_the_road_starts_no_clock() {
+        assert!(!at_the_stop(Some(STOP), Some((14.5647, 121.0244, at(0))), at(1)));
+    }
+
+    #[test]
+    fn a_stale_fix_starts_no_clock() {
+        assert!(!at_the_stop(Some(STOP), Some((14.5549, 121.0245, at(0))), at(6)));
+    }
+
+    /// Un-geocoded stops and a driver with no fix: nothing to measure, so no
+    /// clock rather than a free one.
+    #[test]
+    fn nothing_to_measure_starts_no_clock() {
+        assert!(!at_the_stop(None, Some((14.5549, 121.0245, at(0))), at(1)));
+        assert!(!at_the_stop(Some(STOP), None, at(1)));
     }
 
     /// The design's mock: 20% of $214 is $42.80, shown as $43. Rounded down.

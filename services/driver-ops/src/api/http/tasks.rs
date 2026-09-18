@@ -187,8 +187,9 @@ pub async fn internal_driver_contact(
 }
 
 /// `GET /v1/tasks/:id/leave` — what leaving this job would cost, before the
-/// driver commits: drop (fee) or release (free, paid for the wait). A 422
-/// `GOODS_ABOARD` or `TASK_CLOSED` says it cannot be left this way.
+/// driver commits: drop (fee) or release (free, paid for the wait). When it
+/// cannot be left this way, `mode` is null and `refusal` says why; the grace
+/// clock is there either way.
 pub async fn leave_quote(
     AuthClaims(claims): AuthClaims,
     Path(task_id): Path<Uuid>,

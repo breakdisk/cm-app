@@ -11,11 +11,11 @@ use crate::{
         events::{TaskCompleted, TaskFailed},
         repositories::{
             DailyEarning, DriverRepository, EarningAdjustment, EarningEntry, JobDrop, JobDropRepository,
-            TaskRepository, TenantTaskSummary,
+            LocationRepository, TaskRepository, TenantTaskSummary,
         },
         value_objects::leave_policy::{
-            acceptance_pct, drop_fee_cents, leave_mode, minutes_past, waiting_fee_cents,
-            LeaveMode, LeaveQuote, PenaltyPolicy, StopState,
+            acceptance_pct, at_the_stop, drop_fee_cents, leave_mode, minutes_past, waiting_fee_cents,
+            LeaveMode, LeaveQuote, LeaveRefusal, PenaltyPolicy, StopState,
         },
     },
 };
@@ -51,6 +51,7 @@ pub struct TaskService {
     task_repo: Arc<dyn TaskRepository>,
     driver_repo: Arc<dyn DriverRepository>,
     drop_repo: Arc<dyn JobDropRepository>,
+    location_repo: Arc<dyn LocationRepository>,
     kafka: Arc<KafkaProducer>,
     policy: PenaltyPolicy,
 }
@@ -60,10 +61,11 @@ impl TaskService {
         task_repo: Arc<dyn TaskRepository>,
         driver_repo: Arc<dyn DriverRepository>,
         drop_repo: Arc<dyn JobDropRepository>,
+        location_repo: Arc<dyn LocationRepository>,
         kafka: Arc<KafkaProducer>,
         policy: PenaltyPolicy,
     ) -> Self {
-        Self { task_repo, driver_repo, drop_repo, kafka, policy: policy.clamped() }
+        Self { task_repo, driver_repo, drop_repo, location_repo, kafka, policy: policy.clamped() }
     }
 
     /// Returns the driver's current task queue — pending and in-progress tasks for their active route.
@@ -210,9 +212,15 @@ impl TaskService {
             return Err(AppError::BusinessRule("Can only start a pending task".into()));
         }
 
-        // Arrival starts the grace clock, from the policy as it stands now.
+        // Arrival starts the grace clock, from the policy as it stands now —
+        // but only when the driver's last fix puts them at the stop.
         let now = chrono::Utc::now();
-        task.start_at(now, self.policy.grace_deadline(now));
+        let fix = self.location_repo.latest(&task.driver_id).await
+            .ok().flatten()
+            .map(|l| (l.lat, l.lng, l.recorded_at));
+        let stop = task.address.coordinates.map(|c| (c.lat, c.lng));
+        let grace = if at_the_stop(stop, fix, now) { self.policy.grace_deadline(now) } else { None };
+        task.start_at(now, grace);
         self.task_repo.save(&task).await.map_err(AppError::Internal)?;
         tracing::info!(task_id = %task.id, driver_id = %driver_id, "Task started");
         Ok(())
@@ -329,12 +337,29 @@ impl TaskService {
         acceptance_pct(seen, claimed, drops, self.policy.drop_counts_as_declines)
     }
 
-    /// What leaving this job would cost, before the driver commits.
+    /// Where the driver stands on leaving this stop: drop, release, or not
+    /// this way — with the grace clock either way, so the app can show the
+    /// countdown at a stop the driver cannot walk away from.
     pub async fn leave_quote(&self, driver_id: &DriverId, task_id: Uuid) -> AppResult<LeaveQuote> {
         let job = self.job_view(driver_id, task_id).await?;
         let now = chrono::Utc::now();
-        let mode = self.mode_for(&job, now)?;
-        Ok(self.price(&job, mode, now).await)
+        match self.mode_for(&job, now) {
+            Ok(mode) => Ok(self.price(&job, mode, now).await),
+            Err(refusal) => Ok(LeaveQuote {
+                mode: None,
+                refusal: Some(refusal.code()),
+                as_of: now,
+                fee_cents: 0,
+                payout_cents: job.payout_cents,
+                fee_pct: self.policy.drop_fee_pct,
+                waiting_fee_cents: 0,
+                waiting_fee_cents_per_hour: self.policy.waiting_fee_cents_per_hour,
+                minutes_past_grace: 0,
+                grace_expires_at: job.stop.grace_expires_at,
+                acceptance_before: None,
+                acceptance_after: None,
+            }),
+        }
     }
 
     /// Leave the job. The server decides drop or release; the answer is the
@@ -357,7 +382,9 @@ impl TaskService {
             {
                 self.publish_drop(&prior).await?;
                 return Ok(LeaveQuote {
-                    mode: LeaveMode::Drop,
+                    mode: Some(LeaveMode::Drop),
+                    refusal: None,
+                    as_of: chrono::Utc::now(),
                     fee_cents: prior.fee_cents,
                     payout_cents: prior.payout_cents,
                     fee_pct: self.policy.drop_fee_pct,
@@ -372,7 +399,8 @@ impl TaskService {
         }
 
         let now = chrono::Utc::now();
-        let mode = self.mode_for(&job, now)?;
+        let mode = self.mode_for(&job, now)
+            .map_err(|refusal| AppError::BusinessRule(refusal.code().into()))?;
         let quote = self.price(&job, mode, now).await;
 
         match mode {
@@ -453,13 +481,13 @@ impl TaskService {
         Ok(JobView { stop, open_tasks, goods_aboard, payout_cents })
     }
 
-    fn mode_for(&self, job: &JobView, now: chrono::DateTime<chrono::Utc>) -> AppResult<LeaveMode> {
+    fn mode_for(&self, job: &JobView, now: chrono::DateTime<chrono::Utc>) -> Result<LeaveMode, LeaveRefusal> {
         let state = StopState {
             open: job.stop.is_open(),
             grace_expires_at: job.stop.grace_expires_at,
             goods_aboard: job.goods_aboard,
         };
-        leave_mode(&state, now).map_err(|refusal| AppError::BusinessRule(refusal.code().into()))
+        leave_mode(&state, now)
     }
 
     async fn price(&self, job: &JobView, mode: LeaveMode, now: chrono::DateTime<chrono::Utc>) -> LeaveQuote {
@@ -490,7 +518,9 @@ impl TaskService {
         };
 
         LeaveQuote {
-            mode,
+            mode: Some(mode),
+            refusal: None,
+            as_of: now,
             fee_cents,
             payout_cents: job.payout_cents,
             fee_pct: p.drop_fee_pct,
