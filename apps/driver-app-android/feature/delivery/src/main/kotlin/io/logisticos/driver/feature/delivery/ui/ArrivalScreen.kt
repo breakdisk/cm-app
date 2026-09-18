@@ -19,9 +19,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import android.os.SystemClock
 import io.logisticos.driver.core.database.entity.TaskType
 import io.logisticos.driver.core.designsystem.*
+import io.logisticos.driver.core.network.service.LeaveQuoteData
 import io.logisticos.driver.feature.delivery.presentation.ArrivalViewModel
+import io.logisticos.driver.feature.delivery.presentation.GraceClock
+import io.logisticos.driver.feature.delivery.presentation.GraceTone
+import io.logisticos.driver.feature.delivery.presentation.formatGrace
+import io.logisticos.driver.feature.delivery.presentation.graceTone
+import kotlinx.coroutines.delay
 
 /**
  * At the stop: who, where, what to collect, and the one button that starts the
@@ -38,6 +45,8 @@ fun ArrivalScreen(
     onStartTask: (taskId: String, taskType: TaskType, requiresPhoto: Boolean, requiresSignature: Boolean, requiresOtp: Boolean, isCod: Boolean, codAmount: Double) -> Unit,
     /** Opens the thread with the customer on this job; hidden when null. */
     onOpenChat: ((shipmentId: String, customerName: String, customerPhone: String) -> Unit)? = null,
+    /** Opens the drop / release sheet; hidden when null or the server says no. */
+    onLeave: ((taskId: String) -> Unit)? = null,
     onBack: () -> Unit = {},
     viewModel: ArrivalViewModel = hiltViewModel()
 ) {
@@ -46,6 +55,16 @@ fun ArrivalScreen(
     val c = LocalMoveColors.current
 
     LaunchedEffect(taskId) { viewModel.load(taskId) }
+
+    // "I'm here", repeated while the driver is on this screen: the server
+    // starts the clock once their fix is inside the stop's geofence (they may
+    // still be walking up), and the answer flips to release when it runs out.
+    LaunchedEffect(taskId) {
+        while (true) {
+            viewModel.arrive(taskId)
+            delay(ARRIVE_EVERY_MS)
+        }
+    }
 
     val task = state.task
 
@@ -104,6 +123,10 @@ fun ArrivalScreen(
                 MoveDivider(Modifier.padding(vertical = 14.dp))
                 Text("ADDRESS", color = c.muted, fontSize = 12.sp, letterSpacing = 2.4.sp)
                 Text(task.address, color = c.ink, fontSize = 17.sp, lineHeight = 24.sp, modifier = Modifier.padding(top = 4.dp))
+            }
+
+            state.leave?.let { quote ->
+                GracePanel(quote = quote, onExpired = { viewModel.arrive(taskId) })
             }
 
             // The thread with the customer. Both sides keep it on the job.
@@ -168,8 +191,77 @@ fun ArrivalScreen(
                 tone = tone,
                 loading = state.isTransitioning,
             )
+
+            // Leaving: the server has already said whether it is a drop or a
+            // release. Nothing shows when it says neither (the load is aboard
+            // and the customer is not late — that is a failed delivery).
+            val mode = state.leave?.mode
+            if (onLeave != null && mode != null) {
+                MoveBigButton(
+                    label = if (mode == "release") "RELEASE THIS STOP" else "LEAVE THIS JOB",
+                    onClick = { onLeave(taskId) },
+                    filled = false,
+                    tone = if (mode == "release") MoveTone.Accent else MoveTone.Penalty,
+                    height = 60.dp,
+                )
+            }
         }
 
         Spacer(Modifier.navigationBarsPadding().height(24.dp))
+    }
+}
+
+/** How often the stop screen tells the server the driver is still here. */
+private const val ARRIVE_EVERY_MS = 30_000L
+
+/**
+ * The design's "free time left": the server's deadline, counted down on the
+ * phone's monotonic clock from the server's own `as_of`. Amber in the last ten
+ * minutes, red past it. Absent until the server starts the clock.
+ */
+@Composable
+private fun GracePanel(quote: LeaveQuoteData, onExpired: () -> Unit) {
+    val c = LocalMoveColors.current
+    val fetchedAt = remember(quote) { SystemClock.elapsedRealtime() }
+    val clock = remember(quote, fetchedAt) { GraceClock.from(quote.graceExpiresAt, quote.asOf, fetchedAt) } ?: return
+
+    var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(clock) {
+        while (true) {
+            now = SystemClock.elapsedRealtime()
+            delay(1_000)
+        }
+    }
+    val remaining = clock.remainingMs(now)
+    val tone = graceTone(remaining)
+
+    // The moment it runs out, ask the server: its answer turns the leave
+    // button from a drop into a release.
+    LaunchedEffect(tone == GraceTone.Over) {
+        if (tone == GraceTone.Over && quote.mode != "release") onExpired()
+    }
+
+    val moveTone = when (tone) {
+        GraceTone.Running -> MoveTone.Accent
+        GraceTone.Closing -> MoveTone.Amber
+        GraceTone.Over    -> MoveTone.Penalty
+    }
+    MovePanel(tone = moveTone) {
+        Text(
+            if (tone == GraceTone.Over) "PAST THE FREE TIME" else "FREE TIME LEFT",
+            color = c.tone(moveTone), fontSize = 12.sp, letterSpacing = 2.4.sp,
+        )
+        Text(
+            formatGrace(remaining),
+            color = c.tone(moveTone), fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 44.sp,
+        )
+        Text(
+            when (tone) {
+                GraceTone.Running -> "The customer has until then. Leaving before it runs out is a drop."
+                GraceTone.Closing -> "Nearly out. After that you can release this stop with nothing on you."
+                GraceTone.Over    -> "The customer is late. You can release this stop with nothing on you."
+            },
+            color = c.muted, fontSize = 14.sp, lineHeight = 20.sp,
+        )
     }
 }

@@ -65,6 +65,15 @@ class DeliveryRepository @Inject constructor(
     fun observeTask(taskId: String): Flow<TaskEntity?> = taskDao.getByIdAsFlow(taskId)
 
     /**
+     * At the stop. The server starts the grace clock if this phone's last GPS
+     * fix is inside the stop's geofence, and answers with where the driver
+     * stands on leaving. Online only: null when it cannot be reached — the
+     * clock is the server's, so there is nothing to show without it.
+     */
+    suspend fun arriveAtStop(taskId: String): io.logisticos.driver.core.network.service.LeaveQuoteData? =
+        runCatching { driverOpsApi.arriveAtStop(taskId).data }.getOrNull()
+
+    /**
      * Transitions task to a new status locally and on the backend.
      * For IN_PROGRESS (arrival), calls PUT /v1/tasks/:id/start.
      * Falls back to sync queue on network error.

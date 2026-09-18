@@ -211,7 +211,11 @@ private fun Board(
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 Stat("STOPS", state.tasks.size.toString())
-                Stat("ACCEPTANCE", if (state.offersSeen > 0) "${state.offersClaimed * 100 / state.offersSeen}%" else "—")
+                Stat(
+                    "ACCEPTANCE",
+                    state.acceptancePct?.let { "$it%" }
+                        ?: if (state.offersSeen > 0) "${state.offersClaimed * 100 / state.offersSeen}%" else "—",
+                )
                 Stat("RATING", state.ratingAvg?.let { String.format(Locale.US, "%.1f", it) } ?: "—")
             }
         }

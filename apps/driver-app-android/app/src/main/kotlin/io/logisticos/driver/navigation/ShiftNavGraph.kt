@@ -24,6 +24,7 @@ import io.logisticos.driver.feature.boxmeasure.ui.BookShipmentScreen
 import io.logisticos.driver.feature.boxmeasure.ui.BoxMeasureScreen
 import io.logisticos.driver.feature.delivery.ui.ArrivalScreen
 import io.logisticos.driver.feature.delivery.ui.ChatScreen
+import io.logisticos.driver.feature.delivery.ui.LeaveScreen
 import io.logisticos.driver.feature.home.ui.HomeScreen
 import io.logisticos.driver.feature.home.ui.HubScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
@@ -59,6 +60,8 @@ private const val COMPLIANCE_ROUTE       = "compliance"
 private const val EARNINGS_ROUTE         = "earnings"
 private const val NAVIGATE_TO_STOP_ROUTE = "navigate/{taskId}"
 private const val ARRIVAL_ROUTE          = "arrival/{taskId}"
+/** Drop or release — the server decides which. */
+private const val LEAVE_ROUTE            = "leave/{taskId}"
 /** The customer thread for one job. Name and phone ride along so the header
   * reads right before the first message arrives. */
 private const val CHAT_ROUTE             = "chat/{shipmentId}?name={name}&phone={phone}"
@@ -311,6 +314,17 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                                 "&phone=${java.net.URLEncoder.encode(phone, "UTF-8")}",
                         )
                     },
+                    onLeave = { id -> shiftNavController.navigate(LEAVE_ROUTE.replace("{taskId}", id)) },
+                    onBack = { shiftNavController.popBackStack() },
+                )
+            }
+
+            composable(LEAVE_ROUTE) { backStack ->
+                LeaveScreen(
+                    taskId = backStack.arguments?.getString("taskId") ?: "",
+                    // The job is gone from this driver: back to the board, not
+                    // to a stop screen for a task they no longer hold.
+                    onDone = { shiftNavController.popBackStack(HOME_ROUTE, inclusive = false) },
                     onBack = { shiftNavController.popBackStack() },
                 )
             }

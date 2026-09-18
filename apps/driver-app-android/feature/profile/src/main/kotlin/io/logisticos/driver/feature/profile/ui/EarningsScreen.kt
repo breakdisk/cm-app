@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.core.designsystem.*
+import io.logisticos.driver.core.network.service.EarningAdjustmentItem
 import io.logisticos.driver.core.network.service.EarningEntryItem
 import io.logisticos.driver.core.network.service.LedgerEntryItem
 import io.logisticos.driver.feature.profile.presentation.EarningsViewModel
@@ -113,7 +114,10 @@ fun EarningsScreen(
                         }
                     }
                     when (tabs[tabIndex]) {
-                        "Earnings" -> earningsItems(state.earnings?.entries.orEmpty())
+                        "Earnings" -> earningsItems(
+                            state.earnings?.entries.orEmpty(),
+                            state.earnings?.adjustments.orEmpty(),
+                        )
                         else -> cashItems(
                             openEntries = state.ledger?.openEntries.orEmpty(),
                             history = state.ledger?.recentLedgers.orEmpty()
@@ -154,11 +158,29 @@ private fun WalletHero(isGig: Boolean, todayCents: Long, openBalanceCents: Long)
     }
 }
 
-/** Per-task payout history grouped by completion day, newest first. */
-private fun LazyListScope.earningsItems(entries: List<EarningEntryItem>) {
-    if (entries.isEmpty()) {
+/**
+ * Per-task payout history grouped by completion day, newest first, then the
+ * lines that are not payouts: pay for waiting past the free time, and fees for
+ * dropped jobs. Both are already in the totals above.
+ */
+private fun LazyListScope.earningsItems(entries: List<EarningEntryItem>, adjustments: List<EarningAdjustmentItem>) {
+    if (entries.isEmpty() && adjustments.isEmpty()) {
         item(key = "earnings-empty") { EmptyHint("No completed deliveries in this period yet.") }
         return
+    }
+    if (adjustments.isNotEmpty()) {
+        item(key = "adjustments-h") { MoveLabel("Adjustments", Modifier.padding(top = 22.dp, bottom = 2.dp)) }
+        items(adjustments, key = { "adj-${it.kind}-${it.referenceId}" }) { a ->
+            val c = LocalMoveColors.current
+            val credit = a.amountCents >= 0
+            LedgerLine(
+                title = if (a.kind == "waiting_fee") "Waiting pay" else "Dropped job fee",
+                detail = a.trackingNumber,
+                monoDetail = true,
+                amount = (if (credit) "+" else "−") + pesos(kotlin.math.abs(a.amountCents)),
+                amountColor = if (credit) c.success else c.penalty,
+            )
+        }
     }
     entries.groupBy { dayLabel(it.completedAt) }.forEach { (day, dayEntries) ->
         item(key = "h-$day") {

@@ -91,6 +91,9 @@ data class HomeUiState(
     /** Gig acceptance-rate inputs from the profile (impression-verified). */
     val offersSeen: Long = 0L,
     val offersClaimed: Long = 0L,
+    /** The server's rate, net of dropped jobs. Preferred over dividing the
+     *  two counts above, which cannot see drops. */
+    val acceptancePct: Int? = null,
     /** True when the driver is part-time (gig). Gates payout display and the
      *  decline counter — full-time drivers never see a price. */
     val isGigWorker: Boolean = false,
@@ -259,6 +262,7 @@ class HomeViewModel @Inject constructor(
                         ratingCount   = r.data.ratingCount,
                         offersSeen    = r.data.offersSeen,
                         offersClaimed = r.data.offersClaimed,
+                        acceptancePct = r.data.acceptancePct,
                     ) }
                 }
         }
