@@ -1006,6 +1006,20 @@ pub async fn handle_campaign_triggered(
             }
         };
 
+        // The inbox copy, kept whether or not the channel delivers it. Only a
+        // real customer has an inbox; a nil id is an address-only recipient.
+        if customer_id != uuid::Uuid::nil() {
+            let (title, inbox_body) = crate::api::http::inbox::entry_for(
+                notification.subject.as_deref(),
+                campaign_name,
+                &notification.rendered_body,
+            );
+            let deep_link = data["variables"]["deep_link"].as_str().filter(|s| !s.is_empty());
+            if let Err(e) = db.set_campaign_send_inbox(send_id, tenant_id, &title, &inbox_body, deep_link).await {
+                warn!(campaign_id = %campaign_id, err = %e, "Failed to keep the inbox copy — the send goes ahead");
+            }
+        }
+
         // For push campaigns, forward any deep_link (or other metadata) from the
         // campaign's template variables so the push adapter can attach it to the
         // Expo notification's `data` field and the customer app can deep-navigate.

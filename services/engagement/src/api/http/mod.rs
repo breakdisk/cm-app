@@ -5,6 +5,7 @@
 //! appropriate RBAC permissions.  Prometheus metrics are served at `/metrics`;
 //! liveness and readiness probes at `/health` and `/ready`.
 
+pub mod inbox;
 pub mod job_call;
 pub mod job_chat;
 pub mod webhook;
@@ -720,6 +721,10 @@ pub fn router(state: AppState) -> Router {
         // Masked call: the platform rings the caller, then dials the other
         // side showing its own number. Neither app is given the other line.
         .route("/v1/engagement/jobs/:shipment_id/call", post(job_call::start_call))
+        // ── The customer's campaign inbox (always the caller's own) ──
+        .route("/v1/engagement/inbox", get(inbox::list))
+        .route("/v1/engagement/inbox/read-all", post(inbox::mark_all_read))
+        .route("/v1/engagement/inbox/:id/read", post(inbox::mark_read))
         .with_state(state)
 }
 

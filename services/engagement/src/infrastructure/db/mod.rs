@@ -555,6 +555,33 @@ impl NotificationDb {
         Ok(id)
     }
 
+    /// Keep what a send said, for the customer's inbox. Written once the
+    /// message is rendered, so a send whose template failed never shows.
+    pub async fn set_campaign_send_inbox(
+        &self,
+        send_id:   Uuid,
+        tenant_id: Uuid,
+        title:     &str,
+        body:      &str,
+        deep_link: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE engagement.campaign_sends
+               SET tenant_id = $2, inbox_title = $3, inbox_body = $4, inbox_deep_link = $5
+             WHERE id = $1
+            "#
+        )
+        .bind(send_id)
+        .bind(tenant_id)
+        .bind(title)
+        .bind(body)
+        .bind(deep_link)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Return send history for a single customer across all campaigns.
     /// Used by the communication history tab on the merchant portal customer detail page.
     pub async fn campaign_send_history_for_customer(
@@ -1015,3 +1042,5 @@ pub struct ReceiptTransition {
 
 /// Job chat storage — the customer/driver thread on one shipment.
 pub mod job_chat;
+/// The customer's campaign inbox, read from `campaign_sends`.
+pub mod inbox;
