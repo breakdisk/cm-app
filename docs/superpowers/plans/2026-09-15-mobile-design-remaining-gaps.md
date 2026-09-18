@@ -127,3 +127,44 @@ customer app says to send a message (it never had one).
 but not the owner, so any tenant user with `shipments:read` can read another customer's
 tracking record — driver phone included. Same class as the #162 order-intake bug. Not fixed
 here; flagged.
+**Fixed 2026-09-18** (`6ca4a34a`): tracking records carry `owner_id` from `shipment.created`;
+merchants and customers read only their own, by id and in the list. Records projected before
+the column have no owner and are refused to owner-scoped readers (fail closed); operators and
+the public tracking-number page are unaffected. The scope rule moved to `logisticos_auth`
+(`shipments_tenant_wide`) and order-intake re-exports it.
+**K was half-working until 2026-09-18:** the customer side read the driver's line from the
+tracking record, which is stamped empty at assignment, so it always answered `no_number`.
+engagement now asks driver-ops over the mesh (`GET /v1/internal/shipments/:id/driver-contact`,
+refused by the gateway from outside) for the driver holding the job, after order-intake has
+confirmed the caller owns it. `SERVICES__DELIVERY_EXPERIENCE_URL` is no longer read.
+
+### P — done 2026-09-18 (money off by default)
+Leaving an accepted job. The server decides, from its own deadline:
+- **Arrival** `POST /v1/tasks/:id/arrive` starts the grace clock once, only when the driver's
+  last fix (< 5 min) is inside the stop's 200 m geofence. A clock started by a tap anywhere
+  would let a driver start it on the way and release for free on arrival. No coordinates or
+  no fix, no clock. Starting a task at the stop also arrives; nothing moves a running clock.
+- **Quote** `GET /v1/tasks/:id/leave`: drop / release / refused (`GOODS_ABOARD`: load aboard,
+  customer not late — that is a failed delivery; `TASK_CLOSED`), with `as_of` so the app
+  counts down on the server's clock.
+- **Drop** `POST …/leave` before grace: the shipment's open tasks → `cancelled` and a
+  `job_drops` row, one transaction; `driver.job.dropped` → dispatch records the drop,
+  cancels the assignment/route when nothing else is on it, requeues and re-broadcasts, and
+  never offers it back to that driver; delivery-experience clears the driver off tracking.
+  Replay-safe on both sides.
+- **Release** after grace: the stop fails `CUSTOMER_ABSENT` through `delivery.failed`
+  (carrying `waiting_fee_cents`); a released pickup cancels its delivery leg.
+- Earnings stay a query: daily totals net waiting pay and drop fees; listed as adjustments.
+- `acceptance_pct` on `/v1/drivers/me`, net of drops of claimed offers.
+- Config (driver-ops): `PENALTY__GRACE_MINUTES` 45, `PENALTY__DROP_FEE_PCT` 0,
+  `PENALTY__WAITING_FEE_CENTS_PER_HOUR` 0, `PENALTY__DROP_COUNTS_AS_DECLINES` 1.
+- Found in passing, fixed: `cancelled` was not an allowed task status, so admin
+  `POST /v1/drivers/:id/cancel-tasks` failed for any driver with an open task.
+**Not built:** no-show detection (needs a pickup deadline — Finding 3 — and the suspension
+decision); the rating penalty (nothing writes `rating_avg` — Finding 4); "replacement labour
+if higher"; the 85% dispatch-priority line (dispatch does not rank by acceptance, so the
+sheet does not claim it). **Nothing charges the customer the waiting fee**: a nonzero rate is
+paid to the driver at the tenant's cost until payments bills it.
+**Deploy:** driver-ops (migration 0016), dispatch (0014), delivery-experience (0009),
+engagement; pre-create `logisticos.driver.job.dropped` on the live broker before those
+consumers start, and verify with `--members --verbose`.
