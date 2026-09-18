@@ -19,6 +19,7 @@ use crate::api::http::AppState;
 use crate::application::commands::AddressInput;
 use crate::domain::entities::shipment::{ae_base_fee_for, ae_piece_fee_for};
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
+use crate::infrastructure::http::DiscountLine;
 use crate::domain::value_objects::{
     price_accessorials_itemised, AccessorialRequest, PricedAccessorial, ServiceType,
     ShipmentDimensions,
@@ -94,6 +95,11 @@ pub struct QuoteRequest {
     /// Priced server-side; the caller states which and how many, never the price.
     #[serde(default)]
     pub accessorials: Vec<AccessorialRequest>,
+
+    /// A promo code to price in. Promotions decides whether it applies and
+    /// what it takes off; a refused code prices the quote without it.
+    #[serde(default)]
+    pub promo_code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -131,7 +137,22 @@ pub struct QuoteBreakdownView {
 
 #[derive(Serialize)]
 pub struct QuoteResponse {
+    /// What the customer pays: `gross_cents - discount_cents`.
     pub amount_cents: i64,
+    /// Before any discount — the breakdown's total.
+    pub gross_cents: i64,
+    /// Sum of `discounts`.
+    pub discount_cents: i64,
+    /// As promotions priced them. The app renders these; it never recomputes
+    /// the stack.
+    pub discounts: Vec<DiscountLine>,
+    /// The discount ceiling cut something short, and the app should say so.
+    pub ceiling_binds: bool,
+    /// The code that was priced in, when it took something off.
+    pub promo_code: Option<String>,
+    /// Why a requested code was not applied, e.g. "OUTSIDE_WINDOW_WEEKEND".
+    pub promo_refusal: Option<String>,
+    pub promo_message: Option<String>,
     pub currency: String,
     pub quote_token: String,
     pub expires_at: DateTime<Utc>,
@@ -293,6 +314,51 @@ pub async fn get_quote(
     let accessorial_paid_cents: i64 = items.iter().map(|i| i.paid_cents).sum();
     let total_cents = amount_cents.saturating_add(accessorial_cents);
 
+    // ── Promo code ───────────────────────────────────────────────────────────
+    // Off what the customer is billed only. accessorial_paid_cents above is
+    // untouched: settlement never reads promotion state.
+    let mut discounts: Vec<DiscountLine> = Vec::new();
+    let mut ceiling_binds = false;
+    let mut promo_code: Option<String> = None;
+    let mut promo_refusal: Option<String> = None;
+    let mut promo_message: Option<String> = None;
+    if let Some(code) = req.promo_code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        let unavailable = || (
+            Some("PROMOTIONS_UNAVAILABLE".to_owned()),
+            Some("Offers can't be checked right now. You can book without the code.".to_owned()),
+        );
+        match &s.svc.promotions {
+            None => (promo_refusal, promo_message) = unavailable(),
+            Some(client) => match client
+                .price(claims.tenant_id, claims.user_id, Some(code), &currency, amount_cents, accessorial_cents)
+                .await
+            {
+                Ok(priced) => {
+                    // Only a code line is booked for now: it is the only one
+                    // anything spends at booking. Tier and credit arrive with
+                    // their own redemption.
+                    discounts = priced.lines.into_iter().filter(|l| l.kind == "code").collect();
+                    ceiling_binds = priced.ceiling_binds;
+                    promo_code = priced.code_applied.filter(|_| !discounts.is_empty());
+                    promo_refusal = priced.refusal;
+                    promo_message = priced.message;
+                }
+                Err(e) => {
+                    tracing::warn!(err = %e, "promotions pricing failed — quoting without the code");
+                    (promo_refusal, promo_message) = unavailable();
+                }
+            },
+        }
+    }
+    let discount_cents: i64 = discounts.iter().map(|d| d.amount_cents.max(0)).sum();
+    if discount_cents > total_cents {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "discounts of {discount_cents} exceed the {total_cents} they came off — refusing to quote"
+        )));
+    }
+    let gross_cents = total_cents;
+    let net_cents = total_cents - discount_cents;
+
     // Checked after pricing but before signing: an unconfigured deployment
     // cannot issue a token regardless of which branch priced the job, and 503
     // (not 422) says this is deployment state, not something about the request.
@@ -307,14 +373,17 @@ pub async fn get_quote(
         tenant_id: claims.tenant_id,
         service_type: req.service_type.clone(),
         weight_grams: req.weight_grams,
-        // The all-in figure, so POST /v1/shipments re-verifies what the customer
-        // actually agreed to rather than the carriage fee alone.
-        amount_cents: total_cents,
+        // The all-in figure net of any discount, so POST /v1/shipments charges
+        // what the customer actually agreed to.
+        amount_cents: net_cents,
         currency: currency.clone(),
         expires_at,
         pricing_mode: Some(mode.to_string()),
         billable_grams: billable,
         accessorial_paid_cents: Some(accessorial_paid_cents),
+        discount_cents: promo_code.as_ref().map(|_| discount_cents),
+        promo_code: promo_code.clone(),
+        account_id: promo_code.as_ref().map(|_| claims.user_id),
     };
     let quote_token = quote_token::sign(payment.quote_token_secret.as_bytes(), &payload);
 
@@ -335,7 +404,14 @@ pub async fn get_quote(
     Ok((
         StatusCode::OK,
         Json(QuoteResponse {
-            amount_cents: total_cents,
+            amount_cents: net_cents,
+            gross_cents,
+            discount_cents,
+            discounts,
+            ceiling_binds,
+            promo_code,
+            promo_refusal,
+            promo_message,
             currency,
             quote_token,
             expires_at,

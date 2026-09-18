@@ -40,6 +40,16 @@ pub struct QuoteTokenPayload {
     /// driver pay. `#[serde(default)]` for tokens signed before this field.
     #[serde(default)]
     pub accessorial_paid_cents: Option<i64>,
+    /// What the promo code took off. `amount_cents` is already net of it.
+    #[serde(default)]
+    pub discount_cents: Option<i64>,
+    /// The code that was priced in, to be spent when the booking is created.
+    #[serde(default)]
+    pub promo_code: Option<String>,
+    /// Who the discount was priced for. A code is per account, so a token
+    /// carrying one books only for that account.
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +121,9 @@ mod tests {
             pricing_mode: Some("parcel_tariff".into()),
             billable_grams: None,
             accessorial_paid_cents: None,
+            discount_cents: None,
+            promo_code: None,
+            account_id: None,
         }
     }
 

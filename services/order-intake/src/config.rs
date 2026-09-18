@@ -137,6 +137,10 @@ pub struct ServicesConfig {
     /// Mesh-internal carrier base URL. `SERVICES__CARRIER_URL`.
     #[serde(default)]
     pub carrier_url: Option<String>,
+    /// Mesh-internal promotions base URL. `SERVICES__PROMOTIONS_URL`. Unset,
+    /// quotes carry no discount and one that asked for a code says so.
+    #[serde(default)]
+    pub promotions_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

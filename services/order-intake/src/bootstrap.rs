@@ -159,16 +159,32 @@ pub async fn run() -> anyhow::Result<()> {
         "cancellation policy loaded (applies to scheduled jobs only)"
     );
 
-    let svc = Arc::new(ShipmentService::new(
-        repo.clone(),
-        publisher,
-        normalizer,
-        awb_generator,
-        payment,
-        carrier,
-        cfg.accessorials.clone(),
-        cfg.cancellation_policy.clone(),
-    ));
+    // Promo codes. Logged either way: unset, a quote that asks for a code is
+    // priced without it and says promotions is unavailable.
+    let promotions = match cfg.services.promotions_url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() => {
+            tracing::info!(promotions_url = %url, "promo codes ENABLED on quotes and bookings");
+            Some(Arc::new(crate::infrastructure::http::PromotionsClient::new(url)))
+        }
+        _ => {
+            tracing::warn!("SERVICES__PROMOTIONS_URL not set - promo codes are DISABLED on quotes");
+            None
+        }
+    };
+
+    let svc = Arc::new(
+        ShipmentService::new(
+            repo.clone(),
+            publisher,
+            normalizer,
+            awb_generator,
+            payment,
+            carrier,
+            cfg.accessorials.clone(),
+            cfg.cancellation_policy.clone(),
+        )
+        .with_promotions(promotions),
+    );
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();
 

@@ -2142,6 +2142,9 @@ mod payment_aware_create {
             pricing_mode: Some("parcel_tariff".to_string()),
             billable_grams: None,
             accessorial_paid_cents: None,
+            discount_cents: None,
+            promo_code: None,
+            account_id: None,
         };
         quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
     }
@@ -3215,5 +3218,192 @@ mod payment_consumer_tests {
             recorder.published.lock().unwrap().len(), 0,
             "nothing should have been published for a paid shipment"
         );
+    }
+}
+
+// ===========================================================================
+// Promo codes at booking: a quote discounted by a code spends it on create.
+// ===========================================================================
+
+mod promo_booking {
+    use super::*;
+    use logisticos_order_intake::domain::value_objects::quote_token::{self, QuoteTokenPayload};
+    use logisticos_order_intake::infrastructure::http::PromotionsClient;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// One local server standing in for both payments and promotions — both
+    /// clients are concrete reqwest structs, so a real listener is the seam.
+    struct Mesh {
+        url: String,
+        redeems: Arc<AtomicUsize>,
+        releases: Arc<AtomicUsize>,
+        intents: Arc<AtomicUsize>,
+    }
+
+    async fn spawn_mesh(redeem_status: u16, payments_fail: bool) -> Mesh {
+        use axum::{routing::post, Json, Router};
+        let redeems = Arc::new(AtomicUsize::new(0));
+        let releases = Arc::new(AtomicUsize::new(0));
+        let intents = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(payments_fail));
+        let (r, l, i) = (Arc::clone(&redeems), Arc::clone(&releases), Arc::clone(&intents));
+
+        let app = Router::new()
+            .route("/v1/internal/promotions/redeem", post(move || {
+                let r = Arc::clone(&r);
+                async move {
+                    r.fetch_add(1, Ordering::SeqCst);
+                    axum::http::StatusCode::from_u16(redeem_status).unwrap()
+                }
+            }))
+            .route("/v1/internal/promotions/release", post(move || {
+                let l = Arc::clone(&l);
+                async move {
+                    l.fetch_add(1, Ordering::SeqCst);
+                    axum::http::StatusCode::NO_CONTENT
+                }
+            }))
+            .route("/v1/internal/payments/intents", post(move || {
+                let i = Arc::clone(&i);
+                let fail = Arc::clone(&fail);
+                async move {
+                    i.fetch_add(1, Ordering::SeqCst);
+                    if fail.load(Ordering::SeqCst) {
+                        return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                    Ok(Json(serde_json::json!({
+                        "intent_id": uuid::Uuid::new_v4(),
+                        "checkout_url": "https://checkout.test/pay/promo",
+                    })))
+                }
+            }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock mesh");
+        let addr = listener.local_addr().expect("mock mesh addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Mesh { url: format!("http://{addr}"), redeems, releases, intents }
+    }
+
+    fn server(repo: Arc<InMemoryShipmentRepository>, mesh_url: &str) -> (TestClient, JwtService) {
+        let svc = Arc::new(
+            ShipmentService::new(
+                Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
+                Arc::new(NoOpEventPublisher),
+                Arc::new(PassthroughNormalizer),
+                Arc::new(MockAwbGenerator::default()),
+                Some(PaymentCapability {
+                    client: Arc::new(PaymentsClient::new(mesh_url)),
+                    quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
+                    shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
+                }),
+                None,
+                Default::default(),
+                Default::default(),
+            )
+            .with_promotions(Some(Arc::new(PromotionsClient::new(mesh_url)))),
+        );
+        let state = AppState {
+            query: Arc::new(ShipmentQueryService::new(Arc::clone(&repo) as Arc<dyn ShipmentRepository>)),
+            svc,
+            jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+                .expect("lazy pool construction is infallible"),
+        };
+        (TestClient::new(router(state)), JwtService::new(TEST_JWT_SECRET, 3600, 86400))
+    }
+
+    /// A quote discounted by MOVE20, priced for `account`.
+    fn promo_token(tenant_id: uuid::Uuid, account: uuid::Uuid) -> String {
+        let payload = QuoteTokenPayload {
+            tenant_id,
+            service_type: "standard".to_string(),
+            weight_grams: 1_500,
+            amount_cents: 1_700,
+            currency: "AED".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
+            pricing_mode: Some("parcel_tariff".to_string()),
+            billable_grams: None,
+            accessorial_paid_cents: None,
+            discount_cents: Some(500),
+            promo_code: Some("MOVE20".to_string()),
+            account_id: Some(account),
+        };
+        quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+    }
+
+    async fn book(server: &TestClient, jwt: &JwtService, tenant_id: uuid::Uuid, user_id: uuid::Uuid, quote: String) -> u16 {
+        let token = mint_merchant_token_with_currency(jwt, tenant_id, user_id, Some("AED"));
+        let mut body = valid_shipment_body();
+        body["weight_grams"] = json!(1_500u32);
+        body["quote_token"] = json!(quote);
+        server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await
+            .status_code()
+            .as_u16()
+    }
+
+    #[tokio::test]
+    async fn a_discounted_quote_spends_its_code_once_and_books() {
+        let mesh = spawn_mesh(204, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, me)).await, 201);
+        assert_eq!(mesh.redeems.load(Ordering::SeqCst), 1);
+        assert_eq!(mesh.releases.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 1);
+    }
+
+    /// Another booking spent this month's code since the quote. Nothing may
+    /// move: no payment opened, no shipment stored.
+    #[tokio::test]
+    async fn a_code_spent_since_the_quote_stops_the_booking_before_any_money() {
+        let mesh = spawn_mesh(409, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, me)).await, 409);
+        assert_eq!(mesh.intents.load(Ordering::SeqCst), 0, "no payment for a discount that no longer holds");
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+
+    /// The code was spent, then the payment could not be opened: the booking
+    /// never exists, so the code goes back.
+    #[tokio::test]
+    async fn a_booking_that_fails_after_spending_the_code_gives_it_back() {
+        let mesh = spawn_mesh(204, true).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, me)).await, 500);
+        assert_eq!(mesh.redeems.load(Ordering::SeqCst), 1);
+        assert_eq!(mesh.releases.load(Ordering::SeqCst), 1);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+
+    /// A code is one account's month. A token priced for someone else in the
+    /// tenant does not book, and spends nothing.
+    #[tokio::test]
+    async fn a_discount_priced_for_another_account_is_refused() {
+        let mesh = spawn_mesh(204, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me, someone) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, someone)).await, 422);
+        assert_eq!(mesh.redeems.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
     }
 }

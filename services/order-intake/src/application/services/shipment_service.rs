@@ -240,6 +240,16 @@ pub struct ShipmentService {
     pub accessorials: crate::config::AccessorialsConfig,
     /// Cancellation fee policy. Rates default to 0 bps.
     pub cancellation_policy: CancellationPolicy,
+    /// Mesh-internal promotions client: prices a promo code into a quote and
+    /// spends it at booking. `None` when `SERVICES__PROMOTIONS_URL` is unset.
+    pub promotions: Option<Arc<crate::infrastructure::http::PromotionsClient>>,
+}
+
+/// A promo code a verified quote was discounted by, to be spent at booking.
+struct PricedPromo {
+    code: String,
+    discount_cents: i64,
+    account_id: Option<uuid::Uuid>,
 }
 
 /// Returned by `create()`: the persisted shipment, plus a checkout URL when
@@ -264,7 +274,13 @@ impl ShipmentService {
         accessorials: crate::config::AccessorialsConfig,
         cancellation_policy: CancellationPolicy,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator, payment, carrier, accessorials, cancellation_policy }
+        Self { repo, publisher, normalizer, awb_generator, payment, carrier, accessorials, cancellation_policy, promotions: None }
+    }
+
+    #[must_use]
+    pub fn with_promotions(mut self, promotions: Option<Arc<crate::infrastructure::http::PromotionsClient>>) -> Self {
+        self.promotions = promotions;
+        self
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<CreateShipmentResult> {
@@ -482,6 +498,7 @@ impl ShipmentService {
         //    dispatch ─────────────────────────────────────────────────────────
         // Verified before the shipment row is written so a bad/tampered/expired
         // token fails the request before anything is persisted.
+        let mut promo: Option<PricedPromo> = None;
         let (payment_status, verified_amount_cents, verified_currency) = match &cmd.quote_token {
             None => (PaymentRequirement::NotRequired, None, None),
             Some(token) => {
@@ -502,6 +519,18 @@ impl ShipmentService {
                     return Err(AppError::Validation(
                         "Quote token does not match this booking's service type or weight".into(),
                     ));
+                }
+                if let (Some(code), Some(discount)) = (payload.promo_code.clone(), payload.discount_cents) {
+                    // A code is spent on one account's month, so the discount
+                    // it bought books for that account only.
+                    if payload.account_id != Some(cmd.merchant_id) {
+                        return Err(AppError::Validation(
+                            "This quote's discount was priced for a different account — get a new quote".into(),
+                        ));
+                    }
+                    if discount > 0 {
+                        promo = Some(PricedPromo { code, discount_cents: discount, account_id: payload.account_id });
+                    }
                 }
                 (PaymentRequirement::AwaitingPayment, Some(payload.amount_cents), Some(payload.currency))
             }
@@ -637,6 +666,39 @@ impl ShipmentService {
 
         let mut checkout_url: Option<String> = None;
 
+        // ── Spend the promo code the quote was discounted by ─────────────────
+        // Before the payment intent, so a code another booking spent since the
+        // quote stops this one before any money moves. The ledger decides a
+        // race; this booking's own retry is not a second spend.
+        let spent_code = match (&promo, &self.promotions) {
+            (None, _) => false,
+            (Some(_), None) => {
+                return Err(AppError::ServiceUnavailable(
+                    "This quote carries a promo code and promotions is not configured here — get a new quote".into(),
+                ))
+            }
+            (Some(p), Some(client)) => {
+                let currency = verified_currency.clone().unwrap_or_default();
+                let account = p.account_id.unwrap_or(cmd.merchant_id);
+                client
+                    .redeem(cmd.tenant_id, account, shipment.id.inner(), &p.code, p.discount_cents, &currency)
+                    .await
+                    .map_err(|e| match e {
+                        crate::infrastructure::http::RedeemError::Refused(_) => AppError::Conflict(
+                            "PROMO_ALREADY_USED: this code was spent on another booking since the quote — get a new quote".into(),
+                        ),
+                        crate::infrastructure::http::RedeemError::Unavailable(m) => {
+                            AppError::ServiceUnavailable(format!("Promotions is unavailable, so the discounted quote cannot be booked: {m}"))
+                        }
+                    })?;
+                true
+            }
+        };
+
+        // Everything from here to the saved row either succeeds or gives the
+        // code back: a booking that never exists must not cost the customer
+        // their month's code.
+        let persisted: AppResult<()> = async {
         if payment_status == PaymentRequirement::AwaitingPayment {
             shipment.pending_dispatch_events = Some(serde_json::json!({
                 "awb_issued": awb_json,
@@ -682,6 +744,17 @@ impl ShipmentService {
             AppError::Internal(e)
         })?;
         tracing::info!(step = "pieces_saved", "create");
+        Ok(())
+        }
+        .await;
+        if let Err(e) = persisted {
+            if spent_code {
+                if let Some(client) = &self.promotions {
+                    client.release(shipment.id.inner()).await;
+                }
+            }
+            return Err(e);
+        }
 
         // ── Stamp the opening timeline milestones ─────────────────────────────
         // A successful booking is received (`created` → pending) and validated +
