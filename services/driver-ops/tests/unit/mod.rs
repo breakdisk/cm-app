@@ -488,3 +488,48 @@ mod hours_of_service {
         assert!(clock.over_limit);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Grace clock: arrival starts it once
+// ---------------------------------------------------------------------------
+
+mod grace_clock_tests {
+    use super::*;
+    use chrono::Duration;
+
+    /// A second arrival, a start, a config change: none of them moves a
+    /// clock the customer is already being timed against.
+    #[test]
+    fn arrival_starts_the_clock_once() {
+        let mut task = make_task(TaskType::Pickup, TaskStatus::Pending);
+        let first = Utc::now() + Duration::minutes(45);
+        assert!(task.mark_arrived(Some(first)));
+        assert!(!task.mark_arrived(Some(first + Duration::minutes(30))));
+        task.start();
+        assert_eq!(task.grace_expires_at, Some(first));
+    }
+
+    #[test]
+    fn no_deadline_starts_no_clock() {
+        let mut task = make_task(TaskType::Delivery, TaskStatus::InProgress);
+        assert!(!task.mark_arrived(None));
+        assert_eq!(task.grace_expires_at, None);
+    }
+
+    #[test]
+    fn a_closed_stop_starts_no_clock() {
+        let mut task = make_task(TaskType::Delivery, TaskStatus::Completed);
+        assert!(!task.mark_arrived(Some(Utc::now())));
+    }
+
+    /// Released after grace: the stop fails as customer-absent and the
+    /// driver keeps the waiting pay.
+    #[test]
+    fn a_release_fails_the_stop_and_keeps_the_waiting_pay() {
+        let mut task = make_task(TaskType::Delivery, TaskStatus::InProgress);
+        task.release("CUSTOMER_ABSENT".into(), 190);
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(task.failed_reason.as_deref(), Some("CUSTOMER_ABSENT"));
+        assert_eq!(task.waiting_fee_cents, 190);
+    }
+}

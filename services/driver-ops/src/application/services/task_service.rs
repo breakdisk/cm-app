@@ -212,15 +212,13 @@ impl TaskService {
             return Err(AppError::BusinessRule("Can only start a pending task".into()));
         }
 
-        // Arrival starts the grace clock, from the policy as it stands now —
-        // but only when the driver's last fix puts them at the stop.
+        // Starting at the stop is also arriving there, for the flows that go
+        // straight to the handover.
         let now = chrono::Utc::now();
-        let fix = self.location_repo.latest(&task.driver_id).await
-            .ok().flatten()
-            .map(|l| (l.lat, l.lng, l.recorded_at));
-        let stop = task.address.coordinates.map(|c| (c.lat, c.lng));
-        let grace = if at_the_stop(stop, fix, now) { self.policy.grace_deadline(now) } else { None };
-        task.start_at(now, grace);
+        task.start_at(now);
+        if self.is_at_stop(&task, now).await {
+            task.mark_arrived(self.policy.grace_deadline(now));
+        }
         self.task_repo.save(&task).await.map_err(AppError::Internal)?;
         tracing::info!(task_id = %task.id, driver_id = %driver_id, "Task started");
         Ok(())
@@ -335,6 +333,32 @@ impl TaskService {
         let (seen, claimed) = self.driver_repo.get_offer_stats(user_id).await.ok().flatten()?;
         let drops = self.drop_repo.offer_drop_count(user_id).await.unwrap_or(0);
         acceptance_pct(seen, claimed, drops, self.policy.drop_counts_as_declines)
+    }
+
+    /// `POST /v1/tasks/:id/arrive`. Starts the grace clock the first time the
+    /// driver's own fix puts them at the stop; safe to call on every visit to
+    /// the stop screen, and again while they walk up. Answers with the quote.
+    pub async fn arrive(&self, driver_id: &DriverId, task_id: Uuid) -> AppResult<LeaveQuote> {
+        let mut task = self.fetch_and_validate_ownership(driver_id, task_id).await?;
+        let now = chrono::Utc::now();
+        if task.is_open()
+            && task.grace_expires_at.is_none()
+            && self.is_at_stop(&task, now).await
+            && task.mark_arrived(self.policy.grace_deadline(now))
+        {
+            self.task_repo.save(&task).await.map_err(AppError::Internal)?;
+            tracing::info!(task_id = %task.id, driver_id = %driver_id, "Arrived — grace clock started");
+        }
+        self.leave_quote(driver_id, task_id).await
+    }
+
+    /// The driver's last fix, under five minutes old, inside the stop's geofence.
+    async fn is_at_stop(&self, task: &DriverTask, now: chrono::DateTime<chrono::Utc>) -> bool {
+        let fix = self.location_repo.latest(&task.driver_id).await
+            .ok().flatten()
+            .map(|l| (l.lat, l.lng, l.recorded_at));
+        let stop = task.address.coordinates.map(|c| (c.lat, c.lng));
+        at_the_stop(stop, fix, now)
     }
 
     /// Where the driver stands on leaving this stop: drop, release, or not

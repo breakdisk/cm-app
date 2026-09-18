@@ -186,6 +186,19 @@ pub async fn internal_driver_contact(
     }
 }
 
+/// `POST /v1/tasks/:id/arrive` — the driver is at the stop. Starts the grace
+/// clock if their fix puts them inside the geofence and it is not running yet;
+/// answers with the leave quote either way.
+pub async fn arrive(
+    AuthClaims(claims): AuthClaims,
+    Path(task_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let quote = state.task_service.arrive(&driver_id, task_id).await?;
+    Ok(Json(serde_json::json!({ "data": quote })))
+}
+
 /// `GET /v1/tasks/:id/leave` — what leaving this job would cost, before the
 /// driver commits: drop (fee) or release (free, paid for the wait). When it
 /// cannot be left this way, `mode` is null and `refusal` says why; the grace

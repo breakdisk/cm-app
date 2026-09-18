@@ -82,15 +82,23 @@ impl DriverTask {
     }
 
     pub fn start(&mut self) {
-        self.start_at(Utc::now(), None);
+        self.start_at(Utc::now());
     }
 
-    /// Arrival. The grace deadline is fixed now, so a later config change
-    /// never moves a clock that is already running.
-    pub fn start_at(&mut self, now: DateTime<Utc>, grace_expires_at: Option<DateTime<Utc>>) {
+    pub fn start_at(&mut self, now: DateTime<Utc>) {
         self.status = TaskStatus::InProgress;
         self.started_at = Some(now);
+    }
+
+    /// The driver is at the stop: the grace clock starts, once. A later
+    /// arrival, a start, or a config change never moves a running clock.
+    /// True when this call started it.
+    pub fn mark_arrived(&mut self, grace_expires_at: Option<DateTime<Utc>>) -> bool {
+        if self.grace_expires_at.is_some() || grace_expires_at.is_none() || !self.is_open() {
+            return false;
+        }
         self.grace_expires_at = grace_expires_at;
+        true
     }
 
     pub fn is_open(&self) -> bool {

@@ -114,6 +114,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tasks/:id/start",    put(tasks::start_task))
         .route("/tasks/:id/complete", put(tasks::complete_task))
         .route("/tasks/:id/fail",     put(tasks::fail_task))
+        // At the stop: starts the grace clock inside the geofence.
+        .route("/tasks/:id/arrive",   post(tasks::arrive))
         // Leaving an accepted job: quote, then drop or release.
         .route("/tasks/:id/leave",    get(tasks::leave_quote).post(tasks::leave))
         .layer(auth_layer)
