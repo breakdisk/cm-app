@@ -2,8 +2,10 @@
 //! any channel, kept for them to read in the app.
 //!
 //! No permission gate and no `customer_id` parameter: the inbox is always the
-//! caller's own, pinned to `claims.user_id` — the id campaigns address a
-//! customer by, and the one push is delivered to.
+//! caller's own. A send is theirs when it was addressed to their user id, or
+//! went to the email or phone on their login. Campaign recipients are CDP
+//! profiles, whose ids are not user ids, so the address is what usually
+//! matches.
 
 use axum::{
     extract::{Path, Query, State},
@@ -17,7 +19,10 @@ use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_errors::AppError;
 
-use crate::{api::http::AppState, infrastructure::db::inbox::InboxDb};
+use crate::{
+    api::http::AppState,
+    infrastructure::db::inbox::{InboxDb, Reader},
+};
 
 /// Longest body the inbox keeps. A campaign email can be a whole page of
 /// HTML; the inbox is a message list.
@@ -40,6 +45,27 @@ pub fn entry_for(subject: Option<&str>, campaign_name: &str, rendered_body: &str
     let title = if title.is_empty() { "Message".to_owned() } else { title };
     let body: String = plain_text(rendered_body).chars().take(BODY_MAX_CHARS).collect();
     (title, body)
+}
+
+/// The one form an address is stored and matched in: an email lowercased, a
+/// phone as its digits. None for anything that is neither.
+pub fn normalise_address(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.contains('@') {
+        return Some(raw.to_lowercase()).filter(|e| e.len() > 3);
+    }
+    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    // Seven digits is the shortest real subscriber number; anything shorter
+    // is not a phone and must not match someone else's fragment.
+    (digits.len() >= 7).then_some(digits)
+}
+
+fn reader(claims: &AuthClaims) -> Reader {
+    let addresses = std::iter::once(claims.email.as_str())
+        .chain(claims.phone.as_deref())
+        .filter_map(normalise_address)
+        .collect();
+    Reader { tenant_id: claims.tenant_id, user_id: claims.user_id, addresses }
 }
 
 /// Tags dropped, common entities decoded, runs of whitespace folded. Enough
@@ -77,11 +103,12 @@ pub async fn list(
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let db = InboxDb::new(state.db.clone());
+    let who = reader(&claims);
     let items = db
-        .list(claims.tenant_id, claims.user_id, q.before, q.limit.unwrap_or(50).clamp(1, 100))
+        .list(&who, q.before, q.limit.unwrap_or(50).clamp(1, 100))
         .await
         .map_err(AppError::Internal)?;
-    let unread = db.unread(claims.tenant_id, claims.user_id).await.map_err(AppError::Internal)?;
+    let unread = db.unread(&who).await.map_err(AppError::Internal)?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "data": { "unread": unread, "items": items } }))))
 }
 
@@ -92,7 +119,7 @@ pub async fn mark_read(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let found = InboxDb::new(state.db.clone())
-        .mark_read(claims.tenant_id, claims.user_id, id, Utc::now())
+        .mark_read(&reader(&claims), id, Utc::now())
         .await
         .map_err(AppError::Internal)?;
     if !found {
@@ -104,7 +131,7 @@ pub async fn mark_read(
 /// `POST /v1/engagement/inbox/read-all`
 pub async fn mark_all_read(State(state): State<AppState>, claims: AuthClaims) -> impl IntoResponse {
     let marked = InboxDb::new(state.db.clone())
-        .mark_all_read(claims.tenant_id, claims.user_id, Utc::now())
+        .mark_all_read(&reader(&claims), Utc::now())
         .await
         .map_err(AppError::Internal)?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "data": { "marked": marked } }))))
@@ -120,6 +147,15 @@ mod tests {
         assert_eq!(entry_for(None, "Sept promo", "Hi").0, "Sept promo");
         assert_eq!(entry_for(Some("  "), "Sept promo", "Hi").0, "Sept promo");
         assert_eq!(entry_for(None, " ", "Hi").0, "Message");
+    }
+
+    #[test]
+    fn addresses_match_in_one_form() {
+        assert_eq!(normalise_address(" Ana@Example.COM ").as_deref(), Some("ana@example.com"));
+        assert_eq!(normalise_address("+63 917-555-0123").as_deref(), Some("639175550123"));
+        assert_eq!(normalise_address("+639175550123"), normalise_address("+63 917 555 0123"));
+        assert_eq!(normalise_address("12"), None, "a fragment must not match anyone's number");
+        assert_eq!(normalise_address(""), None);
     }
 
     #[test]

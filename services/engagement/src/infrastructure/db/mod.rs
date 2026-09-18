@@ -564,11 +564,13 @@ impl NotificationDb {
         title:     &str,
         body:      &str,
         deep_link: Option<&str>,
+        address:   Option<&str>,
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             UPDATE engagement.campaign_sends
-               SET tenant_id = $2, inbox_title = $3, inbox_body = $4, inbox_deep_link = $5
+               SET tenant_id = $2, inbox_title = $3, inbox_body = $4, inbox_deep_link = $5,
+                   inbox_address = $6
              WHERE id = $1
             "#
         )
@@ -577,6 +579,7 @@ impl NotificationDb {
         .bind(title)
         .bind(body)
         .bind(deep_link)
+        .bind(address)
         .execute(&self.pool)
         .await?;
         Ok(())

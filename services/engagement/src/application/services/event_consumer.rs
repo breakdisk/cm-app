@@ -1006,16 +1006,25 @@ pub async fn handle_campaign_triggered(
             }
         };
 
-        // The inbox copy, kept whether or not the channel delivers it. Only a
-        // real customer has an inbox; a nil id is an address-only recipient.
-        if customer_id != uuid::Uuid::nil() {
-            let (title, inbox_body) = crate::api::http::inbox::entry_for(
+        // The inbox copy, kept whether or not the channel delivers it. Found
+        // by the customer id, or by the email/phone it went to — campaign
+        // recipients are CDP profiles, not app users.
+        {
+            use crate::api::http::inbox::{entry_for, normalise_address};
+            let (title, inbox_body) = entry_for(
                 notification.subject.as_deref(),
                 campaign_name,
                 &notification.rendered_body,
             );
             let deep_link = data["variables"]["deep_link"].as_str().filter(|s| !s.is_empty());
-            if let Err(e) = db.set_campaign_send_inbox(send_id, tenant_id, &title, &inbox_body, deep_link).await {
+            let address = match channel_str {
+                "email" | "sms" | "whatsapp" => normalise_address(&recipient),
+                _ => None,
+            };
+            if let Err(e) = db
+                .set_campaign_send_inbox(send_id, tenant_id, &title, &inbox_body, deep_link, address.as_deref())
+                .await
+            {
                 warn!(campaign_id = %campaign_id, err = %e, "Failed to keep the inbox copy — the send goes ahead");
             }
         }
