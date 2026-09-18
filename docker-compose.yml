@@ -199,6 +199,7 @@ services:
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       SERVICES__FIELD_OPS_URL: http://field-ops:8090
       SERVICES__OMNIDELIV_URL: http://omnideliv:8091
+      SERVICES__PROMOTIONS_URL: http://promotions:8022
       SERVICES__COMPLIANCE_URL: http://compliance:8017
       SERVICES__WEBHOOKS_URL: http://webhooks:8018
       SERVICES__CONNECTORS_URL: http://connectors:8021
@@ -416,6 +417,9 @@ services:
     ports:
       - 8004:8004
     environment:
+      # Promo codes at quote and booking. Unset, quotes simply carry no
+      # discount; a quote that asked for a code says promotions is unavailable.
+      SERVICES__PROMOTIONS_URL: http://promotions:8022
       APP__HOST: "0.0.0.0"
       APP__PORT: "8004"
       APP__ENV: development
@@ -1334,6 +1338,38 @@ services:
       - tools
     ports:
       - 5540:5540
+    networks:
+      - logisticos
+
+  # ── Promotions: offers, promo codes, the redemption window ──────
+  promotions:
+    image: ghcr.io/breakdisk/logisticos-service-promotions:latest
+    container_name: logisticos-promotions
+    restart: unless-stopped
+    ports:
+      - 8022:8022
+    environment:
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8022"
+      APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_promotions
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      # The design's rules. The window and the ceiling only ever limit a
+      # discount; nothing is discounted until a tenant creates an offer.
+      PROMOTIONS__WINDOW_FROM_DAY: "11"
+      PROMOTIONS__WINDOW_TO_DAY: "24"
+      PROMOTIONS__CEILING_PCT: "20"
+      PROMOTIONS__CEILING_FLAT_UNITS: "50"
+      # The tenant's local day. The platform has no tenant time zone; 480 = Manila.
+      PROMOTIONS__UTC_OFFSET_MINUTES: "480"
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
     networks:
       - logisticos
 

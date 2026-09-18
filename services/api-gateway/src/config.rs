@@ -64,6 +64,10 @@ pub struct ServicesConfig {
     /// OmniDeliv product tier (ADR-0009) — vendor catalog, baskets, orders.
     #[serde(default)]
     pub omnideliv_url:            Option<String>,  // http://omnideliv:8091
+    /// Promotions — offers, promo codes, redemptions. Its own prefix because
+    /// `/v1/offers` is dispatch's gig load board.
+    #[serde(default)]
+    pub promotions_url:           Option<String>,  // http://promotions:8022
 }
 
 #[derive(Debug, Deserialize, Clone)]

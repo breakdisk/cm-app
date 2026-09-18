@@ -24,6 +24,7 @@ members = [
     "services/dispatch",
     "services/driver-ops",
     "services/field-ops",
+    "services/promotions",
     "services/compliance",
     "services/delivery-experience",
     "services/fleet",

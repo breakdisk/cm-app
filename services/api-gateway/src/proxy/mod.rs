@@ -48,6 +48,11 @@ impl ProxyClient {
         if path.starts_with("/v1/omnideliv") {
             return self.services.omnideliv_url.as_deref();
         }
+        // Consumer offers and promo codes. Prefixed, because the design's
+        // `/v1/offers` would land on dispatch's gig load board below.
+        if path.starts_with("/v1/promotions") {
+            return self.services.promotions_url.as_deref();
+        }
         // Identity & Auth
         if path.starts_with("/v1/auth")
             || path.starts_with("/v1/users")
@@ -251,7 +256,18 @@ mod routing_tests {
             connectors_url:          None,
             field_ops_url:           Some("http://field-ops:8090".into()),
             omnideliv_url:           Some("http://omnideliv:8091".into()),
+            promotions_url:          Some("http://promotions:8022".into()),
         }
+    }
+
+    /// The design's `/v1/offers` is dispatch's gig board; promotions lives
+    /// under its own prefix and must never fall through to it.
+    #[test]
+    fn promotions_resolve_to_promotions_not_the_gig_board() {
+        assert_eq!(resolve("/v1/promotions/offers").as_deref(), Some("http://promotions:8022"));
+        assert_eq!(resolve("/v1/promotions/codes/MOVE20/validate").as_deref(), Some("http://promotions:8022"));
+        assert_ne!(resolve("/v1/offers/open").as_deref(), Some("http://promotions:8022"));
+        assert_eq!(resolve("/v1/promotions/internal/redeem"), None);
     }
 
     fn resolve(path: &str) -> Option<String> {
@@ -457,9 +473,11 @@ mod routing_tests {
         let mut svc = services();
         svc.field_ops_url = None;
         svc.omnideliv_url = None;
+        svc.promotions_url = None;
         let proxy = ProxyClient::new(svc);
         assert_eq!(proxy.resolve_upstream("/v1/field-ops/assignments/offer"), None);
         assert_eq!(proxy.resolve_upstream("/v1/omnideliv/baskets"), None);
+        assert_eq!(proxy.resolve_upstream("/v1/promotions/offers"), None);
     }
 
     /// The internal-route guard runs before the tier prefixes and must stay
