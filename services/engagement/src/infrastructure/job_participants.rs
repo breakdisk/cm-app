@@ -34,16 +34,14 @@ pub struct JobContacts {
 pub struct JobParticipants {
     order_intake_url: String,
     driver_ops_url: String,
-    delivery_experience_url: String,
     client: reqwest::Client,
 }
 
 impl JobParticipants {
-    pub fn new(order_intake_url: String, driver_ops_url: String, delivery_experience_url: String) -> Self {
+    pub fn new(order_intake_url: String, driver_ops_url: String) -> Self {
         Self {
             order_intake_url,
             driver_ops_url,
-            delivery_experience_url,
             client: reqwest::Client::new(),
         }
     }
@@ -88,16 +86,22 @@ impl JobParticipants {
                     .get_json(&format!("{}/v1/shipments/{shipment_id}", self.order_intake_url.trim_end_matches('/')), bearer)
                     .await
                     .unwrap_or(Value::Null);
-                // The driver's line lives on the tracking record. It reaches
-                // this bridge and nothing else — the customer app is never
-                // given it.
-                let tracking = self
-                    .get_json(&format!("{}/v1/tracking/{shipment_id}", self.delivery_experience_url.trim_end_matches('/')), bearer)
+                // The driver's line, from driver-ops over the mesh: only the
+                // driver holding the job right now, and only to this bridge.
+                // The caller was checked against order-intake before this is
+                // reached. (The tracking record never had the number — it is
+                // stamped empty at assignment — so reading it there left the
+                // customer's call button always answering "no number".)
+                let driver = self
+                    .get_internal(&format!(
+                        "{}/v1/internal/shipments/{shipment_id}/driver-contact",
+                        self.driver_ops_url.trim_end_matches('/'),
+                    ))
                     .await
                     .unwrap_or(Value::Null);
                 Ok(JobContacts {
                     mine: string_field(&shipment, "customer_phone"),
-                    theirs: string_field(&tracking, "driver_phone"),
+                    theirs: string_field(&driver, "phone"),
                 })
             }
             SenderRole::Driver => {
@@ -117,6 +121,24 @@ impl JobParticipants {
                 Ok(JobContacts { mine: string_field(&me, "phone"), theirs })
             }
         }
+    }
+
+    /// A mesh-internal read: no caller token, because the answer is not the
+    /// caller's to read — it goes to the bridge and no further.
+    async fn get_internal(&self, url: &str) -> AppResult<Value> {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("{url} unreachable: {e}")))?;
+        if !response.status().is_success() {
+            return Err(AppError::Internal(anyhow::anyhow!("{url} answered {}", response.status())));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("{url} sent no json: {e}")))
     }
 
     async fn get_json(&self, url: &str, bearer: &str) -> AppResult<Value> {

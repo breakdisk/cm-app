@@ -18,7 +18,44 @@ pub struct Config {
     /// `HOS__MAX_ON_DUTY_MINUTES` (660) and `HOS__WINDOW_HOURS` (14).
     #[serde(default)]
     pub hos: HosConfig,
+    /// Leaving an accepted job: the grace clock, the drop fee, waiting pay.
+    /// `PENALTY__GRACE_MINUTES` (45), `PENALTY__DROP_FEE_PCT` (0),
+    /// `PENALTY__WAITING_FEE_CENTS_PER_HOUR` (0),
+    /// `PENALTY__DROP_COUNTS_AS_DECLINES` (1).
+    #[serde(default)]
+    pub penalty: PenaltyConfig,
 }
+
+/// Every money figure is 0 until a rate card sets it, the precedent set by
+/// `CANCELLATION_POLICY__*`. The grace window defaults on because it protects
+/// the driver: without it, leaving is always a drop.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PenaltyConfig {
+    #[serde(default = "default_grace_minutes")]
+    pub grace_minutes: i64,
+    #[serde(default)]
+    pub drop_fee_pct: i64,
+    /// Paid to the driver. Nothing charges the customer for it yet, so a
+    /// nonzero rate is the tenant's own cost until payments does.
+    #[serde(default)]
+    pub waiting_fee_cents_per_hour: i64,
+    #[serde(default = "default_drop_counts_as_declines")]
+    pub drop_counts_as_declines: i64,
+}
+
+impl Default for PenaltyConfig {
+    fn default() -> Self {
+        Self {
+            grace_minutes: default_grace_minutes(),
+            drop_fee_pct: 0,
+            waiting_fee_cents_per_hour: 0,
+            drop_counts_as_declines: default_drop_counts_as_declines(),
+        }
+    }
+}
+
+fn default_grace_minutes() -> i64 { 45 }
+fn default_drop_counts_as_declines() -> i64 { 1 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct HosConfig {

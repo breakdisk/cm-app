@@ -189,8 +189,6 @@ pub async fn run() -> anyhow::Result<()> {
     let job_participants = Arc::new(crate::infrastructure::job_participants::JobParticipants::new(
         std::env::var("SERVICES__ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8004".into()),
         std::env::var("SERVICES__DRIVER_OPS_URL").unwrap_or_else(|_| "http://driver-ops:8006".into()),
-        std::env::var("SERVICES__DELIVERY_EXPERIENCE_URL")
-            .unwrap_or_else(|_| "http://delivery-experience:8007".into()),
     ));
 
     // Masked calling. Logged either way: a deployment without a voice number

@@ -67,6 +67,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ready",  get(health::ready))
         // WebSocket for live driver tracking — no auth middleware (uses token query param)
         .route("/ws/locations", get(ws::handle_ws_upgrade))
+        // Internal service-to-service — no JWT. The gateway refuses every
+        // `/internal/` path; Istio mTLS gates the caller inside the mesh.
+        .route("/v1/internal/shipments/:shipment_id/driver-contact", get(tasks::internal_driver_contact))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }
@@ -111,5 +114,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tasks/:id/start",    put(tasks::start_task))
         .route("/tasks/:id/complete", put(tasks::complete_task))
         .route("/tasks/:id/fail",     put(tasks::fail_task))
+        // Leaving an accepted job: quote, then drop or release.
+        .route("/tasks/:id/leave",    get(tasks::leave_quote).post(tasks::leave))
         .layer(auth_layer)
 }

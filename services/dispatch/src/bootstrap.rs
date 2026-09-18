@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
-use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_job_dropped_consumer, start_shipment_consumer, start_user_consumer};
 use crate::application::commands::QuickDispatchCommand;
 use crate::api::http::{router, AppState};
 use logisticos_types::TenantId;
@@ -204,6 +204,25 @@ pub async fn run() -> anyhow::Result<()> {
             shutdown_rx_driver_avail,
         ).await {
             tracing::error!("Driver-available consumer crashed: {e}");
+        }
+    });
+
+    // Spawn job-dropped consumer — a driver left an accepted job: take it off
+    // them, requeue it, and offer it to the gig pool again.
+    let pool_for_drops     = pool.clone();
+    let brokers_drops      = cfg.kafka.brokers.clone();
+    let group_drops        = cfg.kafka.group_id.clone();
+    let offer_svc_drops    = Arc::clone(&offer_service);
+    let shutdown_rx_drops  = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_job_dropped_consumer(
+            &brokers_drops,
+            &group_drops,
+            pool_for_drops,
+            offer_svc_drops,
+            shutdown_rx_drops,
+        ).await {
+            tracing::error!("Job-dropped consumer crashed: {e}");
         }
     });
 

@@ -134,7 +134,14 @@ pub async fn run() -> anyhow::Result<()> {
     let task_service = Arc::new(TaskService::new(
         Arc::clone(&task_repo) as _,
         Arc::clone(&driver_repo) as _,
+        Arc::new(crate::infrastructure::db::PgJobDropRepository::new(pool.clone())) as _,
         Arc::clone(&kafka),
+        crate::domain::value_objects::leave_policy::PenaltyPolicy {
+            grace_minutes:              cfg.penalty.grace_minutes,
+            drop_fee_pct:               cfg.penalty.drop_fee_pct,
+            waiting_fee_cents_per_hour: cfg.penalty.waiting_fee_cents_per_hour,
+            drop_counts_as_declines:    cfg.penalty.drop_counts_as_declines,
+        },
     ));
     let location_service = Arc::new(LocationService::new(
         Arc::clone(&driver_repo) as _,

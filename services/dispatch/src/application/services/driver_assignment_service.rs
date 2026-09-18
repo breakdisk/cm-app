@@ -410,10 +410,17 @@ impl DriverAssignmentService {
                          Ensure the merchant address is geocoded before booking.".into(),
                     )),
                 };
-                let candidates = self.driver_avail_repo
+                let mut candidates = self.driver_avail_repo
                     .find_available_near(&tenant_id, anchor, DEFAULT_DRIVER_SEARCH_RADIUS_KM)
                     .await
                     .map_err(AppError::Internal)?;
+
+                // Whoever dropped this shipment is not handed it back.
+                let dropped = self.queue_repo
+                    .dropped_drivers(cmd.shipment_id)
+                    .await
+                    .map_err(AppError::Internal)?;
+                candidates.retain(|c| !dropped.contains(&c.driver_id.inner()));
 
                 if candidates.is_empty() {
                     return Err(AppError::BusinessRule("No available drivers nearby".into()));

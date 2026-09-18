@@ -45,6 +45,11 @@ pub struct DriverTask {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub failed_reason: Option<String>,
+    /// When the driver may leave this stop for free, stamped by the server at
+    /// arrival. None: not arrived, or the clock is switched off.
+    pub grace_expires_at: Option<DateTime<Utc>>,
+    /// Paid to the driver for waiting past grace, snapshotted at release.
+    pub waiting_fee_cents: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -60,6 +65,8 @@ pub enum TaskStatus {
     Completed,
     Failed,
     Skipped,
+    /// Taken off the driver: they dropped the job, or an admin cancelled it.
+    Cancelled,
 }
 
 impl DriverTask {
@@ -75,8 +82,26 @@ impl DriverTask {
     }
 
     pub fn start(&mut self) {
+        self.start_at(Utc::now(), None);
+    }
+
+    /// Arrival. The grace deadline is fixed now, so a later config change
+    /// never moves a clock that is already running.
+    pub fn start_at(&mut self, now: DateTime<Utc>, grace_expires_at: Option<DateTime<Utc>>) {
         self.status = TaskStatus::InProgress;
-        self.started_at = Some(Utc::now());
+        self.started_at = Some(now);
+        self.grace_expires_at = grace_expires_at;
+    }
+
+    pub fn is_open(&self) -> bool {
+        matches!(self.status, TaskStatus::Pending | TaskStatus::InProgress)
+    }
+
+    /// Leaving after grace: the stop fails as customer-absent and the driver
+    /// is paid for the wait.
+    pub fn release(&mut self, reason: String, waiting_fee_cents: i64) {
+        self.fail(reason);
+        self.waiting_fee_cents = waiting_fee_cents.max(0);
     }
 
     pub fn complete(&mut self, pod_id: Option<uuid::Uuid>, pop_id: Option<uuid::Uuid>) {

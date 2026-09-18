@@ -8,8 +8,9 @@ use logisticos_errors::AppError;
 use logisticos_types::{TenantId, DriverId};
 use crate::{
     api::http::AppState,
-    application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand},
+    application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand, LeaveTaskCommand},
 };
+use validator::Validate;
 
 pub async fn list_my_tasks(
     AuthClaims(claims): AuthClaims,
@@ -169,4 +170,46 @@ pub async fn fail_task(
     let cmd = FailTaskCommand { task_id, ..cmd };
     state.task_service.fail_task(&driver_id, &tenant_id, cmd).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// `GET /v1/internal/shipments/:shipment_id/driver-contact` — mesh-internal,
+/// no JWT: the gateway refuses every `/internal/` path, and Istio asserts the
+/// caller. Engagement asks it for the driver's line only after it has checked
+/// that its own caller owns the shipment, and never passes the number on.
+pub async fn internal_driver_contact(
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    match state.task_service.driver_phone_on_shipment(shipment_id).await? {
+        Some(phone) => Ok(Json(serde_json::json!({ "data": { "phone": phone } }))),
+        None => Err(AppError::NotFound { resource: "Driver on shipment", id: shipment_id.to_string() }),
+    }
+}
+
+/// `GET /v1/tasks/:id/leave` — what leaving this job would cost, before the
+/// driver commits: drop (fee) or release (free, paid for the wait). A 422
+/// `GOODS_ABOARD` or `TASK_CLOSED` says it cannot be left this way.
+pub async fn leave_quote(
+    AuthClaims(claims): AuthClaims,
+    Path(task_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let quote = state.task_service.leave_quote(&driver_id, task_id).await?;
+    Ok(Json(serde_json::json!({ "data": quote })))
+}
+
+/// `POST /v1/tasks/:id/leave` — leave the job. The server decides drop or
+/// release from its own clock; the response is the quote as applied.
+pub async fn leave(
+    AuthClaims(claims): AuthClaims,
+    Path(task_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<LeaveTaskCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let applied = state.task_service.leave(&driver_id, &tenant_id, task_id, cmd).await?;
+    Ok(Json(serde_json::json!({ "data": applied })))
 }

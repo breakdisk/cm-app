@@ -181,6 +181,22 @@ impl TrackingRecord {
         self.updated_at = Utc::now();
     }
 
+    /// The driver left the job before finishing it. Their name, number and
+    /// position come off the record, so the customer is not shown — or put
+    /// through to — someone who has gone, and the shipment waits for the next.
+    pub fn unassign_driver(&mut self) {
+        self.driver_id = None;
+        self.driver_name = None;
+        self.driver_phone = None;
+        self.driver_position = None;
+        self.estimated_delivery = None;
+        self.transition(
+            TrackingStatus::Confirmed,
+            "Your driver changed — finding you a new one".into(),
+            None,
+        );
+    }
+
     pub fn assign_driver(
         &mut self,
         driver_id: Uuid,

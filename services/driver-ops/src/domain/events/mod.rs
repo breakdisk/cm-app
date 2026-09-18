@@ -59,6 +59,11 @@ pub struct TaskFailed {
     /// Customer UUID — absent in current events; engagement falls back to shipment_id.
     #[serde(default)]
     pub customer_id: Option<Uuid>,
+    /// Set when the driver released the stop after the grace clock ran out:
+    /// what they are paid for the wait. The amount the customer would be
+    /// charged — nothing charges it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_fee_cents: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -218,10 +218,16 @@ impl DriverAvailabilityRepository for MockDriverAvailRepo {
 #[derive(Default, Clone)]
 struct MockDispatchQueueRepo {
     store: Arc<Mutex<HashMap<Uuid, DispatchQueueRow>>>,
+    /// shipment_id → drivers who dropped it.
+    dropped: Arc<Mutex<HashMap<Uuid, Vec<Uuid>>>>,
 }
 
 #[async_trait]
 impl DispatchQueueRepository for MockDispatchQueueRepo {
+    async fn dropped_drivers(&self, shipment_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(self.dropped.lock().unwrap().get(&shipment_id).cloned().unwrap_or_default())
+    }
+
     async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()> {
         let mut guard = self.store.lock().unwrap();
         guard.insert(row.shipment_id, row.clone());
@@ -1413,6 +1419,57 @@ mod quick_dispatch {
             .get(&shipment_id)
             .map(|r| r.status.clone());
         assert_eq!(status, Some("dispatched".into()));
+    }
+
+    /// A driver who dropped a shipment is free again and usually still the
+    /// nearest. The sweep must not hand it straight back to them.
+    #[tokio::test]
+    async fn a_driver_who_dropped_the_shipment_is_passed_over() {
+        let shipment_id = Uuid::new_v4();
+        let dropper     = Uuid::new_v4();
+        let next        = Uuid::new_v4();
+        let token = mint_jwt_token(
+            Uuid::new_v4(),
+            vec![permissions::DISPATCH_ASSIGN.to_owned()],
+        );
+
+        let queue_repo = MockDispatchQueueRepo::default();
+        queue_repo.store.lock().unwrap().insert(
+            shipment_id,
+            make_queue_item(TEST_TENANT_ID, shipment_id),
+        );
+        queue_repo.dropped.lock().unwrap().insert(shipment_id, vec![dropper]);
+
+        let driver = |id: Uuid, distance_km: f64| AvailableDriver {
+            driver_id:         DriverId::from_uuid(id),
+            name:              String::new(),
+            location:          Coordinates { lat: 14.60, lng: 120.98 },
+            active_stop_count: 0,
+            vehicle_type:      None,
+            distance_km,
+        };
+
+        let app = build_test_app_with_queue(
+            MockRouteRepo::default(),
+            MockAssignmentRepo::default(),
+            MockDriverAvailRepo::with_drivers(vec![driver(dropper, 0.2), driver(next, 5.0)]),
+            queue_repo,
+        );
+
+        let resp = send(
+            app,
+            json_request(
+                Method::POST,
+                &format!("/v1/queue/{shipment_id}/dispatch"),
+                serde_json::json!({}),
+                &token,
+            ),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["data"]["driver_id"].as_str().unwrap(), next.to_string());
     }
 
     #[tokio::test]

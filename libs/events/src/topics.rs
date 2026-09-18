@@ -78,6 +78,10 @@ pub const PICKUP_COMPLETED:          &str = "logisticos.driver.pickup.completed"
 pub const DELIVERY_ATTEMPTED:        &str = "logisticos.driver.delivery.attempted";
 pub const DELIVERY_COMPLETED:        &str = "logisticos.driver.delivery.completed";
 pub const DELIVERY_FAILED:           &str = "logisticos.driver.delivery.failed";
+/// A driver left an accepted job before the grace clock let them go for free.
+/// Published by driver-ops; dispatch re-queues the shipment without offering
+/// it back to that driver, delivery-experience clears them off the tracking.
+pub const JOB_DROPPED:               &str = "logisticos.driver.job.dropped";
 pub const LOCATION_UPDATED:          &str = "logisticos.driver.location.updated";
 pub const DRIVER_LOCATION_UPDATED:   &str = "logisticos.driver.location.updated";
 
@@ -199,6 +203,7 @@ mod tests {
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
             DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
+            JOB_DROPPED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
             POD_CAPTURED, PICKUP_CAPTURED,
             INVOICE_GENERATED, PAYMENT_RECEIVED,

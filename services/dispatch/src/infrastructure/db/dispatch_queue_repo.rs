@@ -82,6 +82,12 @@ pub trait DispatchQueueRepository: Send + Sync {
     /// Returns `true` if the row was found and updated.
     async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool>;
 
+    /// Drivers who dropped this shipment. Auto-selection and offer waves pass
+    /// them over; a dispatcher naming one explicitly still can.
+    async fn dropped_drivers(&self, _shipment_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(Vec::new())
+    }
+
     /// Cross-tenant pending list for the periodic dispatch-sweep background task.
     /// Returns all `status='pending'` rows across ALL tenants, oldest-first.
     async fn list_all_pending(&self) -> anyhow::Result<Vec<DispatchQueueRow>>;
@@ -95,10 +101,101 @@ impl PgDispatchQueueRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// A driver dropped these shipments: take them off the driver and put them
+    /// back in the queue, in one transaction. Returns the shipments requeued.
+    ///
+    /// Replay-safe: only shipments whose drop row is new are touched, so a
+    /// redelivered event cannot pull a shipment back from the driver it has
+    /// been re-dispatched to since.
+    pub async fn requeue_after_drop(
+        &self,
+        tenant_id: Uuid,
+        driver_id: Uuid,
+        route_id: Uuid,
+        shipment_ids: &[Uuid],
+        dropped_at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        let mut tx = self.pool.begin().await?;
+
+        let fresh: Vec<Uuid> = sqlx::query_scalar(
+            r#"INSERT INTO dispatch.shipment_drops (shipment_id, driver_id, route_id, tenant_id, dropped_at)
+               SELECT s, $2, $3, $4, $5 FROM UNNEST($1::uuid[]) AS s
+               ON CONFLICT DO NOTHING
+               RETURNING shipment_id"#,
+        )
+        .bind(shipment_ids)
+        .bind(driver_id)
+        .bind(route_id)
+        .bind(tenant_id)
+        .bind(dropped_at)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if fresh.is_empty() {
+            tx.rollback().await?;
+            return Ok(fresh);
+        }
+
+        sqlx::query("DELETE FROM dispatch.route_stops WHERE route_id = $1 AND shipment_id = ANY($2)")
+            .bind(route_id)
+            .bind(&fresh)
+            .execute(&mut *tx)
+            .await?;
+
+        // The assignment and its route end only when nothing else is on them.
+        // A gig claim's route carries exactly the one shipment and no stops.
+        sqlx::query(
+            r#"UPDATE dispatch.driver_assignments
+               SET status = 'cancelled'
+               WHERE driver_id = $1 AND route_id = $2
+                 AND status IN ('pending', 'accepted')
+                 AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops WHERE route_id = $2)"#,
+        )
+        .bind(driver_id)
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE dispatch.routes
+               SET status = 'cancelled'
+               WHERE id = $1
+                 AND status IN ('planned', 'in_progress')
+                 AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops WHERE route_id = $1)"#,
+        )
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"UPDATE dispatch.dispatch_queue
+               SET status              = 'pending',
+                   dispatched_at       = NULL,
+                   last_dispatch_error = 'dropped by driver',
+                   last_attempt_at     = NOW()
+               WHERE shipment_id = ANY($1)
+                 AND tenant_id   = $2
+                 AND status      = 'dispatched'"#,
+        )
+        .bind(&fresh)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(fresh)
+    }
 }
 
 #[async_trait]
 impl DispatchQueueRepository for PgDispatchQueueRepository {
+    async fn dropped_drivers(&self, shipment_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(sqlx::query_scalar("SELECT driver_id FROM dispatch.shipment_drops WHERE shipment_id = $1")
+            .bind(shipment_id)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
     async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()> {
         sqlx::query(
             r#"

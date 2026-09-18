@@ -114,4 +114,23 @@ pub struct TaskSummary {
     pub requires_photo: bool,
     pub requires_signature: bool,
     pub requires_otp: bool,
+    /// When the driver arrived (task start), and when they may leave this
+    /// stop for free. The app counts down to the second; it never sets either.
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub grace_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `POST /v1/tasks/:id/leave`. The server decides whether this is a drop or
+/// a release; the body only says why.
+#[derive(Debug, Deserialize, Validate)]
+pub struct LeaveTaskCommand {
+    #[validate(length(min = 2, max = 64))]
+    pub reason_code: String,
+    #[serde(default)]
+    #[validate(length(max = 500))]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lng: Option<f64>,
 }

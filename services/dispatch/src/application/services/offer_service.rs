@@ -299,7 +299,12 @@ impl OfferService {
             .await
             .map_err(AppError::Internal)?;
 
-        pool.retain(|c| !exclude.contains(&c.driver_id.inner()));
+        // Passed this offer, or dropped this shipment before.
+        let dropped = self.queue_repo
+            .dropped_drivers(queue_item.shipment_id)
+            .await
+            .map_err(AppError::Internal)?;
+        pool.retain(|c| !exclude.contains(&c.driver_id.inner()) && !dropped.contains(&c.driver_id.inner()));
         pool.retain(|c| vehicle_can_carry(
             c.vehicle_type.as_deref(),
             queue_item.weight_grams,

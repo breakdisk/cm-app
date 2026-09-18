@@ -252,6 +252,10 @@ create_topic "logisticos.support.ticket.opened"
 create_topic "logisticos.support.ticket.closed"
 create_topic "logisticos.ai.escalation.resolved"
 
+# A driver leaving an accepted job (the mover drop). Consumed by dispatch
+# (re-queue) and delivery-experience (clear the driver off the tracking).
+create_topic "logisticos.driver.job.dropped"
+
 # Identity. Both of these DID exist on the broker -- auto-created because a
 # publish happened to land before the consumer subscribed. That is the coin
 # flip this script exists to remove, not a reprieve.

@@ -560,6 +560,25 @@ pub struct AssignmentRejected {
     pub reason:        String,
 }
 
+/// Emitted by driver-ops when a driver leaves an accepted job before its grace
+/// clock ran out (a penalised drop, not a free release). Every shipment the
+/// driver still had open on the route goes back to dispatch.
+///
+/// A release after grace is not this event: that is a failed stop, published
+/// as `delivery.failed` with reason `customer_absent`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobDropped {
+    pub tenant_id:    Uuid,
+    /// Identity user id — dispatch keys assignments on it.
+    pub driver_id:    Uuid,
+    pub route_id:     Uuid,
+    pub shipment_ids: Vec<Uuid>,
+    pub reason_code:  String,
+    /// The dispatch fee charged to the driver, summed over the shipments.
+    pub fee_cents:    i64,
+    pub dropped_at:   chrono::DateTime<chrono::Utc>,
+}
+
 /// Emitted by delivery-experience when a customer taps "Email Receipt" on the
 /// ReceiptScreen / CollectionScreen. Engagement consumes this topic and sends
 /// a single email to `recipient_email` using the shipment_confirmation

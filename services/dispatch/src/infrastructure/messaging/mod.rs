@@ -7,10 +7,12 @@ pub use logisticos_events::consumer::KafkaConsumer;
 pub mod compliance_consumer;
 pub mod driver_available_consumer;
 pub mod hub_dispatch_consumer;
+pub mod job_dropped_consumer;
 pub mod shipment_consumer;
 pub mod user_consumer;
 
 pub use driver_available_consumer::start_driver_available_consumer;
 pub use hub_dispatch_consumer::start_hub_dispatch_consumer;
+pub use job_dropped_consumer::start_job_dropped_consumer;
 pub use shipment_consumer::start_shipment_consumer;
 pub use user_consumer::start_user_consumer;

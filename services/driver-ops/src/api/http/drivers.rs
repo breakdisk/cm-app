@@ -225,6 +225,9 @@ pub async fn get_me_driver(
         data["offers_seen"]    = serde_json::json!(seen);
         data["offers_claimed"] = serde_json::json!(claimed);
     }
+    // The rate itself, net of dropped jobs. The app shows this rather than
+    // dividing the two counts, which cannot see drops.
+    data["acceptance_pct"] = serde_json::json!(state.task_service.acceptance(claims.user_id).await);
     Ok(Json(serde_json::json!({ "data": data })))
 }
 

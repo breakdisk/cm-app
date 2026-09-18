@@ -81,6 +81,8 @@ fn make_task(task_type: TaskType, status: TaskStatus) -> DriverTask {
         started_at: None,
         completed_at: None,
         failed_reason: None,
+        grace_expires_at: None,
+        waiting_fee_cents: 0,
     }
 }
 
