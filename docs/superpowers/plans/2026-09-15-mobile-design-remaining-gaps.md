@@ -168,3 +168,30 @@ paid to the driver at the tenant's cost until payments bills it.
 **Deploy:** driver-ops (migration 0016), dispatch (0014), delivery-experience (0009),
 engagement; pre-create `logisticos.driver.job.dropped` on the live broker before those
 consumers start, and verify with `--members --verbose`.
+
+### D1 — promo codes, done 2026-09-18 (nothing discounted until a tenant creates an offer)
+New service `services/promotions` (port 8022, DB `svc_promotions`, gateway prefix
+`/v1/promotions`, since `/v1/offers` is dispatch's gig board). `8711b17f`, `d1398ebc`, `d4bdf479`.
+- **Rules (pure, 30 tests):** window = weekdays 11th–24th on the tenant's local day
+  (`PROMOTIONS__UTC_OFFSET_MINUTES`, 480 — no tenant time zone exists); one windowed code per
+  account per calendar month; once-per-account codes; the full stack (code vs corporate, larger
+  wins, tie to corporate; tier within its cap; credit last with rollover; ceiling
+  `min(20% gross, 50 units)` in the move's currency, and it says when it binds).
+- **Ledger:** `promotions.redemptions` with partial unique indexes (one windowed per month, one
+  once-per-account) among unreleased rows; one per booking (`shipment_id` UNIQUE) so a retried
+  create is not a second spend. `shipment.cancelled` releases (decision: a cancelled booking gets
+  its code back — the design is silent).
+- **order-intake:** `promo_code` on the quote → promotions `price` (mesh-internal); discount off
+  billed only (`accessorial_paid_cents` untouched); token signs net amount + code + account. At
+  create, the code is spent **before** the payment intent; failure after that releases it; a code
+  spent since the quote → 409 `PROMO_ALREADY_USED`; a token priced for another account → 422.
+  Only `code` lines are booked; tier/credit need their own redemption (D2).
+- **App:** Offers screen (month grid, code check, offer cards), code field + discount lines on the
+  plan; total = rows − discounts, shown only when it equals what the server charges.
+- **Admin:** API only — `POST /v1/promotions/admin/offers` (`campaigns:create`), no portal UI yet.
+**Deploy:** create `svc_promotions` on the live Postgres (init.sql only runs on a fresh volume),
+add the `promotions` service to the Dokploy compose, set `SERVICES__PROMOTIONS_URL` on
+api-gateway and order-intake. No new Kafka topic (consumes `order.shipment.cancelled`).
+**D2 next:** loyalty tiers (needs a completed-moves projection — consume `shipment.created` +
+`delivery.completed`, not a call back into order-intake, which would be circular at quote time),
+credit ledger + referral, corporate rate, campaign inbox (engagement).
