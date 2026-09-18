@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::value_objects::quote_token::TokenDiscount;
+
 pub struct PromotionsClient {
     base_url: String,
     http: reqwest::Client,
@@ -21,6 +23,7 @@ struct PriceRequest<'a> {
     currency: &'a str,
     carriage_cents: i64,
     accessorial_cents: i64,
+    loyalty_enabled: bool,
 }
 
 /// One discount on the quote, as promotions priced it.
@@ -43,6 +46,9 @@ pub struct Priced {
     pub code_applied: Option<String>,
     pub refusal: Option<String>,
     pub message: Option<String>,
+    /// The code was valid, but the account's corporate rate took more.
+    #[serde(default)]
+    pub code_lost_to_corporate: bool,
 }
 
 #[derive(Deserialize)]
@@ -55,9 +61,9 @@ struct RedeemRequest<'a> {
     tenant_id: Uuid,
     account_id: Uuid,
     shipment_id: Uuid,
-    code: &'a str,
-    discount_cents: i64,
     currency: &'a str,
+    code: Option<&'a str>,
+    lines: &'a [TokenDiscount],
 }
 
 #[derive(Serialize)]
@@ -71,6 +77,9 @@ pub enum RedeemError {
     /// The ledger refused it: this month's code, or a once-per-account code,
     /// was already spent — usually by another booking since the quote.
     Refused(String),
+    /// The account's credit no longer covers the credit line, spent by
+    /// another booking since the quote.
+    CreditChanged,
     /// Promotions could not be reached or failed.
     Unavailable(String),
 }
@@ -88,6 +97,7 @@ impl PromotionsClient {
         format!("{}{path}", self.base_url.trim_end_matches('/'))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn price(
         &self,
         tenant_id: Uuid,
@@ -96,11 +106,12 @@ impl PromotionsClient {
         currency: &str,
         carriage_cents: i64,
         accessorial_cents: i64,
+        loyalty_enabled: bool,
     ) -> Result<Priced, String> {
         let resp = self
             .http
             .post(self.url("/v1/internal/promotions/price"))
-            .json(&PriceRequest { tenant_id, account_id, code, currency, carriage_cents, accessorial_cents })
+            .json(&PriceRequest { tenant_id, account_id, code, currency, carriage_cents, accessorial_cents, loyalty_enabled })
             .send()
             .await
             .map_err(|e| format!("promotions price request failed: {e}"))?;
@@ -113,19 +124,21 @@ impl PromotionsClient {
             .map_err(|e| format!("promotions price response unreadable: {e}"))
     }
 
+    /// Spend every line of a booking together: the code, the credit, and the
+    /// tier and corporate lines recorded against their budgets.
     pub async fn redeem(
         &self,
         tenant_id: Uuid,
         account_id: Uuid,
         shipment_id: Uuid,
-        code: &str,
-        discount_cents: i64,
         currency: &str,
+        code: Option<&str>,
+        lines: &[TokenDiscount],
     ) -> Result<(), RedeemError> {
         let resp = self
             .http
             .post(self.url("/v1/internal/promotions/redeem"))
-            .json(&RedeemRequest { tenant_id, account_id, shipment_id, code, discount_cents, currency })
+            .json(&RedeemRequest { tenant_id, account_id, shipment_id, currency, code, lines })
             .send()
             .await
             .map_err(|e| RedeemError::Unavailable(e.to_string()))?;
@@ -134,15 +147,17 @@ impl PromotionsClient {
             return Ok(());
         }
         let body = resp.text().await.unwrap_or_default();
-        if status == reqwest::StatusCode::CONFLICT {
+        if status == reqwest::StatusCode::CONFLICT && body.contains("CREDIT_CHANGED") {
+            Err(RedeemError::CreditChanged)
+        } else if status == reqwest::StatusCode::CONFLICT {
             Err(RedeemError::Refused(body))
         } else {
             Err(RedeemError::Unavailable(format!("{status}: {body}")))
         }
     }
 
-    /// Best-effort: a booking that failed after spending its code gives it
-    /// back. A miss is left to the `shipment.cancelled` path or ops.
+    /// Best-effort: a booking that failed after spending its code and credit
+    /// gives them back. A miss is left to the `shipment.cancelled` path or ops.
     pub async fn release(&self, shipment_id: Uuid) {
         let sent = self
             .http

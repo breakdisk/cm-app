@@ -2145,6 +2145,7 @@ mod payment_aware_create {
             discount_cents: None,
             promo_code: None,
             account_id: None,
+            discounts: None,
         };
         quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
     }
@@ -3227,7 +3228,7 @@ mod payment_consumer_tests {
 
 mod promo_booking {
     use super::*;
-    use logisticos_order_intake::domain::value_objects::quote_token::{self, QuoteTokenPayload};
+    use logisticos_order_intake::domain::value_objects::quote_token::{self, QuoteTokenPayload, TokenDiscount};
     use logisticos_order_intake::infrastructure::http::PromotionsClient;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -3238,22 +3239,31 @@ mod promo_booking {
         redeems: Arc<AtomicUsize>,
         releases: Arc<AtomicUsize>,
         intents: Arc<AtomicUsize>,
+        /// The last redeem body promotions received.
+        redeemed: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
     }
 
     async fn spawn_mesh(redeem_status: u16, payments_fail: bool) -> Mesh {
+        spawn_mesh_replying(redeem_status, "", payments_fail).await
+    }
+
+    async fn spawn_mesh_replying(redeem_status: u16, redeem_body: &'static str, payments_fail: bool) -> Mesh {
         use axum::{routing::post, Json, Router};
         let redeems = Arc::new(AtomicUsize::new(0));
         let releases = Arc::new(AtomicUsize::new(0));
         let intents = Arc::new(AtomicUsize::new(0));
+        let redeemed = Arc::new(std::sync::Mutex::new(None));
         let fail = Arc::new(AtomicBool::new(payments_fail));
-        let (r, l, i) = (Arc::clone(&redeems), Arc::clone(&releases), Arc::clone(&intents));
+        let (r, l, i, b) = (Arc::clone(&redeems), Arc::clone(&releases), Arc::clone(&intents), Arc::clone(&redeemed));
 
         let app = Router::new()
-            .route("/v1/internal/promotions/redeem", post(move || {
+            .route("/v1/internal/promotions/redeem", post(move |Json(body): Json<serde_json::Value>| {
                 let r = Arc::clone(&r);
+                let b = Arc::clone(&b);
                 async move {
                     r.fetch_add(1, Ordering::SeqCst);
-                    axum::http::StatusCode::from_u16(redeem_status).unwrap()
+                    *b.lock().unwrap() = Some(body);
+                    (axum::http::StatusCode::from_u16(redeem_status).unwrap(), redeem_body)
                 }
             }))
             .route("/v1/internal/promotions/release", post(move || {
@@ -3283,7 +3293,7 @@ mod promo_booking {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        Mesh { url: format!("http://{addr}"), redeems, releases, intents }
+        Mesh { url: format!("http://{addr}"), redeems, releases, intents, redeemed }
     }
 
     fn server(repo: Arc<InMemoryShipmentRepository>, mesh_url: &str) -> (TestClient, JwtService) {
@@ -3330,25 +3340,52 @@ mod promo_booking {
             discount_cents: Some(500),
             promo_code: Some("MOVE20".to_string()),
             account_id: Some(account),
+            discounts: None,
+        };
+        quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+    }
+
+    /// A quote discounted by the Gold tier and 300 of account credit — no code.
+    fn stacked_token(tenant_id: uuid::Uuid, account: uuid::Uuid) -> String {
+        let payload = QuoteTokenPayload {
+            tenant_id,
+            service_type: "standard".to_string(),
+            weight_grams: 1_500,
+            amount_cents: 1_500,
+            currency: "AED".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
+            pricing_mode: Some("parcel_tariff".to_string()),
+            billable_grams: None,
+            accessorial_paid_cents: None,
+            discount_cents: Some(700),
+            promo_code: None,
+            account_id: Some(account),
+            discounts: Some(vec![
+                TokenDiscount { kind: "tier".into(), label: "Gold".into(), amount_cents: 400 },
+                TokenDiscount { kind: "credit".into(), label: "Account credit".into(), amount_cents: 300 },
+            ]),
         };
         quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
     }
 
     async fn book(server: &TestClient, jwt: &JwtService, tenant_id: uuid::Uuid, user_id: uuid::Uuid, quote: String) -> u16 {
+        book_full(server, jwt, tenant_id, user_id, quote).await.0
+    }
+
+    async fn book_full(server: &TestClient, jwt: &JwtService, tenant_id: uuid::Uuid, user_id: uuid::Uuid, quote: String) -> (u16, String) {
         let token = mint_merchant_token_with_currency(jwt, tenant_id, user_id, Some("AED"));
         let mut body = valid_shipment_body();
         body["weight_grams"] = json!(1_500u32);
         body["quote_token"] = json!(quote);
-        server
+        let resp = server
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
                 format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&body)
-            .await
-            .status_code()
-            .as_u16()
+            .await;
+        (resp.status_code().as_u16(), String::from_utf8_lossy(&resp.bytes).into_owned())
     }
 
     #[tokio::test]
@@ -3362,6 +3399,44 @@ mod promo_booking {
         assert_eq!(mesh.redeems.load(Ordering::SeqCst), 1);
         assert_eq!(mesh.releases.load(Ordering::SeqCst), 0);
         assert_eq!(repo.shipments.lock().unwrap().len(), 1);
+        // A token from before discount lines still spends its code as one.
+        let sent = mesh.redeemed.lock().unwrap().clone().expect("redeem body");
+        assert_eq!(sent["code"], "MOVE20");
+        assert_eq!(sent["lines"], json!([{ "kind": "code", "label": "MOVE20", "amount_cents": 500 }]));
+    }
+
+    /// No code at all: the tier and the credit were still taken off, so both
+    /// are spent — the tier against its budget, the credit off the balance.
+    #[tokio::test]
+    async fn a_quote_discounted_without_a_code_spends_every_line() {
+        let mesh = spawn_mesh(204, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, stacked_token(tenant, me)).await, 201);
+        let sent = mesh.redeemed.lock().unwrap().clone().expect("redeem body");
+        assert_eq!(sent["account_id"], json!(me));
+        assert_eq!(sent["currency"], "AED");
+        assert!(sent["code"].is_null());
+        let kinds: Vec<&str> = sent["lines"].as_array().unwrap().iter().map(|l| l["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["tier", "credit"]);
+    }
+
+    /// The credit was spent on another booking since the quote: the booking
+    /// stops before any payment, and says why.
+    #[tokio::test]
+    async fn credit_spent_since_the_quote_stops_the_booking() {
+        let mesh = spawn_mesh_replying(409, r#"{"error":{"code":"CONFLICT","message":"CREDIT_CHANGED"}}"#, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        let (status, body) = book_full(&server, &jwt, tenant, me, stacked_token(tenant, me)).await;
+        assert_eq!(status, 409);
+        assert!(body.contains("CREDIT_CHANGED"), "the app must be told it was the credit: {body}");
+        assert_eq!(mesh.intents.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
     }
 
     /// Another booking spent this month's code since the quote. Nothing may

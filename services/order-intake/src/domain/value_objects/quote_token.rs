@@ -12,6 +12,16 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// One discount the quote was priced with, signed so the booking spends
+/// exactly what the customer was shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenDiscount {
+    /// "code" | "corporate" | "tier" | "credit".
+    pub kind: String,
+    pub label: String,
+    pub amount_cents: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuoteTokenPayload {
     pub tenant_id: Uuid,
@@ -40,16 +50,34 @@ pub struct QuoteTokenPayload {
     /// driver pay. `#[serde(default)]` for tokens signed before this field.
     #[serde(default)]
     pub accessorial_paid_cents: Option<i64>,
-    /// What the promo code took off. `amount_cents` is already net of it.
+    /// Everything the discounts took off. `amount_cents` is already net of it.
     #[serde(default)]
     pub discount_cents: Option<i64>,
     /// The code that was priced in, to be spent when the booking is created.
     #[serde(default)]
     pub promo_code: Option<String>,
-    /// Who the discount was priced for. A code is per account, so a token
-    /// carrying one books only for that account.
+    /// Who the discount was priced for. A code, a tier and credit are all one
+    /// account's, so a discounted token books only for that account.
     #[serde(default)]
     pub account_id: Option<Uuid>,
+    /// Every discount line, each spent at booking. Absent on tokens signed
+    /// before tiers, credit and corporate rates were charged: those carried a
+    /// code only, and `discount_lines()` reads them as one code line.
+    #[serde(default)]
+    pub discounts: Option<Vec<TokenDiscount>>,
+}
+
+impl QuoteTokenPayload {
+    /// The lines this quote's booking must spend.
+    pub fn discount_lines(&self) -> Vec<TokenDiscount> {
+        match (&self.discounts, &self.promo_code, self.discount_cents) {
+            (Some(lines), _, _) => lines.clone(),
+            (None, Some(code), Some(cents)) if cents > 0 => {
+                vec![TokenDiscount { kind: "code".into(), label: code.clone(), amount_cents: cents }]
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -124,7 +152,22 @@ mod tests {
             discount_cents: None,
             promo_code: None,
             account_id: None,
+            discounts: None,
         }
+    }
+
+    #[test]
+    fn a_token_from_before_discount_lines_reads_as_one_code_line() {
+        let mut p = make_payload(15);
+        p.discount_cents = Some(500);
+        p.promo_code = Some("MOVE20".into());
+        assert_eq!(
+            p.discount_lines(),
+            vec![TokenDiscount { kind: "code".into(), label: "MOVE20".into(), amount_cents: 500 }]
+        );
+        p.discounts = Some(vec![TokenDiscount { kind: "credit".into(), label: "Credit".into(), amount_cents: 300 }]);
+        assert_eq!(p.discount_lines().len(), 1);
+        assert_eq!(p.discount_lines()[0].kind, "credit");
     }
 
     #[test]

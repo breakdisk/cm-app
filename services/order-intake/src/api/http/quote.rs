@@ -18,7 +18,7 @@ use logisticos_types::Currency;
 use crate::api::http::AppState;
 use crate::application::commands::AddressInput;
 use crate::domain::entities::shipment::{ae_base_fee_for, ae_piece_fee_for};
-use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
+use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload, TokenDiscount};
 use crate::infrastructure::http::DiscountLine;
 use crate::domain::value_objects::{
     price_accessorials_itemised, AccessorialRequest, PricedAccessorial, ServiceType,
@@ -153,6 +153,9 @@ pub struct QuoteResponse {
     /// Why a requested code was not applied, e.g. "OUTSIDE_WINDOW_WEEKEND".
     pub promo_refusal: Option<String>,
     pub promo_message: Option<String>,
+    /// The code was valid, but the corporate rate beat it; only the larger
+    /// is taken.
+    pub code_lost_to_corporate: bool,
     pub currency: String,
     pub quote_token: String,
     pub expires_at: DateTime<Utc>,
@@ -314,41 +317,55 @@ pub async fn get_quote(
     let accessorial_paid_cents: i64 = items.iter().map(|i| i.paid_cents).sum();
     let total_cents = amount_cents.saturating_add(accessorial_cents);
 
-    // ── Promo code ───────────────────────────────────────────────────────────
-    // Off what the customer is billed only. accessorial_paid_cents above is
-    // untouched: settlement never reads promotion state.
+    // ── Discounts ────────────────────────────────────────────────────────────
+    // The code, the corporate rate, the loyalty tier and account credit, as
+    // promotions stacks them. Off what the customer is billed only:
+    // accessorial_paid_cents above is untouched, and settlement never reads
+    // promotion state. Every line is signed into the token and spent at
+    // booking, so what is shown here is what is charged.
     let mut discounts: Vec<DiscountLine> = Vec::new();
     let mut ceiling_binds = false;
     let mut promo_code: Option<String> = None;
     let mut promo_refusal: Option<String> = None;
     let mut promo_message: Option<String> = None;
-    if let Some(code) = req.promo_code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-        let unavailable = || (
-            Some("PROMOTIONS_UNAVAILABLE".to_owned()),
-            Some("Offers can't be checked right now. You can book without the code.".to_owned()),
-        );
-        match &s.svc.promotions {
-            None => (promo_refusal, promo_message) = unavailable(),
-            Some(client) => match client
-                .price(claims.tenant_id, claims.user_id, Some(code), &currency, amount_cents, accessorial_cents)
-                .await
-            {
-                Ok(priced) => {
-                    // Only a code line is booked for now: it is the only one
-                    // anything spends at booking. Tier and credit arrive with
-                    // their own redemption.
-                    discounts = priced.lines.into_iter().filter(|l| l.kind == "code").collect();
-                    ceiling_binds = priced.ceiling_binds;
-                    promo_code = priced.code_applied.filter(|_| !discounts.is_empty());
-                    promo_refusal = priced.refusal;
-                    promo_message = priced.message;
-                }
-                Err(e) => {
-                    tracing::warn!(err = %e, "promotions pricing failed — quoting without the code");
+    let mut code_lost_to_corporate = false;
+    let code = req.promo_code.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let unavailable = || (
+        Some("PROMOTIONS_UNAVAILABLE".to_owned()),
+        Some("Offers can't be checked right now. You can book without the code.".to_owned()),
+    );
+    match &s.svc.promotions {
+        // Only a requested code has anything to say about promotions being
+        // absent; a plain quote is simply undiscounted.
+        None if code.is_some() => (promo_refusal, promo_message) = unavailable(),
+        None => {}
+        Some(client) => match client
+            .price(
+                claims.tenant_id,
+                claims.user_id,
+                code,
+                &currency,
+                amount_cents,
+                accessorial_cents,
+                claims.has_feature("loyalty_program"),
+            )
+            .await
+        {
+            Ok(priced) => {
+                discounts = priced.lines.into_iter().filter(|l| l.amount_cents > 0).collect();
+                ceiling_binds = priced.ceiling_binds;
+                promo_code = priced.code_applied.filter(|_| discounts.iter().any(|l| l.kind == "code"));
+                promo_refusal = priced.refusal;
+                promo_message = priced.message;
+                code_lost_to_corporate = priced.code_lost_to_corporate;
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, "promotions pricing failed — quoting undiscounted");
+                if code.is_some() {
                     (promo_refusal, promo_message) = unavailable();
                 }
-            },
-        }
+            }
+        },
     }
     let discount_cents: i64 = discounts.iter().map(|d| d.amount_cents.max(0)).sum();
     if discount_cents > total_cents {
@@ -381,9 +398,15 @@ pub async fn get_quote(
         pricing_mode: Some(mode.to_string()),
         billable_grams: billable,
         accessorial_paid_cents: Some(accessorial_paid_cents),
-        discount_cents: promo_code.as_ref().map(|_| discount_cents),
+        discount_cents: (discount_cents > 0).then_some(discount_cents),
         promo_code: promo_code.clone(),
-        account_id: promo_code.as_ref().map(|_| claims.user_id),
+        account_id: (discount_cents > 0).then_some(claims.user_id),
+        discounts: (discount_cents > 0).then(|| {
+            discounts
+                .iter()
+                .map(|d| TokenDiscount { kind: d.kind.clone(), label: d.label.clone(), amount_cents: d.amount_cents })
+                .collect()
+        }),
     };
     let quote_token = quote_token::sign(payment.quote_token_secret.as_bytes(), &payload);
 
@@ -412,6 +435,7 @@ pub async fn get_quote(
             promo_code,
             promo_refusal,
             promo_message,
+            code_lost_to_corporate,
             currency,
             quote_token,
             expires_at,

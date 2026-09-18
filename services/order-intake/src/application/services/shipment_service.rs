@@ -245,11 +245,11 @@ pub struct ShipmentService {
     pub promotions: Option<Arc<crate::infrastructure::http::PromotionsClient>>,
 }
 
-/// A promo code a verified quote was discounted by, to be spent at booking.
-struct PricedPromo {
-    code: String,
-    discount_cents: i64,
-    account_id: Option<uuid::Uuid>,
+/// What a verified quote was discounted by, all spent at booking.
+struct PricedDiscounts {
+    code: Option<String>,
+    lines: Vec<crate::domain::value_objects::quote_token::TokenDiscount>,
+    account_id: uuid::Uuid,
 }
 
 /// Returned by `create()`: the persisted shipment, plus a checkout URL when
@@ -498,7 +498,7 @@ impl ShipmentService {
         //    dispatch ─────────────────────────────────────────────────────────
         // Verified before the shipment row is written so a bad/tampered/expired
         // token fails the request before anything is persisted.
-        let mut promo: Option<PricedPromo> = None;
+        let mut promo: Option<PricedDiscounts> = None;
         let (payment_status, verified_amount_cents, verified_currency) = match &cmd.quote_token {
             None => (PaymentRequirement::NotRequired, None, None),
             Some(token) => {
@@ -520,17 +520,20 @@ impl ShipmentService {
                         "Quote token does not match this booking's service type or weight".into(),
                     ));
                 }
-                if let (Some(code), Some(discount)) = (payload.promo_code.clone(), payload.discount_cents) {
-                    // A code is spent on one account's month, so the discount
-                    // it bought books for that account only.
+                let lines = payload.discount_lines();
+                if !lines.is_empty() {
+                    // A code, a tier and credit are all one account's, so the
+                    // discount they bought books for that account only.
                     if payload.account_id != Some(cmd.merchant_id) {
                         return Err(AppError::Validation(
                             "This quote's discount was priced for a different account — get a new quote".into(),
                         ));
                     }
-                    if discount > 0 {
-                        promo = Some(PricedPromo { code, discount_cents: discount, account_id: payload.account_id });
-                    }
+                    promo = Some(PricedDiscounts {
+                        code: payload.promo_code.clone().filter(|_| lines.iter().any(|l| l.kind == "code")),
+                        lines,
+                        account_id: cmd.merchant_id,
+                    });
                 }
                 (PaymentRequirement::AwaitingPayment, Some(payload.amount_cents), Some(payload.currency))
             }
@@ -666,26 +669,29 @@ impl ShipmentService {
 
         let mut checkout_url: Option<String> = None;
 
-        // ── Spend the promo code the quote was discounted by ─────────────────
-        // Before the payment intent, so a code another booking spent since the
-        // quote stops this one before any money moves. The ledger decides a
-        // race; this booking's own retry is not a second spend.
+        // ── Spend what the quote was discounted by ───────────────────────────
+        // Every line together, before the payment intent: a code or credit
+        // another booking spent since the quote stops this one before any
+        // money moves. The ledger decides a race; this booking's own retry is
+        // not a second spend.
         let spent_code = match (&promo, &self.promotions) {
             (None, _) => false,
             (Some(_), None) => {
                 return Err(AppError::ServiceUnavailable(
-                    "This quote carries a promo code and promotions is not configured here — get a new quote".into(),
+                    "This quote carries a discount and promotions is not configured here — get a new quote".into(),
                 ))
             }
             (Some(p), Some(client)) => {
                 let currency = verified_currency.clone().unwrap_or_default();
-                let account = p.account_id.unwrap_or(cmd.merchant_id);
                 client
-                    .redeem(cmd.tenant_id, account, shipment.id.inner(), &p.code, p.discount_cents, &currency)
+                    .redeem(cmd.tenant_id, p.account_id, shipment.id.inner(), &currency, p.code.as_deref(), &p.lines)
                     .await
                     .map_err(|e| match e {
                         crate::infrastructure::http::RedeemError::Refused(_) => AppError::Conflict(
                             "PROMO_ALREADY_USED: this code was spent on another booking since the quote — get a new quote".into(),
+                        ),
+                        crate::infrastructure::http::RedeemError::CreditChanged => AppError::Conflict(
+                            "CREDIT_CHANGED: your account credit was used on another booking since the quote — get a new quote".into(),
                         ),
                         crate::infrastructure::http::RedeemError::Unavailable(m) => {
                             AppError::ServiceUnavailable(format!("Promotions is unavailable, so the discounted quote cannot be booked: {m}"))
@@ -696,8 +702,8 @@ impl ShipmentService {
         };
 
         // Everything from here to the saved row either succeeds or gives the
-        // code back: a booking that never exists must not cost the customer
-        // their month's code.
+        // code and credit back: a booking that never exists must not cost the
+        // customer their month's code or their balance.
         let persisted: AppResult<()> = async {
         if payment_status == PaymentRequirement::AwaitingPayment {
             shipment.pending_dispatch_events = Some(serde_json::json!({
