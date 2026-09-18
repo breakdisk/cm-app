@@ -28,6 +28,7 @@ struct TrackingRow {
     reschedule_count:    i32,
     created_at:          chrono::DateTime<chrono::Utc>,
     updated_at:          chrono::DateTime<chrono::Utc>,
+    owner_id:            Option<Uuid>,
 }
 
 impl TryFrom<TrackingRow> for TrackingRecord {
@@ -43,6 +44,7 @@ impl TryFrom<TrackingRow> for TrackingRecord {
             shipment_id:         r.shipment_id,
             tenant_id:           TenantId::from_uuid(r.tenant_id),
             tracking_number:     r.tracking_number,
+            owner_id:            r.owner_id,
             current_status:      status,
             status_history,
             origin_address:      r.origin_address,
@@ -82,7 +84,7 @@ impl TrackingRepository for PgTrackingRepository {
                    driver_id, driver_name, driver_phone,
                    driver_position, estimated_delivery, delivered_at,
                    pod_id, recipient_name, attempt_number, next_attempt_at,
-                   reschedule_count, created_at, updated_at
+                   reschedule_count, created_at, updated_at, owner_id
             FROM tracking.shipment_tracking
             WHERE shipment_id = $1
             "#
@@ -101,7 +103,7 @@ impl TrackingRepository for PgTrackingRepository {
                    driver_id, driver_name, driver_phone,
                    driver_position, estimated_delivery, delivered_at,
                    pod_id, recipient_name, attempt_number, next_attempt_at,
-                   reschedule_count, created_at, updated_at
+                   reschedule_count, created_at, updated_at, owner_id
             FROM tracking.shipment_tracking
             WHERE tracking_number = $1
             "#
@@ -115,6 +117,7 @@ impl TrackingRepository for PgTrackingRepository {
     async fn list_by_tenant(
         &self,
         tenant_id: &TenantId,
+        owner_id: Option<Uuid>,
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<TrackingRecord>> {
@@ -125,9 +128,10 @@ impl TrackingRepository for PgTrackingRepository {
                    driver_id, driver_name, driver_phone,
                    driver_position, estimated_delivery, delivered_at,
                    pod_id, recipient_name, attempt_number, next_attempt_at,
-                   reschedule_count, created_at, updated_at
+                   reschedule_count, created_at, updated_at, owner_id
             FROM tracking.shipment_tracking
             WHERE tenant_id = $1
+              AND ($4::uuid IS NULL OR owner_id = $4)
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
             "#
@@ -135,6 +139,7 @@ impl TrackingRepository for PgTrackingRepository {
         .bind(tenant_id.inner())
         .bind(limit)
         .bind(offset)
+        .bind(owner_id)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(TrackingRecord::try_from).collect()
@@ -157,16 +162,18 @@ impl TrackingRepository for PgTrackingRepository {
                 driver_id, driver_name, driver_phone,
                 driver_position, estimated_delivery, delivered_at,
                 pod_id, recipient_name, attempt_number, next_attempt_at,
-                reschedule_count, created_at, updated_at
+                reschedule_count, created_at, updated_at, owner_id
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6, $7,
                 $8, $9, $10,
                 $11, $12, $13,
                 $14, $15, $16, $17,
-                $18, $19, $20
+                $18, $19, $20, $21
             )
             ON CONFLICT (shipment_id) DO UPDATE SET
+                -- Set once. A later save never moves or clears the owner.
+                owner_id           = COALESCE(tracking.shipment_tracking.owner_id, EXCLUDED.owner_id),
                 current_status     = EXCLUDED.current_status,
                 status_history     = EXCLUDED.status_history,
                 driver_id          = EXCLUDED.driver_id,
@@ -203,6 +210,7 @@ impl TrackingRepository for PgTrackingRepository {
         .bind(r.reschedule_count)
         .bind(r.created_at)
         .bind(r.updated_at)
+        .bind(r.owner_id)
         .execute(&self.pool)
         .await?;
         Ok(())

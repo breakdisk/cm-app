@@ -37,7 +37,8 @@ use crate::domain::repositories::TrackingRepository;
 #[derive(Debug, Deserialize)]
 struct ShipmentCreated {
     shipment_id:         Uuid,
-    #[allow(dead_code)]
+    /// The booking user — order-intake stamps `merchant_id = claims.user_id`
+    /// for every caller. Becomes the tracking record's owner.
     merchant_id:         Uuid,
     origin_address:      String,
     destination_address: String,
@@ -210,7 +211,8 @@ async fn handle_message(
                 tracking_number,
                 evt.origin_address,
                 evt.destination_address,
-            );
+            )
+            .with_owner(evt.merchant_id);
             repo.save(&record).await?;
         }
 

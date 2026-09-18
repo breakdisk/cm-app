@@ -12,9 +12,11 @@ pub trait TrackingRepository: Send + Sync {
     /// Public lookup by tracking number — no tenant required; tenant is read from the record.
     async fn find_by_tracking_number(&self, tracking_number: &str) -> anyhow::Result<Option<TrackingRecord>>;
 
+    /// `owner_id` of `None` lists the whole tenant; `Some` only that owner's.
     async fn list_by_tenant(
         &self,
         tenant_id: &TenantId,
+        owner_id: Option<Uuid>,
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<TrackingRecord>>;

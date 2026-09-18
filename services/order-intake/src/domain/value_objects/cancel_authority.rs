@@ -34,15 +34,11 @@ pub enum ActingAs {
 }
 
 /// Merchants and customers can create shipments but not update them, and are
-/// limited to the ones they booked. Everyone else reaches the whole tenant:
-/// operators (create and update), dispatchers and hub scanners (update),
-/// drivers, partners and read-only users (neither).
+/// limited to the ones they booked. Everyone else reaches the whole tenant.
 ///
-/// Derived from permissions rather than role names, so a new role is scoped by
-/// what it is granted, not by remembering to add it to a list.
-pub fn is_tenant_wide(can_create: bool, can_update: bool) -> bool {
-    !(can_create && !can_update)
-}
+/// The rule lives in `logisticos_auth` because delivery-experience applies the
+/// same one to tracking reads; this name is kept for the call sites here.
+pub use logisticos_auth::rbac::shipments_tenant_wide as is_tenant_wide;
 
 /// Tenant is always enforced, whatever the actor's breadth.
 pub fn may_act_on(actor: &Actor, shipment_tenant: Uuid, shipment_owner: Uuid) -> bool {

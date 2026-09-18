@@ -189,6 +189,16 @@ impl Claims {
             || self.permissions.contains(&"*".to_owned())  // superadmin wildcard
     }
 
+    /// True when this token reaches every shipment in its tenant, false when it
+    /// reaches only the shipments it booked. See `rbac::shipments_tenant_wide`.
+    pub fn reaches_all_tenant_shipments(&self) -> bool {
+        use crate::rbac::{permissions, shipments_tenant_wide};
+        shipments_tenant_wide(
+            self.has_permission(permissions::SHIPMENT_CREATE),
+            self.has_permission(permissions::SHIPMENT_UPDATE),
+        )
+    }
+
     /// Check if claims include a specific role.
     pub fn has_role(&self, role: &str) -> bool {
         self.roles.contains(&role.to_owned())

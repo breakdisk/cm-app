@@ -259,11 +259,48 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
     }
 }
 
+/// Whether a caller reaches every shipment in their tenant, or only the ones
+/// they booked.
+///
+/// Merchants and customers can create shipments but not update them, and are
+/// limited to their own. Everyone else reaches the whole tenant: operators
+/// (create and update), dispatchers and hub scanners (update), drivers,
+/// partners and read-only users (neither).
+///
+/// Derived from permissions rather than role names, so a new role is scoped by
+/// what it is granted, not by remembering to add it to a list. order-intake
+/// applies it to by-id actions and delivery-experience to tracking reads; it
+/// lives here so the two cannot drift.
+pub fn shipments_tenant_wide(can_create: bool, can_update: bool) -> bool {
+    !(can_create && !can_update)
+}
+
 #[cfg(test)]
 mod grant_tests {
     use super::*;
 
     fn perms(role: &str) -> Vec<&'static str> { default_permissions_for_role(role) }
+
+    fn tenant_wide(role: &str) -> bool {
+        let p = perms(role);
+        shipments_tenant_wide(
+            p.contains(&permissions::SHIPMENT_CREATE),
+            p.contains(&permissions::SHIPMENT_UPDATE),
+        )
+    }
+
+    /// The people who book are limited to what they booked. If a role change
+    /// ever gave merchants `shipments:update`, they would silently start
+    /// reading every customer's tracking in the tenant, and this names it.
+    #[test]
+    fn only_the_people_who_book_are_owner_scoped() {
+        for role in ["merchant", "customer"] {
+            assert!(!tenant_wide(role), "{role} must see only what they booked");
+        }
+        for role in ["admin", "tenant_admin", "dispatcher", "hub_scanner", "driver", "partner", "readonly"] {
+            assert!(tenant_wide(role), "{role} works across the tenant");
+        }
+    }
 
     /// The invariant behind the split. TENANT_MANAGE gates
     /// `PUT /v1/pricing/features/:key/tiers`, which takes no tenant id and
