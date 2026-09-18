@@ -20,7 +20,7 @@ import { shipmentsActions } from '../../store';
 import * as shipmentsService from '../../services/api/shipments';
 import { getMyTenant } from '../../services/api/tenant';
 import {
-  accessorialLabel, COUNTRY_FOR_CURRENCY, linesReconcile, listAccessorials, quoteLines, quoteMove, quoteTotal,
+  accessorialLabel, COUNTRY_FOR_CURRENCY, discountLabel, linesReconcile, listAccessorials, quoteLines, quoteMove, quoteTotal,
   type AccessorialCatalog, type MoveQuote,
 } from '../../services/api/move';
 import type { ParsedItem, ParsedMove } from './parsePrompt';
@@ -69,6 +69,8 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
   const [promoCode, setPromoCode] = useState<string>(route.params?.promoCode ?? '');
   const [promoDraft, setPromoDraft] = useState<string>(route.params?.promoCode ?? '');
   const quoteSeq = useRef(0);
+  // Bumped to re-price with nothing else changed — credit spent elsewhere.
+  const [requote, setRequote] = useState(0);
   // Item scan: offered only where the AR module is linked and the device
   // supports it. Anywhere else the buttons aren't there, rather than dead.
   const [arAvailable, setArAvailable] = useState(false);
@@ -198,7 +200,7 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
     return () => clearTimeout(timer);
     // address() reads the fields listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, grams, lengthCm, widthCm, heightCm, fromLine, fromCity, toLine, toCity, country, accessorials, promoCode]);
+  }, [ready, grams, lengthCm, widthCm, heightCm, fromLine, fromCity, toLine, toCity, country, accessorials, promoCode, requote]);
 
   const total = quote ? quoteTotal(quote) : null;
   const reconciles = quote ? linesReconcile(quote) : false;
@@ -273,6 +275,11 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
       if (/PROMO_ALREADY_USED/.test(apiMessage(err))) {
         setPromoCode('');
         Alert.alert('That code is used up', "It went on another booking since you were quoted. Here's the price without it.");
+      } else if (/CREDIT_CHANGED/.test(apiMessage(err))) {
+        // Credit went on another booking since this quote: re-price with
+        // what is left, and let them book again at the new figure.
+        setRequote((n) => n + 1);
+        Alert.alert('Your credit changed', "Some of it went on another booking since you were quoted. Here's the new price.");
       } else {
         Alert.alert("Couldn't book", apiMessage(err));
       }
@@ -474,7 +481,7 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
                     <View key={`${d.kind}-${i}`} style={s.lineRow}>
                       <View style={{ flex: 1 }}>
                         <Text style={[s.lineLabel, { color: M.accent }]}>
-                          {d.kind === 'code' ? `Code ${d.label}` : d.label}
+                          {discountLabel(d)}
                         </Text>
                         {d.clipped && <Text style={s.lineNote}>Cut to the most any move can be discounted</Text>}
                       </View>
@@ -533,7 +540,12 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
           {!!promoCode && quote?.promo_code && (
             <Text style={[s.note, { color: M.accent, marginTop: 10 }]}>{quote.promo_code} is on this quote.</Text>
           )}
-          {!!promoCode && quote && !quote.promo_code && (
+          {!!promoCode && quote && !quote.promo_code && quote.code_lost_to_corporate && (
+            <Text style={[s.note, { marginTop: 10 }]}>
+              Your company rate takes off more than {promoCode}, so the rate is used and the code stays unspent.
+            </Text>
+          )}
+          {!!promoCode && quote && !quote.promo_code && !quote.code_lost_to_corporate && (
             <Text style={[s.note, { color: M.amberText, marginTop: 10 }]}>
               {quote.promo_message ?? "That code doesn't apply to this move."}
             </Text>

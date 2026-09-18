@@ -14,6 +14,7 @@ import type { RootState } from '../../store';
 import { useShipments } from '../../hooks/useShipments';
 import { classifyIntent } from './parsePrompt';
 import { speechAvailable } from './voice';
+import { unreadCount } from '../../services/api/inbox';
 import { HEADING, HEADING_LIGHT, M } from './theme';
 import { Ambient, IconButton, Label, PrimaryButton } from './ui';
 
@@ -45,7 +46,12 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
   // Offered only where this build and this phone can actually listen.
   const [canSpeak] = useState(speechAvailable);
 
-  useFocusEffect(useCallback(() => { refetch(); }, [refetch]));
+  // The inbox dot: refreshed each time home comes back into view.
+  const [unread, setUnread] = useState(0);
+  useFocusEffect(useCallback(() => {
+    refetch();
+    unreadCount().then(setUnread);
+  }, [refetch]));
 
   const active = list.find((s) => ACTIVE_STATUSES.includes(s.status));
 
@@ -73,6 +79,12 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
           <IconButton name="chatbubble-ellipses-outline" label="Support" onPress={() => navigation.navigate('Support')} />
           <IconButton name="shield-checkmark-outline" label="Coverage and rules" onPress={() => navigation.navigate('MoveRules')} />
           <IconButton name="pricetags-outline" label="Offers" onPress={() => navigation.navigate('MoveOffers')} />
+          <IconButton
+            name="mail-outline"
+            label={unread > 0 ? `Inbox, ${unread} unread` : 'Inbox'}
+            onPress={() => navigation.navigate('MoveInbox')}
+            badge={unread > 0}
+          />
           <IconButton name="wallet-outline" label="Payments" onPress={() => navigation.navigate('MovePayments')} />
           <IconButton name="person-circle-outline" label="Account" onPress={() => navigation.navigate('Profile')} />
         </View>
@@ -170,7 +182,8 @@ const s = StyleSheet.create({
   brandRing:      { width: 26, height: 26, borderRadius: 13, borderWidth: 1, borderColor: 'rgba(0,229,255,0.5)', alignItems: 'center', justifyContent: 'center' },
   brandDot:       { width: 9, height: 9, borderRadius: 5, backgroundColor: M.accent },
   brand:          { flexShrink: 1, fontFamily: HEADING, fontWeight: '700', fontSize: 15, letterSpacing: 3.3, color: M.ink },
-  headerIcons:    { flexDirection: 'row', gap: 8 },
+  // Six 40px buttons: 6px gaps keep them and the brand ring on a 320px phone.
+  headerIcons:    { flexDirection: 'row', gap: 6, flexShrink: 0 },
   h1Light:        { fontFamily: HEADING_LIGHT, fontWeight: '300', fontSize: 44, lineHeight: 46, letterSpacing: -0.6, color: M.ink },
   h1Strong:       { fontFamily: HEADING, fontWeight: '700', fontSize: 44, lineHeight: 46, letterSpacing: -0.6, color: M.ink },
   sub:            { marginTop: 14, fontSize: 14, lineHeight: 21, color: M.muted, maxWidth: 300 },

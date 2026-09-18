@@ -111,3 +111,14 @@ test('accessorialLabel reads unknown codes as words', () => {
   expect(accessorialLabel('haul_away')).toBe('Haul-away');
   expect(accessorialLabel('white_glove')).toBe('White glove');
 });
+
+describe('discountLabel', () => {
+  const { discountLabel } = require('../move');
+  const line = (kind: string, label: string) => ({ kind, label, amount_cents: 100, clipped: false });
+  test('each kind reads as what it is', () => {
+    expect(discountLabel(line('code', 'MOVE20'))).toBe('Code MOVE20');
+    expect(discountLabel(line('corporate', 'Acme Corp'))).toBe('Acme Corp rate');
+    expect(discountLabel(line('tier', 'Gold'))).toBe('Gold member');
+    expect(discountLabel(line('credit', 'Account credit'))).toBe('Account credit');
+  });
+});

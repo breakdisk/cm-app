@@ -16,6 +16,7 @@ import {
 import { formatMoney } from './format';
 import { HEADING, M } from './theme';
 import { Ambient, Panel, TopBar } from './ui';
+import { CreditPanel } from './RewardsPanels';
 
 type Filter = 'all' | 'unpaid' | 'paid';
 
@@ -119,6 +120,8 @@ export function MovePaymentsScreen({ navigation }: { navigation: any }) {
             <Text style={s.dueMeta}>{due.invoice_number} · {due.awb_count} AWB{due.awb_count === 1 ? '' : 's'}</Text>
           </Panel>
         )}
+
+        <CreditPanel />
 
         {invoices === null && <ActivityIndicator color={M.accent} style={{ marginTop: 30 }} />}
         {invoices !== null && shown.length === 0 && <Text style={[s.note, { marginTop: 20 }]}>Nothing here yet.</Text>}

@@ -90,6 +90,18 @@ export interface MoveQuote {
   /** Why a requested code was not applied, e.g. "OUTSIDE_WINDOW_WEEKEND". */
   promo_refusal?: string | null;
   promo_message?: string | null;
+  /** The code was valid, but the linked company rate took off more. */
+  code_lost_to_corporate?: boolean;
+}
+
+/** How a discount line reads on the plan: "Code MOVE20", "Acme Corp rate". */
+export function discountLabel(d: QuoteDiscount): string {
+  switch (d.kind) {
+    case 'code': return `Code ${d.label}`;
+    case 'corporate': return `${d.label} rate`;
+    case 'tier': return `${d.label} member`;
+    default: return d.label;
+  }
 }
 
 /** What the tenant offers. Null when the server has no accessorials endpoint. */

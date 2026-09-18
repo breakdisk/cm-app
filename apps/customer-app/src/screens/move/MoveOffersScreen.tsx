@@ -1,6 +1,7 @@
 /**
  * Move app — Offers. The redemption window as a month grid, a code field that
- * asks the server, and the offers this account can see.
+ * asks the server, the offers this account can see, and the rewards that
+ * apply without a code: member tier, company rate and referrals.
  *
  * Nothing here decides anything: which offers show, which days are lit, and
  * why a code is refused all come from promotions. Opened from the plan screen,
@@ -18,6 +19,7 @@ import { getMyTenant } from '../../services/api/tenant';
 import { formatMoney } from './format';
 import { HEADING, M } from './theme';
 import { Ambient, Field, GhostButton, Label, Panel, TopBar } from './ui';
+import { CorporatePanel, LoyaltyPanel, ReferralPanel } from './RewardsPanels';
 
 const WEEKDAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
@@ -43,6 +45,7 @@ export function MoveOffersScreen({ navigation, route }: { navigation: any; route
   const [feed, setFeed] = useState<OffersFeed | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [draft, setDraft] = useState('');
   const [checking, setChecking] = useState(false);
   const [check, setCheck] = useState<CodeCheck | null>(null);
@@ -85,7 +88,7 @@ export function MoveOffersScreen({ navigation, route }: { navigation: any; route
       <TopBar label="Offers" onBack={() => navigation.goBack()} />
       <ScrollView
         contentContainerStyle={[s.content, { paddingBottom: insets.bottom + 32 }]}
-        refreshControl={<RefreshControl refreshing={refreshing} tintColor={M.accent} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} />}
+        refreshControl={<RefreshControl refreshing={refreshing} tintColor={M.accent} onRefresh={async () => { setRefreshing(true); setRefreshKey((k) => k + 1); await load(); setRefreshing(false); }} />}
       >
         {feed === undefined && !error && <ActivityIndicator color={M.accent} style={{ marginTop: 48 }} />}
         {error && <Panel tone="amber"><Text style={s.body}>{error}</Text></Panel>}
@@ -163,6 +166,10 @@ export function MoveOffersScreen({ navigation, route }: { navigation: any; route
         {feed && feed.offers.length === 0 && (
           <Panel><Text style={s.body}>No offers running right now.</Text></Panel>
         )}
+
+        <LoyaltyPanel currency={currency} refreshKey={refreshKey} />
+        <CorporatePanel />
+        <ReferralPanel currency={currency} />
       </ScrollView>
     </View>
   );
