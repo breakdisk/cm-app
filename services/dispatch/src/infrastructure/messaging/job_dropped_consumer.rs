@@ -49,11 +49,20 @@ pub async fn start_job_dropped_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_job_dropped(payload, &repo, &offer_service).await {
-                                // Not committed: redelivered, and replay-safe.
-                                tracing::error!(err = %e, "job-dropped consumer: handler error");
-                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                continue;
+                            // Retried in place: an uncommitted message is not
+                            // redelivered until a restart, because the
+                            // consumer's position has already moved past it.
+                            // The handler is replay-safe.
+                            let mut attempt = 0u32;
+                            while let Err(e) = handle_job_dropped(payload, &repo, &offer_service).await {
+                                attempt += 1;
+                                if attempt >= 6 {
+                                    tracing::error!(offset = msg.offset(), err = %e,
+                                        "job-dropped consumer: failed 6 times — the shipment stays with the driver who left it; requeue it from the ops console");
+                                    break;
+                                }
+                                tracing::warn!(attempt, err = %e, "job-dropped consumer: handler error — retrying");
+                                tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt.min(5)))).await;
                             }
                         }
                         consumer.commit_message(&msg, CommitMode::Async).ok();

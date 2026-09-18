@@ -1,2 +1,3 @@
-pub mod cancel_consumer;
+pub mod events_consumer;
 pub mod db;
+pub mod rewards_db;

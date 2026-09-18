@@ -5,27 +5,40 @@ use uuid::Uuid;
 
 use crate::domain::offer::{AccountHistory, Discount, Offer};
 
-/// A redemption about to be written.
+/// One line of what came off a booking, for finance attribution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewRedemption {
+pub struct BookingLine {
+    pub kind: String,
+    pub label: String,
+    pub amount_cents: i64,
+    pub budget_tag: String,
+}
+
+/// Everything a booking spends, committed together or not at all: the code's
+/// redemption, the credit it applies, and the record of every discount line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookingCommit {
     pub tenant_id: Uuid,
     pub account_id: Uuid,
-    pub offer: Offer,
     pub shipment_id: Uuid,
-    pub month: String,
-    pub discount_cents: i64,
+    /// The code and the month it counts against.
+    pub code: Option<(Offer, String)>,
+    pub credit_cents: i64,
     pub currency: String,
+    pub lines: Vec<BookingLine>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RedeemOutcome {
-    Redeemed,
-    /// This booking already redeemed; a retried create lands here.
+pub enum CommitOutcome {
+    Committed,
+    /// This booking already committed; a retried create lands here.
     AlreadyForThisBooking,
     /// Another booking took this month's code first.
     MonthTaken,
     /// A once-per-account code this account already used.
     OfferTaken,
+    /// The credit was spent on another booking since the quote.
+    CreditShort,
 }
 
 /// A new offer, as an admin states it.
@@ -50,9 +63,10 @@ pub trait PromotionsStore: Send + Sync {
     /// Active offers inside their dates, newest first.
     async fn live_offers(&self, tenant_id: Uuid, now: DateTime<Utc>) -> anyhow::Result<Vec<Offer>>;
     async fn history(&self, tenant_id: Uuid, account_id: Uuid, month: &str) -> anyhow::Result<AccountHistory>;
-    async fn redeem(&self, r: &NewRedemption) -> anyhow::Result<RedeemOutcome>;
-    /// The booking was cancelled: its code goes back. True when one was released.
-    async fn release(&self, shipment_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool>;
+    async fn commit_booking(&self, c: &BookingCommit) -> anyhow::Result<CommitOutcome>;
+    /// The booking was cancelled or never came to be: its code goes back and
+    /// its credit is returned. True when anything was given back.
+    async fn release_booking(&self, shipment_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool>;
     async fn list_offers(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Offer>>;
     async fn create_offer(&self, o: &NewOffer) -> anyhow::Result<Option<Offer>>;
     async fn set_active(&self, tenant_id: Uuid, offer_id: Uuid, active: bool) -> anyhow::Result<bool>;
@@ -64,6 +78,8 @@ pub struct PgPromotionsStore {
 
 impl PgPromotionsStore {
     pub fn new(pool: PgPool) -> Self { Self { pool } }
+
+    pub(crate) fn pool(&self) -> &PgPool { &self.pool }
 }
 
 const OFFER_COLUMNS: &str = "id, tenant_id, code, title, body, discount_kind, percent_bps, flat_cents, \
@@ -151,48 +167,134 @@ impl PromotionsStore for PgPromotionsStore {
         Ok(h)
     }
 
-    async fn redeem(&self, r: &NewRedemption) -> anyhow::Result<RedeemOutcome> {
-        let insert = sqlx::query(
-            "INSERT INTO promotions.redemptions
-                 (tenant_id, account_id, offer_id, code, shipment_id, month, windowed,
-                  once_per_account, discount_cents, currency, budget_tag)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-        )
-        .bind(r.tenant_id)
-        .bind(r.account_id)
-        .bind(r.offer.id)
-        .bind(&r.offer.code)
-        .bind(r.shipment_id)
-        .bind(&r.month)
-        .bind(r.offer.windowed)
-        .bind(r.offer.once_per_account)
-        .bind(r.discount_cents)
-        .bind(&r.currency)
-        .bind(&r.offer.budget_tag)
-        .execute(&self.pool)
-        .await;
+    async fn commit_booking(&self, c: &BookingCommit) -> anyhow::Result<CommitOutcome> {
+        let mut tx = self.pool.begin().await?;
 
-        match insert {
-            Ok(_) => Ok(RedeemOutcome::Redeemed),
-            Err(e) => match unique_violation_on(&e).as_deref() {
-                Some("redemptions_shipment_id_key") => Ok(RedeemOutcome::AlreadyForThisBooking),
-                Some("redemptions_one_windowed_per_month") => Ok(RedeemOutcome::MonthTaken),
-                Some("redemptions_once_per_account") => Ok(RedeemOutcome::OfferTaken),
-                _ => Err(e.into()),
-            },
+        let already: Option<(i32,)> =
+            sqlx::query_as("SELECT 1 FROM promotions.booking_discounts WHERE shipment_id = $1 LIMIT 1")
+                .bind(c.shipment_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if already.is_some() {
+            tx.rollback().await?;
+            return Ok(CommitOutcome::AlreadyForThisBooking);
         }
+
+        if let Some((offer, month)) = &c.code {
+            let discount = c.lines.iter().find(|l| l.kind == "code").map(|l| l.amount_cents).unwrap_or(0);
+            let insert = sqlx::query(
+                "INSERT INTO promotions.redemptions
+                     (tenant_id, account_id, offer_id, code, shipment_id, month, windowed,
+                      once_per_account, discount_cents, currency, budget_tag)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+            )
+            .bind(c.tenant_id)
+            .bind(c.account_id)
+            .bind(offer.id)
+            .bind(&offer.code)
+            .bind(c.shipment_id)
+            .bind(month)
+            .bind(offer.windowed)
+            .bind(offer.once_per_account)
+            .bind(discount)
+            .bind(&c.currency)
+            .bind(&offer.budget_tag)
+            .execute(&mut *tx)
+            .await;
+            if let Err(e) = insert {
+                let outcome = match unique_violation_on(&e).as_deref() {
+                    Some("redemptions_shipment_id_key") => CommitOutcome::AlreadyForThisBooking,
+                    Some("redemptions_one_windowed_per_month") => CommitOutcome::MonthTaken,
+                    Some("redemptions_once_per_account") => CommitOutcome::OfferTaken,
+                    _ => return Err(e.into()),
+                };
+                tx.rollback().await?;
+                return Ok(outcome);
+            }
+        }
+
+        if c.credit_cents > 0 {
+            // One account's balance, one writer at a time: two bookings
+            // spending the same credit must not both see it.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text || $2::text, 0))")
+                .bind(c.tenant_id)
+                .bind(c.account_id)
+                .execute(&mut *tx)
+                .await?;
+            let (balance,): (i64,) = sqlx::query_as(
+                "SELECT COALESCE(SUM(amount_cents), 0)::bigint FROM promotions.credit_entries
+                 WHERE tenant_id = $1 AND account_id = $2 AND currency = $3",
+            )
+            .bind(c.tenant_id)
+            .bind(c.account_id)
+            .bind(&c.currency)
+            .fetch_one(&mut *tx)
+            .await?;
+            if balance < c.credit_cents {
+                tx.rollback().await?;
+                return Ok(CommitOutcome::CreditShort);
+            }
+            sqlx::query(
+                "INSERT INTO promotions.credit_entries
+                     (tenant_id, account_id, amount_cents, currency, kind, shipment_id, note)
+                 VALUES ($1, $2, $3, $4, 'applied', $5, 'Came off a move')",
+            )
+            .bind(c.tenant_id)
+            .bind(c.account_id)
+            .bind(-c.credit_cents)
+            .bind(&c.currency)
+            .bind(c.shipment_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for line in &c.lines {
+            sqlx::query(
+                "INSERT INTO promotions.booking_discounts
+                     (shipment_id, tenant_id, account_id, kind, label, amount_cents, currency, budget_tag)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+            )
+            .bind(c.shipment_id)
+            .bind(c.tenant_id)
+            .bind(c.account_id)
+            .bind(&line.kind)
+            .bind(&line.label)
+            .bind(line.amount_cents)
+            .bind(&c.currency)
+            .bind(&line.budget_tag)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(CommitOutcome::Committed)
     }
 
-    async fn release(&self, shipment_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool> {
-        let done = sqlx::query(
+    async fn release_booking(&self, shipment_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let code = sqlx::query(
             "UPDATE promotions.redemptions SET released_at = $2
              WHERE shipment_id = $1 AND released_at IS NULL",
         )
         .bind(shipment_id)
         .bind(at)
-        .execute(&self.pool)
-        .await?;
-        Ok(done.rows_affected() > 0)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let credit = sqlx::query(
+            "INSERT INTO promotions.credit_entries
+                 (tenant_id, account_id, amount_cents, currency, kind, shipment_id, note)
+             SELECT tenant_id, account_id, -amount_cents, currency, 'returned', shipment_id, 'Booking cancelled'
+             FROM promotions.credit_entries
+             WHERE shipment_id = $1 AND kind = 'applied'
+             ON CONFLICT (shipment_id) WHERE kind = 'returned' DO NOTHING",
+        )
+        .bind(shipment_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(code + credit > 0)
     }
 
     async fn list_offers(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Offer>> {

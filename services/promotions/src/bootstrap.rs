@@ -8,7 +8,7 @@ use crate::api::http::{router, AppState};
 use crate::application::{Promotions, Rules};
 use crate::config::Config;
 use crate::domain::window::WindowRule;
-use crate::infrastructure::{cancel_consumer, db::PgPromotionsStore};
+use crate::infrastructure::{db::PgPromotionsStore, events_consumer};
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load promotions config")?;
@@ -29,6 +29,8 @@ pub async fn run() -> anyhow::Result<()> {
         ceiling_pct = p.ceiling_pct,
         ceiling_flat_units = p.ceiling_flat_units,
         utc_offset_minutes = p.utc_offset_minutes,
+        referral_reward_cents = p.referral_reward_cents,
+        credit_currency = %p.credit_currency,
         "promotions service starting",
     );
 
@@ -52,25 +54,30 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
+    let store = Arc::new(PgPromotionsStore::new(pool.clone()));
     let promotions = Arc::new(Promotions::new(
-        Arc::new(PgPromotionsStore::new(pool.clone())),
+        store.clone(),
+        store,
         Rules {
             window: WindowRule::new(p.window_from_day, p.window_to_day),
             ceiling_pct: p.ceiling_pct.clamp(0, 100),
             ceiling_flat_units: p.ceiling_flat_units.max(0),
             utc_offset_minutes: p.utc_offset_minutes.clamp(-12 * 60, 14 * 60),
+            referral_reward_cents: p.referral_reward_cents.max(0),
+            credit_currency: p.credit_currency.trim().to_ascii_uppercase(),
         },
     ));
 
-    // Cancellations give codes back. Spawned, never awaited into startup: a
-    // broker that will not connect must not stop quotes being priced.
+    // Bookings, completions and cancellations: the loyalty count, referral
+    // rewards, and codes and credit given back. Spawned, never awaited into
+    // startup: a broker that will not connect must not stop quotes being priced.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     {
         let brokers = cfg.kafka.brokers.clone();
         let promotions = Arc::clone(&promotions);
         tokio::spawn(async move {
-            if let Err(e) = cancel_consumer::start(&brokers, promotions, shutdown_rx).await {
-                tracing::error!(err = %e, "shipment.cancelled consumer stopped — cancelled bookings will keep their codes");
+            if let Err(e) = events_consumer::start(&brokers, promotions, shutdown_rx).await {
+                tracing::error!(err = %e, "promotions events consumer stopped — loyalty and referrals stall, cancellations keep their codes");
             }
         });
     }

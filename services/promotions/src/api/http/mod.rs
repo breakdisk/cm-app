@@ -22,7 +22,10 @@ use logisticos_errors::AppError;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::application::{CreateOfferRequest, PriceRequest, Promotions, RedeemRequest};
+use crate::application::{
+    CommitRequest, CreateCorporateRequest, CreateOfferRequest, GrantCreditRequest, PriceRequest, Promotions,
+};
+use crate::domain::tier::NewTier;
 
 pub mod health;
 
@@ -43,6 +46,14 @@ pub fn router(state: Arc<AppState>) -> Router {
     let authed = Router::new()
         .route("/v1/promotions/offers", get(offers))
         .route("/v1/promotions/codes/:code/validate", post(validate))
+        .route("/v1/promotions/loyalty/me", get(loyalty))
+        .route("/v1/promotions/credits/me", get(credits))
+        .route("/v1/promotions/referrals/me", get(referrals))
+        .route("/v1/promotions/referrals/claim", post(claim_referral))
+        .route("/v1/promotions/corporate/me", get(corporate).post(link_corporate).delete(unlink_corporate))
+        .route("/v1/promotions/admin/tiers", get(admin_tiers).put(admin_replace_tiers))
+        .route("/v1/promotions/admin/corporate-accounts", get(admin_corporates).post(admin_create_corporate))
+        .route("/v1/promotions/admin/credits", post(admin_grant_credit))
         .route("/v1/promotions/admin/offers", get(admin_list).post(admin_create))
         .route("/v1/promotions/admin/offers/:id/deactivate", post(admin_deactivate))
         .route("/v1/promotions/admin/offers/:id/activate", post(admin_activate))
@@ -78,7 +89,101 @@ async fn validate(
     Ok(Json(serde_json::json!({ "data": view })))
 }
 
+/// `GET /v1/promotions/loyalty/me` — tier, progress and the ladder. Gated
+/// by the tenant's plan: without `loyalty_program` it reads as disabled.
+async fn loyalty(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
+    let enabled = claims.has_feature("loyalty_program");
+    let view = s.promotions.loyalty(claims.tenant_id, claims.user_id, enabled, Utc::now()).await?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+/// `GET /v1/promotions/credits/me` — balance and history. Credit is a
+/// non-cash entitlement: there is no route that withdraws or tops it up.
+async fn credits(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
+    let view = s.promotions.credit(claims.tenant_id, claims.user_id, claims.currency.as_deref()).await?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+async fn referrals(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
+    let view = s.promotions.referrals(claims.tenant_id, claims.user_id, Utc::now()).await?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+#[derive(Deserialize)]
+struct CodeBody {
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// `POST /v1/promotions/referrals/claim` — a new account enters a friend's
+/// code. A refusal is a 200 with the rule it failed.
+async fn claim_referral(State(s): Shared, claims: AuthClaims, Json(body): Json<CodeBody>) -> Result<Json<serde_json::Value>, AppError> {
+    let code = body.code.unwrap_or_default();
+    let view = s.promotions.claim_referral(claims.tenant_id, claims.user_id, &code).await?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+async fn corporate(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
+    let view = s.promotions.corporate(claims.tenant_id, claims.user_id, &claims.email).await?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+/// `POST /v1/promotions/corporate/me` — link by company code, or with no
+/// code, to the firm matching this account's work email.
+async fn link_corporate(State(s): Shared, claims: AuthClaims, Json(body): Json<CodeBody>) -> Result<Json<serde_json::Value>, AppError> {
+    let view = s
+        .promotions
+        .link_corporate(claims.tenant_id, claims.user_id, body.code.as_deref(), &claims.email)
+        .await?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+async fn unlink_corporate(State(s): Shared, claims: AuthClaims) -> Result<StatusCode, AppError> {
+    s.promotions.unlink_corporate(claims.tenant_id, claims.user_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ── Admin ───────────────────────────────────────────────────────────────────
+
+async fn admin_tiers(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let view = s.promotions.loyalty(claims.tenant_id, claims.user_id, true, Utc::now()).await?;
+    Ok(Json(serde_json::json!({ "data": view.ladder })))
+}
+
+/// `PUT /v1/promotions/admin/tiers` — the ladder, replaced whole.
+async fn admin_replace_tiers(State(s): Shared, claims: AuthClaims, Json(tiers): Json<Vec<NewTier>>) -> Result<Json<serde_json::Value>, AppError> {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let ladder = s.promotions.replace_ladder(claims.tenant_id, tiers).await?;
+    tracing::info!(tenant_id = %claims.tenant_id, user_id = %claims.user_id, tiers = ladder.len(), "loyalty ladder replaced");
+    Ok(Json(serde_json::json!({ "data": ladder })))
+}
+
+async fn admin_corporates(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    Ok(Json(serde_json::json!({ "data": s.promotions.list_corporates(claims.tenant_id).await? })))
+}
+
+async fn admin_create_corporate(
+    State(s): Shared,
+    claims: AuthClaims,
+    Json(req): Json<CreateCorporateRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let corp = s.promotions.create_corporate(claims.tenant_id, req).await?;
+    tracing::info!(tenant_id = %claims.tenant_id, user_id = %claims.user_id, code = %corp.code, "corporate rate created");
+    Ok((StatusCode::CREATED, Json(serde_json::json!({ "data": corp }))))
+}
+
+/// `POST /v1/promotions/admin/credits` — goodwill credit. Money-shaped, so
+/// it needs the billing permission, not the campaign one.
+async fn admin_grant_credit(State(s): Shared, claims: AuthClaims, Json(req): Json<GrantCreditRequest>) -> Result<StatusCode, AppError> {
+    claims.require_permission(permissions::BILLING_ADMIN)?;
+    let (account, amount) = (req.account_id, req.amount_cents);
+    s.promotions.grant_credit(claims.tenant_id, req).await?;
+    tracing::info!(tenant_id = %claims.tenant_id, granted_by = %claims.user_id, %account, amount, "credit granted");
+    Ok(StatusCode::NO_CONTENT)
+}
 
 async fn admin_list(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
     claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
@@ -118,11 +223,12 @@ async fn internal_price(State(s): Shared, Json(req): Json<PriceRequest>) -> Resu
     Ok(Json(serde_json::json!({ "data": view })))
 }
 
-async fn internal_redeem(State(s): Shared, Json(req): Json<RedeemRequest>) -> Result<StatusCode, AppError> {
-    s.promotions.redeem(&req, Utc::now()).await?;
+async fn internal_redeem(State(s): Shared, Json(req): Json<CommitRequest>) -> Result<StatusCode, AppError> {
+    s.promotions.commit(&req, Utc::now()).await?;
+    let total: i64 = req.lines.iter().map(|l| l.amount_cents).sum();
     tracing::info!(
         tenant_id = %req.tenant_id, account_id = %req.account_id, shipment_id = %req.shipment_id,
-        code = %req.code, discount_cents = req.discount_cents, "code redeemed"
+        code = ?req.code, discount_cents = total, lines = req.lines.len(), "booking discounts committed"
     );
     Ok(StatusCode::NO_CONTENT)
 }

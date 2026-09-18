@@ -2,5 +2,7 @@
 //! decision is testable on its own terms.
 
 pub mod offer;
+pub mod referral;
 pub mod stack;
+pub mod tier;
 pub mod window;

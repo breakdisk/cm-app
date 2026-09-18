@@ -41,6 +41,13 @@ pub struct PromotionsConfig {
     /// tenant time zone; a deployment serves one region. 480 = Manila.
     #[serde(default = "default_utc_offset_minutes")]
     pub utc_offset_minutes: i32,
+    /// Credit paid to a referrer when their friend's first move completes,
+    /// before the tier multiplier. 0 (the default) turns rewards off.
+    #[serde(default)]
+    pub referral_reward_cents: i64,
+    /// The currency referral credit is held in.
+    #[serde(default = "default_credit_currency")]
+    pub credit_currency: String,
 }
 
 impl Default for PromotionsConfig {
@@ -51,6 +58,8 @@ impl Default for PromotionsConfig {
             ceiling_pct: default_ceiling_pct(),
             ceiling_flat_units: default_ceiling_flat_units(),
             utc_offset_minutes: default_utc_offset_minutes(),
+            referral_reward_cents: 0,
+            credit_currency: default_credit_currency(),
         }
     }
 }
@@ -60,6 +69,7 @@ fn default_window_to_day() -> u32 { 24 }
 fn default_ceiling_pct() -> i64 { 20 }
 fn default_ceiling_flat_units() -> i64 { 50 }
 fn default_utc_offset_minutes() -> i32 { 480 }
+fn default_credit_currency() -> String { "PHP".into() }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -68,7 +78,8 @@ pub struct Config {
     pub kafka:    KafkaConfig,
     /// `PROMOTIONS__WINDOW_FROM_DAY` (11), `PROMOTIONS__WINDOW_TO_DAY` (24),
     /// `PROMOTIONS__CEILING_PCT` (20), `PROMOTIONS__CEILING_FLAT_UNITS` (50),
-    /// `PROMOTIONS__UTC_OFFSET_MINUTES` (480).
+    /// `PROMOTIONS__UTC_OFFSET_MINUTES` (480), `PROMOTIONS__REFERRAL_REWARD_CENTS`
+    /// (0), `PROMOTIONS__CREDIT_CURRENCY` (PHP).
     #[serde(default)]
     pub promotions: PromotionsConfig,
 }
