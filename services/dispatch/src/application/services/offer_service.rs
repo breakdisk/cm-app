@@ -170,6 +170,25 @@ impl OfferService {
         }
     }
 
+    /// A cancelled shipment's open offers are gone: tell every candidate, so
+    /// the card leaves their screen. Best-effort, as for an expiry.
+    pub async fn announce_cancelled(&self, tenant_id: Uuid, shipment_id: Uuid, offers: &[(Uuid, Vec<Uuid>)]) {
+        for (offer_id, candidates) in offers {
+            let closed = Event::new("dispatch", "offer.closed", tenant_id,
+                logisticos_events::payloads::TaskOfferClosed {
+                    offer_id:    *offer_id,
+                    tenant_id,
+                    shipment_id,
+                    reason:      "cancelled".into(),
+                    claimed_by:  None,
+                    candidate_driver_ids: candidates.clone(),
+                });
+            if let Err(e) = self.kafka.publish_event(topics::TASK_OFFER_CLOSED, &closed).await {
+                tracing::warn!(offer_id = %offer_id, err = %e, "TaskOfferClosed(cancelled) publish failed (non-fatal)");
+            }
+        }
+    }
+
     /// Wave radius for a 1-based wave number (clamped to the widest ring).
     pub fn radius_for_wave(wave: i32) -> f64 {
         let idx = (wave.max(1) as usize - 1).min(WAVE_RADIUS_KM.len() - 1);

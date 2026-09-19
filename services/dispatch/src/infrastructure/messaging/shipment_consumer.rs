@@ -94,6 +94,11 @@ async fn handle_shipment_created(
     let auto_dispatch = d.auto_dispatch;
     let home_move = d.home_move.clone();
 
+    if repo.is_cancelled(shipment_id).await? {
+        tracing::info!(shipment_id = %shipment_id, "shipment.created for a cancelled shipment — not queued");
+        return Ok(());
+    }
+
     let row = DispatchQueueRow {
         id:                   Uuid::new_v4(),
         tenant_id,

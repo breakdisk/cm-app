@@ -62,6 +62,12 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     let event: Event<TaskAssigned> = serde_json::from_slice(payload)?;
     let t = event.data;
 
+    // Cancelled before this arrived (another topic, another consumer group).
+    if super::shipment_cancelled_consumer::is_cancelled(pool, t.shipment_id).await? {
+        tracing::info!(task_id = %t.task_id, shipment_id = %t.shipment_id, "task consumer: shipment already cancelled — no task");
+        return Ok(());
+    }
+
     // Validate task_type — driver_ops.tasks.task_type has a CHECK constraint and
     // task_service::complete_task only branches on Pickup/Delivery. Anything
     // outside that set is a producer bug; reject early so we don't poison the row.

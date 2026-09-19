@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, watch};
 use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
-use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer, start_offer_consumer};
+use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer, start_offer_consumer, start_shipment_cancelled_consumer};
 use crate::infrastructure::external::FcmClient;
 use crate::api::http::{router, AppState, RosterEvent};
 use logisticos_auth::jwt::JwtService;
@@ -66,6 +66,7 @@ pub async fn run() -> anyhow::Result<()> {
     let fcm_for_state = fcm_client.clone();
     let fcm_for_rejections = fcm_client.clone();
     let fcm_for_offers = fcm_client.clone();
+    let fcm_for_cancels = fcm_client.clone();
 
     // Spawn TASK_ASSIGNED consumer — creates driver_ops.tasks rows on dispatch.
     let pool_for_tasks    = pool.clone();
@@ -96,6 +97,23 @@ pub async fn run() -> anyhow::Result<()> {
             shutdown_rx_offers,
         ).await {
             tracing::error!("Offer consumer crashed: {e}");
+        }
+    });
+
+    // Spawn SHIPMENT_CANCELLED consumer — the driver's task goes with it.
+    let pool_for_cancels    = pool.clone();
+    let brokers_for_cancels = cfg.kafka.brokers.clone();
+    let group_for_cancels   = cfg.kafka.group_id.clone();
+    let shutdown_rx_cancels = shutdown_rx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_shipment_cancelled_consumer(
+            &brokers_for_cancels,
+            &group_for_cancels,
+            pool_for_cancels,
+            fcm_for_cancels,
+            shutdown_rx_cancels,
+        ).await {
+            tracing::error!("Shipment-cancelled consumer crashed: {e}");
         }
     });
 

@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
-use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_job_dropped_consumer, start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_job_dropped_consumer, start_shipment_cancelled_consumer, start_shipment_consumer, start_user_consumer};
 use crate::application::commands::QuickDispatchCommand;
 use crate::api::http::{router, AppState};
 use logisticos_types::TenantId;
@@ -262,6 +262,25 @@ pub async fn run() -> anyhow::Result<()> {
             shutdown_rx_drops,
         ).await {
             tracing::error!("Job-dropped consumer crashed: {e}");
+        }
+    });
+
+    // Spawn shipment-cancelled consumer — a cancelled shipment leaves the
+    // queue, its offers, a home reservation and any route carrying it.
+    let pool_for_cancels    = pool.clone();
+    let brokers_cancels     = cfg.kafka.brokers.clone();
+    let group_cancels       = cfg.kafka.group_id.clone();
+    let offer_svc_cancels   = Arc::clone(&offer_service);
+    let shutdown_rx_cancels = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_shipment_cancelled_consumer(
+            &brokers_cancels,
+            &group_cancels,
+            pool_for_cancels,
+            offer_svc_cancels,
+            shutdown_rx_cancels,
+        ).await {
+            tracing::error!("Shipment-cancelled consumer crashed: {e}");
         }
     });
 

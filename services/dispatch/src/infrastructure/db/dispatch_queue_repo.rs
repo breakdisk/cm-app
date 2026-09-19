@@ -88,6 +88,12 @@ pub trait DispatchQueueRepository: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Cancelled upstream (order-intake). A late `shipment.created` for it
+    /// must not queue it.
+    async fn is_cancelled(&self, _shipment_id: Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     /// Cross-tenant pending list for the periodic dispatch-sweep background task.
     /// Returns all `status='pending'` rows across ALL tenants, oldest-first.
     async fn list_all_pending(&self) -> anyhow::Result<Vec<DispatchQueueRow>>;
@@ -187,8 +193,139 @@ impl PgDispatchQueueRepository {
     }
 }
 
+/// What a cancellation took down, for the events that follow it.
+#[derive(Debug, Default)]
+pub struct ShipmentCancellation {
+    /// Open offers closed: `(offer_id, candidate driver ids)`.
+    pub offers: Vec<(Uuid, Vec<Uuid>)>,
+    /// Drivers whose assignment ended with it.
+    pub released_drivers: Vec<Uuid>,
+    /// A whole-home move's reservation was let go.
+    pub reservation_released: bool,
+}
+
+impl PgDispatchQueueRepository {
+    /// The shipment was cancelled upstream: take it out of dispatch, in one
+    /// transaction. The queue row is cancelled, its open offers closed, a
+    /// home move's reservation released, and it comes off any route carrying
+    /// it — a planned route's stop, or a gig claim's stopless route (made in
+    /// the claim's transaction, so its `created_at` is the claim's
+    /// `claimed_at`). An assignment and its route end only when nothing else
+    /// is on them, as with a drop.
+    ///
+    /// Replay-safe: every statement is guarded by the state it changes.
+    pub async fn cancel_for_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<ShipmentCancellation> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO dispatch.shipment_cancellations (shipment_id, tenant_id) VALUES ($1, $2)
+             ON CONFLICT (shipment_id) DO NOTHING",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+                SET status = 'cancelled', last_dispatch_error = 'cancelled upstream', last_attempt_at = NOW()
+              WHERE shipment_id = $1 AND tenant_id = $2 AND status <> 'cancelled'",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let offer_ids: Vec<Uuid> = sqlx::query_scalar(
+            "UPDATE dispatch.task_offers SET status = 'cancelled'
+              WHERE shipment_id = $1 AND tenant_id = $2 AND status = 'open'
+              RETURNING id",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut offers = Vec::with_capacity(offer_ids.len());
+        for offer_id in offer_ids {
+            let candidates: Vec<Uuid> =
+                sqlx::query_scalar("SELECT driver_id FROM dispatch.task_offer_candidates WHERE offer_id = $1")
+                    .bind(offer_id)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            offers.push((offer_id, candidates));
+        }
+
+        let reservation_released = sqlx::query(
+            "UPDATE dispatch.home_reservations SET released_at = NOW()
+              WHERE shipment_id = $1 AND tenant_id = $2 AND released_at IS NULL",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0;
+
+        let routes: Vec<Uuid> = sqlx::query_scalar(
+            r#"SELECT r.id FROM dispatch.routes r
+                WHERE r.tenant_id = $2 AND r.status IN ('planned', 'in_progress')
+                  AND (EXISTS (SELECT 1 FROM dispatch.route_stops s
+                                WHERE s.route_id = r.id AND s.shipment_id = $1)
+                       OR EXISTS (SELECT 1 FROM dispatch.task_offers o
+                                   WHERE o.shipment_id = $1 AND o.status = 'claimed'
+                                     AND o.claimed_by = r.driver_id AND o.claimed_at = r.created_at))"#,
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut released_drivers = Vec::new();
+        if !routes.is_empty() {
+            sqlx::query("DELETE FROM dispatch.route_stops WHERE shipment_id = $1 AND route_id = ANY($2)")
+                .bind(shipment_id)
+                .bind(&routes)
+                .execute(&mut *tx)
+                .await?;
+            released_drivers = sqlx::query_scalar(
+                r#"UPDATE dispatch.driver_assignments a
+                      SET status = 'cancelled'
+                    WHERE a.route_id = ANY($1)
+                      AND a.status IN ('pending', 'accepted')
+                      AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = a.route_id)
+                    RETURNING a.driver_id"#,
+            )
+            .bind(&routes)
+            .fetch_all(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE dispatch.routes r
+                      SET status = 'cancelled'
+                    WHERE r.id = ANY($1)
+                      AND r.status IN ('planned', 'in_progress')
+                      AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = r.id)"#,
+            )
+            .bind(&routes)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(ShipmentCancellation { offers, released_drivers, reservation_released })
+    }
+}
+
 #[async_trait]
 impl DispatchQueueRepository for PgDispatchQueueRepository {
+    async fn is_cancelled(&self, shipment_id: Uuid) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM dispatch.shipment_cancellations WHERE shipment_id = $1)",
+        )
+        .bind(shipment_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     async fn dropped_drivers(&self, shipment_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
         Ok(sqlx::query_scalar("SELECT driver_id FROM dispatch.shipment_drops WHERE shipment_id = $1")
             .bind(shipment_id)
@@ -355,7 +492,8 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                  auto_dispatch_attempts = auto_dispatch_attempts + 1,
                  last_dispatch_error    = 'delivery failed — requeued for retry',
                  last_attempt_at        = NOW()
-             WHERE shipment_id = $1",
+             WHERE shipment_id = $1
+               AND status <> 'cancelled'",
         )
         .bind(shipment_id)
         .execute(&self.pool)
