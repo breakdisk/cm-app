@@ -251,6 +251,37 @@ data class ApprovalData(
     @SerialName("checkout_url") val checkoutUrl: String? = null,
 )
 
+/** A survey photo: condition evidence, or an access constraint. */
+@Serializable
+data class SurveyPhotoRequest(
+    /** "condition" | "access" */
+    val kind: String,
+    val room: String?,
+    val caption: String,
+    @SerialName("object_key")       val objectKey: String,
+    @SerialName("content_type")     val contentType: String,
+    @SerialName("size_bytes")       val sizeBytes: Long,
+    /** ISO-8601, at the shutter. */
+    @SerialName("device_timestamp") val deviceTimestamp: String?,
+)
+
+@Serializable
+data class SurveyPhotoResponse(val data: SurveyPhotoDto)
+
+@Serializable
+data class SurveyPhotosResponse(val data: List<SurveyPhotoDto> = emptyList())
+
+@Serializable
+data class SurveyPhotoDto(
+    val id: String,
+    val kind: String = "condition",
+    val room: String? = null,
+    val caption: String = "",
+    /** Viewable for an hour. */
+    val url: String? = null,
+    @SerialName("created_at") val createdAt: String = "",
+)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface HomeMoveApiService {
@@ -289,6 +320,12 @@ interface HomeMoveApiService {
      * The customer approves the addendum on this phone with their code. 422 a
      * wrong code (tries left in the message); 409 CODE_LOCKED after five.
      */
+    @POST("v1/shipments/{id}/home/photos")
+    suspend fun addPhoto(@Path("id") shipmentId: String, @Body body: SurveyPhotoRequest): SurveyPhotoResponse
+
+    @GET("v1/shipments/{id}/home/photos")
+    suspend fun photos(@Path("id") shipmentId: String): SurveyPhotosResponse
+
     @POST("v1/shipments/{id}/home/addendum/{addendumId}/approve-on-site")
     suspend fun approveOnSite(
         @Path("id") shipmentId: String,

@@ -17,6 +17,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.launch
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -227,6 +229,9 @@ private fun Form(s: SurveyUiState, vm: SurveyViewModel) {
         }
     }
 
+    MoveLabel("Photos")
+    Photos(s, vm)
+
     MoveLabel("Materials & resources")
     Extras(s, vm, move.currency)
 
@@ -361,6 +366,106 @@ private fun Stepper(icon: ImageVector, label: String, enabled: Boolean, onClick:
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription = label, tint = if (enabled) c.ink else c.muted.copy(alpha = 0.4f))
+    }
+}
+
+/**
+ * Photos: condition evidence (what's already scratched or cracked) and access
+ * constraints (the narrow lift, the tight stair turn). The typed inventory
+ * prices the move; these are its context, and protect everyone from a false
+ * damage claim.
+ */
+@Composable
+private fun Photos(s: SurveyUiState, vm: SurveyViewModel) {
+    val c = LocalMoveColors.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var kind by rememberSaveable { mutableIntStateOf(0) }
+    var caption by rememberSaveable { mutableStateOf("") }
+    var pending by rememberSaveable { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val camera = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.TakePicture(),
+    ) { taken ->
+        // The shutter: read here, at the physical event.
+        val shutterAt = System.currentTimeMillis()
+        val path = pending ?: return@rememberLauncherForActivityResult
+        pending = null
+        if (!taken) return@rememberLauncherForActivityResult
+        val k = if (kind == 0) "condition" else "access"
+        val room = s.room?.key.takeIf { kind == 0 }
+        val words = caption
+        scope.launch {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                io.logisticos.driver.core.common.ImageCompressor.compressToFile(java.io.File(path))
+            }
+            vm.photoTaken(path, k, room, words, shutterAt)
+            caption = ""
+        }
+    }
+    fun shoot() {
+        val file = java.io.File(context.filesDir, "survey_${System.currentTimeMillis()}.jpg")
+        pending = file.absolutePath
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        camera.launch(uri)
+    }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) shoot() }
+
+    MovePanel {
+        MoveSegmented(listOf("Condition", "Access"), selected = kind, onSelect = { kind = it })
+        Text(
+            if (kind == 0) "What's already damaged — scratches, chips, cracks. In ${s.room?.name ?: "this room"}."
+            else "What will slow the move — a narrow lift, a tight stair turn, a long carry.",
+            color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        MoveTextField(value = caption, onValueChange = { caption = it.take(200) }, label = "Caption (what it shows)")
+        Spacer(Modifier.height(10.dp))
+        MoveBigButton(
+            label = "TAKE A PHOTO",
+            filled = false,
+            height = 56.dp,
+            onClick = {
+                val granted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (granted) shoot() else permission.launch(android.Manifest.permission.CAMERA)
+            },
+        )
+    }
+    s.photos.forEach { p -> PhotoRow(p, onRetry = { p.localPath?.let(vm::retryPhoto) }) }
+}
+
+@Composable
+private fun PhotoRow(p: io.logisticos.driver.feature.profile.presentation.PhotoItem, onRetry: () -> Unit) {
+    val c = LocalMoveColors.current
+    val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, p.localPath) {
+        value = p.localPath?.let { path ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
+                    android.graphics.BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+                }.getOrNull()
+            }
+        }
+    }
+    MovePanel(padding = 12.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)).background(c.chip), contentAlignment = Alignment.Center) {
+                thumb?.let { androidx.compose.foundation.Image(it, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.matchParentSize()) }
+                    ?: Text(if (p.kind == "access") "↕" else "◎", color = c.muted, fontSize = 20.sp)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(if (p.kind == "access") "Access" else "Condition", color = c.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                if (p.caption.isNotBlank()) Text(p.caption, color = c.muted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    when (p.status) { "done" -> "Recorded"; "uploading" -> "Uploading…"; else -> p.error ?: "Didn't upload" },
+                    color = when (p.status) { "done" -> c.success; "uploading" -> c.muted; else -> c.penalty },
+                    fontSize = 12.sp,
+                )
+            }
+            if (p.status == "failed") MoveChip("Retry", selected = false, onClick = onRetry)
+        }
     }
 }
 

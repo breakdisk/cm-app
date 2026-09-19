@@ -154,6 +154,10 @@ pub struct ServicesConfig {
     /// reserved a home move, for the customer's "Team {lead}" line.
     #[serde(default)]
     pub dispatch_url: Option<String>,
+    /// Mesh-internal pod. `SERVICES__POD_URL`. The media store behind a
+    /// home move's survey photos; unset, photos list without pictures.
+    #[serde(default)]
+    pub pod_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

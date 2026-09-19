@@ -251,6 +251,26 @@ export async function getHomeMove(shipmentId: string): Promise<{ move: BookedHom
   }
 }
 
+/** A survey photo: pre-existing condition evidence, or an access constraint. */
+export interface SurveyPhoto {
+  id: string;
+  kind: 'condition' | 'access' | string;
+  room?: string | null;
+  caption: string;
+  /** Viewable for an hour; absent when the media store can't be reached. */
+  url?: string | null;
+  created_at: string;
+}
+
+export async function getHomePhotos(shipmentId: string): Promise<SurveyPhoto[]> {
+  try {
+    const r = await getOrderClient().get<{ data: SurveyPhoto[] }>(`/v1/shipments/${shipmentId}/home/photos`);
+    return r.data.data ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getAddendum(shipmentId: string): Promise<Addendum | null> {
   const r = await getOrderClient().get<{ data: Addendum | null }>(`/v1/shipments/${encodeURIComponent(shipmentId)}/home/addendum`);
   return r.data.data;

@@ -195,10 +195,13 @@ pub async fn run() -> anyhow::Result<()> {
         .with_promotions(promotions)
         .with_router(road_router(cfg.geocoder.mapbox_access_token.as_deref()))
         .with_home_rates(cfg.home_move.clone())
-        .with_home_teams(crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(
-            cfg.services.driver_ops_url.clone().filter(|u| !u.trim().is_empty()),
-            cfg.services.dispatch_url.clone().filter(|u| !u.trim().is_empty()),
-        )),
+        .with_home_teams(
+            crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(
+                cfg.services.driver_ops_url.clone().filter(|u| !u.trim().is_empty()),
+                cfg.services.dispatch_url.clone().filter(|u| !u.trim().is_empty()),
+            )
+            .with_pod(cfg.services.pod_url.clone().filter(|u| !u.trim().is_empty())),
+        ),
     );
     if cfg.home_move.offered() {
         tracing::info!(trip_cents = cfg.home_move.trip_cents, "whole-home moves ENABLED");

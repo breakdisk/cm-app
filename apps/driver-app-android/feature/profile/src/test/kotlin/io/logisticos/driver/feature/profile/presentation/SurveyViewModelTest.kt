@@ -60,9 +60,36 @@ class SurveyViewModelTest {
             HomeCatalogueData(propertyType = "villa", rooms = listOf(HomeRoomDto("living", "Living room", listOf(sofa)), HomeRoomDto("garage", "Garage"))),
         )
         coEvery { api.addendum("s1") } returns AddendumResponse(addendum)
+        coEvery { api.photos("s1") } returns io.logisticos.driver.core.network.service.SurveyPhotosResponse(emptyList())
     }
 
-    private fun vm() = SurveyViewModel(api).also { it.open("s1") }
+    @Test
+    fun `a photo is recorded with the shutter time, and a failed one can be retried`() = runTest {
+        booked()
+        coEvery { uploader.upload("s1", any(), "condition", "living", "Scratch", 1_700_000_000_000) } throws
+            java.io.IOException("offline") andThen
+            io.logisticos.driver.core.network.service.SurveyPhotoDto(id = "p1")
+        val vm = vm()
+        vm.photoTaken("/files/survey_1.jpg", "condition", "living", " Scratch ", 1_700_000_000_000)
+        assertEquals("failed", vm.uiState.value.photos.single().status)
+        vm.retryPhoto("/files/survey_1.jpg")
+        assertEquals("done", vm.uiState.value.photos.single().status)
+    }
+
+    @Test
+    fun `photos recorded earlier show on opening`() = runTest {
+        booked()
+        coEvery { api.photos("s1") } returns io.logisticos.driver.core.network.service.SurveyPhotosResponse(
+            listOf(io.logisticos.driver.core.network.service.SurveyPhotoDto(id = "p0", kind = "access", caption = "Narrow lift")),
+        )
+        val p = vm().uiState.value.photos.single()
+        assertEquals("access", p.kind)
+        assertEquals("done", p.status)
+    }
+
+    private val uploader: io.logisticos.driver.feature.profile.data.SurveyPhotoUploader = mockk()
+
+    private fun vm() = SurveyViewModel(api, uploader).also { it.open("s1") }
 
     @Test
     fun `loads the move and the catalogue for its property type`() = runTest {
@@ -95,7 +122,7 @@ class SurveyViewModelTest {
     @Test
     fun `nothing is fetched until a move is opened, and reopening it refetches nothing`() = runTest {
         booked()
-        val vm = SurveyViewModel(api)
+        val vm = SurveyViewModel(api, uploader)
         coVerify(exactly = 0) { api.move(any()) }
         vm.open("s1")
         vm.open("s1")

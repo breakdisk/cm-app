@@ -628,7 +628,7 @@ pub async fn book(
 }
 
 /// Who may act on a booked home move.
-enum Party {
+pub(crate) enum Party {
     Customer,
     Lead,
     Staff,
@@ -652,7 +652,7 @@ async fn party_of(s: &AppState, claims: &AuthClaims, record: &HomeMoveRecord) ->
     }
 }
 
-async fn record_for(s: &AppState, claims: &AuthClaims, id: Uuid) -> Result<(HomeMoveRecord, Party), AppError> {
+pub(crate) async fn record_for(s: &AppState, claims: &AuthClaims, id: Uuid) -> Result<(HomeMoveRecord, Party), AppError> {
     let not_found = || AppError::NotFound { resource: "Home move", id: id.to_string() };
     let record = home_moves::get(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?.ok_or_else(not_found)?;
     let party = party_of(s, claims, &record).await.ok_or_else(not_found)?;

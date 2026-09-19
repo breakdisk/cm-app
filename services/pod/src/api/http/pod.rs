@@ -82,6 +82,39 @@ pub async fn get_upload_url(
     Ok(Json(serde_json::json!({ "data": result })))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct SurveyPhotoUploadRequest {
+    pub shipment_id: Uuid,
+    pub content_type: String,
+}
+
+/// `POST /v1/pod/survey-photos/upload-url` — a lead's whole-home survey photo.
+/// The key names the tenant and shipment; order-intake records it against the
+/// move only for a lead on that move.
+pub async fn survey_photo_upload_url(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SurveyPhotoUploadRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let result = state.pod_service.survey_upload_url(&tenant_id, body.shipment_id, &body.content_type).await?;
+    Ok(Json(serde_json::json!({ "data": result })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct MediaUrlsRequest {
+    pub keys: Vec<String>,
+}
+
+/// Internal: `POST /v1/internal/media/urls` — viewable URLs for survey photos.
+pub async fn internal_media_urls(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MediaUrlsRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let urls = state.pod_service.survey_media_urls(&body.keys).await?;
+    Ok(Json(serde_json::json!({ "data": urls })))
+}
+
 pub async fn attach_photo(
     AuthClaims(_claims): AuthClaims,
     Path(pod_id): Path<Uuid>,

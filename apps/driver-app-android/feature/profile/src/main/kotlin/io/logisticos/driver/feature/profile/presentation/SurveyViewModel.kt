@@ -19,6 +19,18 @@ import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import javax.inject.Inject
 
+/** A survey photo on this screen: taken here (with its file) or recorded earlier. */
+data class PhotoItem(
+    val kind: String,
+    val caption: String,
+    val room: String?,
+    /** uploading | done | failed */
+    val status: String,
+    val localPath: String? = null,
+    val shutterAtMillis: Long = 0,
+    val error: String? = null,
+)
+
 data class SurveyUiState(
     val loading: Boolean = true,
     val error: String? = null,
@@ -41,6 +53,7 @@ data class SurveyUiState(
     val approveError: String? = null,
     /** Approved on this phone: where the customer pays. */
     val checkoutUrl: String? = null,
+    val photos: List<PhotoItem> = emptyList(),
 ) {
     /** The addendum still waiting on the customer — this survey's or an earlier one's. */
     val pendingAddendum: AddendumDto?
@@ -65,6 +78,7 @@ data class SurveyUiState(
 @HiltViewModel
 class SurveyViewModel @Inject constructor(
     private val api: HomeMoveApiService,
+    private val uploader: io.logisticos.driver.feature.profile.data.SurveyPhotoUploader,
 ) : ViewModel() {
 
     private var shipmentId: String? = null
@@ -93,8 +107,12 @@ class SurveyViewModel @Inject constructor(
                     Triple(d, catalogue, addendum.await())
                 }
             }.onSuccess { (detail, catalogue, addendum) ->
+                // Photos recorded before (another session) show beside new ones.
+                val earlier = runCatching { api.photos(id).data }.getOrDefault(emptyList())
+                    .map { p -> PhotoItem(kind = p.kind, caption = p.caption, room = p.room, status = "done") }
                 _uiState.update {
                     it.copy(
+                        photos = earlier + it.photos.filter { p -> p.localPath != null },
                         loading = false,
                         move = detail.data,
                         leadName = detail.leadName,
@@ -135,6 +153,36 @@ class SurveyViewModel @Inject constructor(
     fun removeExtra(index: Int) = _uiState.update { s -> s.copy(extras = s.extras.filterIndexed { i, _ -> i != index }) }
 
     fun setNote(note: String) = _uiState.update { it.copy(note = note.take(500)) }
+
+    /**
+     * A photo was taken: record it on the move. [shutterAtMillis] is read in
+     * the camera's result callback — the physical event — never later.
+     */
+    fun photoTaken(path: String, kind: String, room: String?, caption: String, shutterAtMillis: Long) {
+        val item = PhotoItem(kind = kind, caption = caption.trim(), room = room, status = "uploading", localPath = path, shutterAtMillis = shutterAtMillis)
+        _uiState.update { it.copy(photos = it.photos + item) }
+        upload(item)
+    }
+
+    /** Try a failed photo again. */
+    fun retryPhoto(path: String) {
+        val item = _uiState.value.photos.firstOrNull { it.localPath == path && it.status == "failed" } ?: return
+        replace(path) { it.copy(status = "uploading", error = null) }
+        upload(item)
+    }
+
+    private fun upload(item: PhotoItem) {
+        val id = shipmentId ?: return
+        val path = item.localPath ?: return
+        viewModelScope.launch {
+            runCatching { uploader.upload(id, java.io.File(path), item.kind, item.room, item.caption, item.shutterAtMillis) }
+                .onSuccess { replace(path) { p -> p.copy(status = "done") } }
+                .onFailure { e -> replace(path) { p -> p.copy(status = "failed", error = e.readable("Didn't upload")) } }
+        }
+    }
+
+    private fun replace(path: String, f: (PhotoItem) -> PhotoItem) =
+        _uiState.update { s -> s.copy(photos = s.photos.map { if (it.localPath == path) f(it) else it }) }
 
     /** The customer approves on this phone with the code they were sent. */
     fun approveOnSite(code: String) {

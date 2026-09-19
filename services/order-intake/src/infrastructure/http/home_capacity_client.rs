@@ -11,6 +11,7 @@ use crate::domain::value_objects::home_move::DayCapacity;
 pub struct HomeTeamsClient {
     driver_ops_url: Option<String>,
     dispatch_url: Option<String>,
+    pod_url: Option<String>,
     http: reqwest::Client,
 }
 
@@ -69,7 +70,25 @@ impl HomeTeamsClient {
             .timeout(std::time::Duration::from_secs(4))
             .build()
             .unwrap_or_default();
-        Self { driver_ops_url, dispatch_url, http }
+        Self { driver_ops_url, dispatch_url, pod_url: None, http }
+    }
+
+    /// Where survey photos are stored (pod's media store).
+    #[must_use]
+    pub fn with_pod(mut self, pod_url: Option<String>) -> Self {
+        self.pod_url = pod_url;
+        self
+    }
+
+    /// Viewable URLs for survey photos, by key. Empty when pod is not configured.
+    pub async fn media_urls(&self, keys: &[String]) -> anyhow::Result<std::collections::HashMap<String, String>> {
+        let Some(base) = self.pod_url.as_deref() else { return Ok(Default::default()) };
+        let url = format!("{}/v1/internal/media/urls", base.trim_end_matches('/'));
+        let resp = self.http.post(url).json(&serde_json::json!({ "keys": keys })).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("pod media urls returned {}", resp.status());
+        }
+        Ok(resp.json::<Envelope<std::collections::HashMap<String, String>>>().await?.data)
     }
 
     /// None when driver-ops is not configured; an error when it fails.

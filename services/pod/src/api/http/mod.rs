@@ -24,6 +24,7 @@ fn internal_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/internal/pop-status",           get(pod::pop_status_internal))
         .route("/internal/pop-evidence/:shipment_id", get(pod::get_evidence_internal))
+        .route("/internal/media/urls",           post(pod::internal_media_urls))
 }
 
 fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -51,6 +52,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/pod/pops/:id/upload-url",       post(pod::get_pop_upload_url))
         .route("/pod/pops/:id/submit",           put(pod::submit_pickup))
         .route("/pod/pops/:id",                  get(pod::get_pop))
+        // Whole-home survey photos (condition evidence, access constraints)
+        .route("/pod/survey-photos/upload-url",  post(pod::survey_photo_upload_url))
         // OTP management
         .route("/otps/generate",                 post(pod::generate_otp))
         .route("/otps/verify",                   post(pod::verify_otp))

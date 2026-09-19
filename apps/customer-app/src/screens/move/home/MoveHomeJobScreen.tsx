@@ -6,12 +6,12 @@
  * as booked). The price never goes down; the addendum only adds.
  */
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  approveAddendum, declineAddendum, getAddendum, getHomeMove, m3, slotDay, slotHours, teamLine,
-  type Addendum, type BookedHomeMove,
+  approveAddendum, declineAddendum, getAddendum, getHomeMove, getHomePhotos, m3, slotDay, slotHours, teamLine,
+  type Addendum, type BookedHomeMove, type SurveyPhoto,
 } from '../../../services/api/homeMove';
 import { formatMoney } from '../format';
 import { M } from '../theme';
@@ -26,6 +26,7 @@ export function MoveHomeJobScreen({ navigation, route }: { navigation: any; rout
   const [move, setMove] = useState<BookedHomeMove | null | undefined>(undefined);
   const [lead, setLead] = useState<string | null>(null);
   const [addendum, setAddendum] = useState<Addendum | null>(null);
+  const [photos, setPhotos] = useState<SurveyPhoto[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -36,6 +37,7 @@ export function MoveHomeJobScreen({ navigation, route }: { navigation: any; rout
       setMove(res?.move ?? null);
       setLead(res?.lead ?? null);
       setAddendum(res ? await getAddendum(id) : null);
+      setPhotos(res ? await getHomePhotos(id) : []);
       setError(null);
     } catch (e) {
       setError(apiMessage(e));
@@ -161,6 +163,28 @@ export function MoveHomeJobScreen({ navigation, route }: { navigation: any; rout
                     {addendum.status === 'pending' && <GhostButton label="Decline" onPress={() => decline(addendum)} />}
                   </View>
                 )}
+              </>
+            )}
+
+            {photos.length > 0 && (
+              <>
+                <Label>Before the move</Label>
+                <Panel>
+                  <Text style={h.note}>What your crew lead recorded at the survey: how things were, and what will slow the move. It protects you and them if anything is questioned later.</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
+                    {photos.map((p) => (
+                      <View key={p.id} style={{ width: '47%', flexGrow: 1 }}>
+                        {p.url ? (
+                          <Image source={{ uri: p.url }} style={{ width: '100%', aspectRatio: 4 / 3, borderRadius: 12, backgroundColor: M.hairline }} accessibilityLabel={p.caption || (p.kind === 'access' ? 'Access photo' : 'Condition photo')} />
+                        ) : (
+                          <View style={{ width: '100%', aspectRatio: 4 / 3, borderRadius: 12, backgroundColor: M.hairline }} />
+                        )}
+                        <Text style={[h.note, { marginTop: 4, letterSpacing: 1 }]}>{p.kind === 'access' ? 'ACCESS' : 'CONDITION'}</Text>
+                        {!!p.caption && <Text style={h.note} numberOfLines={2}>{p.caption}</Text>}
+                      </View>
+                    ))}
+                  </View>
+                </Panel>
               </>
             )}
 

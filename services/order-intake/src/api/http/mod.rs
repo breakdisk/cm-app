@@ -41,6 +41,7 @@ fn acting_as(claims: &AuthClaims) -> ActingAs {
 pub mod accessorials;
 pub mod home_move;
 pub mod home_waitlist;
+pub mod home_photos;
 pub mod quote;
 
 // ---------------------------------------------------------------------------
@@ -500,6 +501,7 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments/:id/home/addendum/:addendum_id/approve", post(home_move::approve_addendum))
         .route("/shipments/:id/home/addendum/:addendum_id/decline", post(home_move::decline_addendum))
         .route("/shipments/:id/home/addendum/:addendum_id/approve-on-site", post(home_move::approve_on_site))
+        .route("/shipments/:id/home/photos",   post(home_photos::add).get(home_photos::list))
         .route("/shipments/:id/cancel",     post(cancel_shipment))
         .route("/shipments/:id/cancellation-preview", get(cancellation_preview))
         .route("/shipments/:id/reschedule", post(reschedule_shipment))

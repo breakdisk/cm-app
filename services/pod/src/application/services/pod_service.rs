@@ -207,6 +207,32 @@ impl PodService {
         })
     }
 
+    /// A presigned PUT for a whole-home survey photo — condition evidence or
+    /// an access constraint. Keyed under the tenant and shipment, which is
+    /// what order-intake checks before it records the photo against the move.
+    pub async fn survey_upload_url(&self, tenant_id: &TenantId, shipment_id: Uuid, content_type: &str) -> AppResult<UploadUrlResponse> {
+        if !is_allowed_content_type(content_type) {
+            return Err(AppError::Validation("A survey photo is a JPEG, PNG or WebP".into()));
+        }
+        let s3_key = survey_key(tenant_id.inner(), shipment_id, content_type);
+        let presigned = self.pod_storage
+            .presign_upload(&s3_key, content_type, 900)
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(UploadUrlResponse { upload_url: presigned.url, s3_key, upload_headers: presigned.headers })
+    }
+
+    /// Viewable URLs for survey photos, an hour each. Only `survey/` keys:
+    /// this is not a way to read a POD's evidence.
+    pub async fn survey_media_urls(&self, keys: &[String]) -> AppResult<std::collections::HashMap<String, String>> {
+        let mut out = std::collections::HashMap::new();
+        for key in keys.iter().filter(|k| is_survey_key(k)).take(100) {
+            let url = self.pod_storage.presign_download(key, 3_600).await.map_err(AppError::Internal)?;
+            out.insert(key.clone(), url);
+        }
+        Ok(out)
+    }
+
     /// Step 2c: Register a completed photo upload (called after driver finishes S3 PUT).
     pub async fn attach_photo(&self, cmd: AttachPhotoCommand) -> AppResult<()> {
         let mut pod = self.load_pod(cmd.pod_id).await?;
@@ -993,5 +1019,34 @@ impl PodService {
             return Err(AppError::BusinessRule("POD has already been submitted".into()));
         }
         Ok(())
+    }
+}
+
+/// `survey/{tenant}/{shipment}/{uuid}.{ext}`
+pub fn survey_key(tenant_id: Uuid, shipment_id: Uuid, content_type: &str) -> String {
+    let ext = if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" };
+    format!("survey/{tenant_id}/{shipment_id}/{}.{ext}", Uuid::new_v4())
+}
+
+pub fn is_survey_key(key: &str) -> bool {
+    key.starts_with("survey/") && !key.contains("..") && key.len() <= 200
+}
+
+#[cfg(test)]
+mod survey_key_tests {
+    use super::{is_survey_key, survey_key};
+    use uuid::Uuid;
+
+    #[test]
+    fn a_survey_key_names_tenant_and_shipment_and_only_survey_keys_are_signed() {
+        let (t, sh) = (Uuid::new_v4(), Uuid::new_v4());
+        let k = survey_key(t, sh, "image/jpeg");
+        assert!(k.starts_with(&format!("survey/{t}/{sh}/")));
+        assert!(k.ends_with(".jpg"));
+        assert!(survey_key(t, sh, "image/png").ends_with(".png"));
+        assert!(is_survey_key(&k));
+        // Not a way to read a POD's evidence.
+        assert!(!is_survey_key("pod/abc/def.jpg"));
+        assert!(!is_survey_key("survey/../pod/x.jpg"));
     }
 }
