@@ -85,6 +85,8 @@ pub trait RewardsStore: Send + Sync {
     async fn unlink_corporate(&self, _tenant: Uuid, _account: Uuid) -> anyhow::Result<bool> { Ok(false) }
     async fn list_corporates(&self, _tenant: Uuid) -> anyhow::Result<Vec<Corporate>> { Ok(Vec::new()) }
     async fn create_corporate(&self, _tenant: Uuid, _c: &NewCorporate) -> anyhow::Result<Option<Corporate>> { Ok(None) }
+    /// False when there is no such company rate in this tenant.
+    async fn set_corporate_active(&self, _tenant: Uuid, _id: Uuid, _active: bool) -> anyhow::Result<bool> { Ok(false) }
 }
 
 fn to_tier(r: &PgRow) -> Tier {
@@ -456,5 +458,15 @@ impl RewardsStore for PgPromotionsStore {
         .fetch_optional(self.pool())
         .await?;
         Ok(row.as_ref().map(to_corporate))
+    }
+
+    async fn set_corporate_active(&self, tenant: Uuid, id: Uuid, active: bool) -> anyhow::Result<bool> {
+        let done = sqlx::query("UPDATE promotions.corporate_accounts SET active = $3 WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant)
+            .bind(id)
+            .bind(active)
+            .execute(self.pool())
+            .await?;
+        Ok(done.rows_affected() == 1)
     }
 }

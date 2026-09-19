@@ -566,6 +566,24 @@ pub struct AssignmentRejected {
 ///
 /// A release after grace is not this event: that is a failed stop, published
 /// as `delivery.failed` with reason `customer_absent`.
+/// A completed move lifted an account to a higher loyalty tier. Only
+/// upgrades are published: a tier lost to the 12-month window going by is
+/// not news anyone wants pushed at them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierChanged {
+    pub tenant_id:       Uuid,
+    /// Identity user id — the key engagement's push channel looks tokens up by.
+    pub account_id:      Uuid,
+    pub tier_name:       String,
+    /// The tier before, None when this is the account's first.
+    pub previous_tier:   Option<String>,
+    /// What the tier gives, in words, e.g. "10% off extras on every move".
+    pub perk:            String,
+    /// Completed moves in the last 12 months, this one included.
+    pub moves:           i64,
+    pub reached_at:      chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobDropped {
     pub tenant_id:    Uuid,

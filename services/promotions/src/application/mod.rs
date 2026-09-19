@@ -39,6 +39,45 @@ impl Rules {
 /// How far back completed moves count toward a tier.
 const TIER_WINDOW_DAYS: i64 = 365;
 
+/// A completion older than this announces nothing. The consumer reads from
+/// the start of retention, so a first deploy replays history — every tier
+/// crossed last month would otherwise be pushed at once.
+const TIER_NEWS_MAX_AGE_HOURS: i64 = 24;
+
+/// Where tier upgrades are announced: Kafka in production, nowhere unless a
+/// test asks.
+#[async_trait::async_trait]
+pub trait TierEvents: Send + Sync {
+    async fn tier_changed(&self, e: &logisticos_events::payloads::TierChanged) -> anyhow::Result<()>;
+}
+
+struct NoTierEvents;
+
+#[async_trait::async_trait]
+impl TierEvents for NoTierEvents {
+    async fn tier_changed(&self, _e: &logisticos_events::payloads::TierChanged) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// What a tier gives, in words for a push: its discount when it has one,
+/// else the admin's own perk text.
+pub fn tier_perk_text(t: &Tier) -> String {
+    if t.accessorial_bps > 0 {
+        let bps = t.accessorial_bps.clamp(0, 10_000);
+        let pct = if bps % 100 == 0 {
+            (bps / 100).to_string()
+        } else {
+            format!("{:.2}", bps as f64 / 100.0).trim_end_matches('0').trim_end_matches('.').to_owned()
+        };
+        format!("{pct}% off extras on every move")
+    } else if !t.perk.trim().is_empty() {
+        t.perk.trim().to_owned()
+    } else {
+        "Member benefits on every move".to_owned()
+    }
+}
+
 // ── Views ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -290,11 +329,17 @@ pub struct Promotions {
     store: Arc<dyn PromotionsStore>,
     rewards: Arc<dyn RewardsStore>,
     rules: Rules,
+    tier_events: Arc<dyn TierEvents>,
 }
 
 impl Promotions {
     pub fn new(store: Arc<dyn PromotionsStore>, rewards: Arc<dyn RewardsStore>, rules: Rules) -> Self {
-        Self { store, rewards, rules }
+        Self { store, rewards, rules, tier_events: Arc::new(NoTierEvents) }
+    }
+
+    pub fn with_tier_events(mut self, events: Arc<dyn TierEvents>) -> Self {
+        self.tier_events = events;
+        self
     }
 
     // ── Offers and codes ─────────────────────────────────────────────────────
@@ -508,10 +553,11 @@ impl Promotions {
     }
 
     /// A move completed. If it was an invitee's first, their referrer is paid.
-    pub async fn record_completed(&self, shipment: Uuid, at: DateTime<Utc>) -> AppResult<()> {
+    pub async fn record_completed(&self, shipment: Uuid, at: DateTime<Utc>, now: DateTime<Utc>) -> AppResult<()> {
         let Some((tenant, invitee)) = self.rewards.record_move_completed(shipment, at).await.map_err(AppError::Internal)? else {
             return Ok(());
         };
+        self.announce_tier(tenant, invitee, at, now).await;
         let Some((referral, referrer)) = self.rewards.unpaid_referral_for(tenant, invitee).await.map_err(AppError::Internal)? else {
             return Ok(());
         };
@@ -525,6 +571,39 @@ impl Promotions {
             tracing::info!(%tenant, %referrer, %invitee, amount, "referral paid");
         }
         Ok(())
+    }
+
+    /// The move just recorded lifted the account a rung: say so. Best-effort —
+    /// the completion is already recorded, and a retry would not see it as
+    /// new, so a failure here is logged rather than failing the event.
+    async fn announce_tier(&self, tenant: Uuid, account: Uuid, at: DateTime<Utc>, now: DateTime<Utc>) {
+        if now - at > Duration::hours(TIER_NEWS_MAX_AGE_HOURS) {
+            return;
+        }
+        let announced: anyhow::Result<()> = async {
+            let ladder = self.rewards.tiers(tenant).await?;
+            let moves = self.rewards.completed_moves_since(tenant, account, at - Duration::days(TIER_WINDOW_DAYS)).await?;
+            let Some(reached) = tier_for(&ladder, moves) else { return Ok(()) };
+            let before = tier_for(&ladder, moves - 1);
+            if before.is_some_and(|b| b.min_moves >= reached.min_moves) {
+                return Ok(());
+            }
+            self.tier_events
+                .tier_changed(&logisticos_events::payloads::TierChanged {
+                    tenant_id: tenant,
+                    account_id: account,
+                    tier_name: reached.name.clone(),
+                    previous_tier: before.map(|b| b.name.clone()),
+                    perk: tier_perk_text(reached),
+                    moves,
+                    reached_at: at,
+                })
+                .await
+        }
+        .await;
+        if let Err(e) = announced {
+            tracing::warn!(%tenant, %account, err = %e, "tier upgrade not announced — the tier itself applies regardless");
+        }
     }
 
     async fn moves_this_year(&self, tenant: Uuid, account: Uuid, now: DateTime<Utc>) -> AppResult<i64> {
@@ -740,6 +819,16 @@ impl Promotions {
         validate_ladder(&tiers).map_err(AppError::Validation)?;
         let saved = self.rewards.replace_tiers(tenant, &tiers).await.map_err(AppError::Internal)?;
         Ok(saved.iter().map(TierView::from).collect())
+    }
+
+    /// A company rate switched off stops applying to every linked account at
+    /// their next quote; the links stay, so switching it back on restores them.
+    pub async fn set_corporate_active(&self, tenant: Uuid, id: Uuid, active: bool) -> AppResult<()> {
+        if self.rewards.set_corporate_active(tenant, id, active).await.map_err(AppError::Internal)? {
+            Ok(())
+        } else {
+            Err(AppError::NotFound { resource: "Company rate", id: id.to_string() })
+        }
     }
 
     pub async fn list_corporates(&self, tenant: Uuid) -> AppResult<Vec<Corporate>> {

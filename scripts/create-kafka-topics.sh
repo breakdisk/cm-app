@@ -256,6 +256,10 @@ create_topic "logisticos.ai.escalation.resolved"
 # (re-queue) and delivery-experience (clear the driver off the tracking).
 create_topic "logisticos.driver.job.dropped"
 
+# A completed move lifted an account to a higher loyalty tier. Published by
+# promotions, consumed by engagement (the push to the customer).
+create_topic "logisticos.promotions.tier.changed"
+
 # Identity. Both of these DID exist on the broker -- auto-created because a
 # publish happened to land before the consumer subscribed. That is the coin
 # flip this script exists to remove, not a reprieve.

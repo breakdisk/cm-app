@@ -129,6 +129,11 @@ pub const AGENT_ESCALATION_RESOLVED: &str = "logisticos.ai.escalation.resolved";
 // Inbound channel messages (customer → platform)
 pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbound";
 
+// Promotions
+/// A completed move lifted an account to a higher loyalty tier. Published by
+/// promotions; engagement pushes it to the customer.
+pub const TIER_CHANGED:              &str = "logisticos.promotions.tier.changed";
+
 // ── OmniDeliv (hyperlocal delivery product) ─────────────────────────────────
 //
 // Namespaced under `omnideliv.` rather than `logisticos.` because it is a
@@ -215,6 +220,7 @@ mod tests {
             RECEIPT_EMAIL_REQUESTED,
             SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED, AGENT_ESCALATION_RESOLVED,
             WHATSAPP_INBOUND,
+            TIER_CHANGED,
         ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),

@@ -176,6 +176,7 @@ create_topic "logisticos.driver.pickup.completed"      3 "$DEFAULT_RF" "$RETENTI
 create_topic "logisticos.driver.delivery.completed"    3 "$DEFAULT_RF" "$RETENTION_7D"
 create_topic "logisticos.driver.delivery.failed"       3 "$DEFAULT_RF" "$RETENTION_7D"
 create_topic "logisticos.driver.job.dropped"           3 "$DEFAULT_RF" "$RETENTION_7D"
+create_topic "logisticos.promotions.tier.changed"      3 "$DEFAULT_RF" "$RETENTION_7D"
 create_topic "logisticos.pod.captured"                 3 "$DEFAULT_RF" "$RETENTION_7D"
 create_topic "logisticos.payments.cod.collected"       3 "$DEFAULT_RF" "$RETENTION_7D"
 create_topic "logisticos.payments.invoice.generated"   3 "$DEFAULT_RF" "$RETENTION_7D"

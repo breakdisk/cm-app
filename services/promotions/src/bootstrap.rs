@@ -8,7 +8,7 @@ use crate::api::http::{router, AppState};
 use crate::application::{Promotions, Rules};
 use crate::config::Config;
 use crate::domain::window::WindowRule;
-use crate::infrastructure::{db::PgPromotionsStore, events_consumer};
+use crate::infrastructure::{db::PgPromotionsStore, events_consumer, tier_events::KafkaTierEvents};
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load promotions config")?;
@@ -55,7 +55,7 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     let store = Arc::new(PgPromotionsStore::new(pool.clone()));
-    let promotions = Arc::new(Promotions::new(
+    let promotions = Promotions::new(
         store.clone(),
         store,
         Rules {
@@ -66,7 +66,17 @@ pub async fn run() -> anyhow::Result<()> {
             referral_reward_cents: p.referral_reward_cents.max(0),
             credit_currency: p.credit_currency.trim().to_ascii_uppercase(),
         },
-    ));
+    );
+    // Tier upgrades go to engagement as a push. Without a producer the tiers
+    // still apply; the customer just is not told the moment they move up.
+    let promotions = match logisticos_events::KafkaProducer::new(&cfg.kafka.brokers) {
+        Ok(producer) => promotions.with_tier_events(Arc::new(KafkaTierEvents::new(producer))),
+        Err(e) => {
+            tracing::error!(err = %e, "Kafka producer unavailable — tier upgrades will not be pushed");
+            promotions
+        }
+    };
+    let promotions = Arc::new(promotions);
 
     // Bookings, completions and cancellations: the loyalty count, referral
     // rewards, and codes and credit given back. Spawned, never awaited into

@@ -157,6 +157,13 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &["whatsapp", "push"],
         }),
+        // A completed move lifted the customer a loyalty tier. Push only: it
+        // is good news, not something worth an SMS.
+        topics::TIER_CHANGED => Some(EventNotificationMapping {
+            template_id: "tier_upgraded",
+            priority: NotificationPriority::Normal,
+            channels: &["push"],
+        }),
         _ => None,
     }
 }
@@ -237,6 +244,7 @@ pub async fn process_event(
     let is_tenant_finalized   = event_type == topics::TENANT_FINALIZED;
     let is_otp_event          = event_type == topics::OTP_REQUESTED;
     let is_support_resolution = event_type == topics::AGENT_ESCALATION_RESOLVED;
+    let is_tier_changed       = event_type == topics::TIER_CHANGED;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
@@ -254,7 +262,23 @@ pub async fn process_event(
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_support_resolution {
+    let (customer_id, phone, email, vars) = if is_tier_changed {
+        // `account_id` is the identity user id promotions keys an account
+        // by — the same key the push channel looks device tokens up with.
+        let Some(account_id) = data["account_id"].as_str()
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        else {
+            warn!(event_type, "TIER_CHANGED missing account_id — skipping notification");
+            return;
+        };
+        let vars = serde_json::json!({
+            "tier_name": data["tier_name"].as_str().unwrap_or("a new tier"),
+            "perk":      data["perk"].as_str().unwrap_or("member benefits"),
+            // Opens Offers, where the tier card and the ladder are.
+            "deep_link": "logisticos://offers",
+        });
+        (account_id, String::new(), String::new(), vars)
+    } else if is_support_resolution {
         // Escalated AI chat answered by a human. `customer_id` here is the
         // identity user_id of whoever was chatting — the same key the push
         // channel uses for its device-token lookup.
@@ -511,6 +535,10 @@ pub async fn process_event(
                  This code expires in 5 minutes. Do not share it with anyone.\n\n\
                  — CargoMarket".to_owned(),
             ),
+            "tier_upgraded" => (
+                Some(format!("You're now {}", vars["tier_name"].as_str().unwrap_or("a member"))),
+                "You've reached {{tier_name}}: {{perk}}. It comes off your moves by itself — no code needed.".to_owned(),
+            ),
             "support_resolution" => (
                 Some("Your support request has an answer".to_owned()),
                 "A member of our support team has replied to your request:\n\n\
@@ -695,6 +723,16 @@ pub async fn process_event(
                 continue;
             }
         };
+
+        // A push carries its deep link in the payload's data, which is where
+        // the app reads it on tap. Until this, only campaigns set it — the
+        // invoice-receipt and support-answer pushes named a link in their
+        // variables that never reached the phone.
+        if *channel == "push" {
+            if let Some(link) = vars["deep_link"].as_str().filter(|l| !l.is_empty()) {
+                notification.extra_data = Some(serde_json::json!({ "deep_link": link }));
+            }
+        }
 
         let outcome = notification_service.dispatch(&mut notification).await;
 

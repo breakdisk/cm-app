@@ -55,7 +55,7 @@ async fn handle(promotions: &Promotions, topic: &str, payload: &[u8]) -> anyhow:
                 return Ok(());
             };
             let done_at = time_at(data, "completed_at").unwrap_or(at);
-            promotions.record_completed(shipment, done_at).await?;
+            promotions.record_completed(shipment, done_at, Utc::now()).await?;
         }
         topics::SHIPMENT_CANCELLED => {
             let Some(shipment) = uuid_at(data, "shipment_id") else {

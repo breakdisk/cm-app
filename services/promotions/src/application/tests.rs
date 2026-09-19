@@ -150,6 +150,16 @@ impl PromotionsStore for Fake {
 
 #[async_trait]
 impl RewardsStore for Fake {
+    async fn set_corporate_active(&self, tenant: Uuid, id: Uuid, active: bool) -> anyhow::Result<bool> {
+        let _ = tenant;
+        match self.corporates.lock().unwrap().iter_mut().find(|c| c.id == id) {
+            Some(c) => {
+                c.active = active;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
     async fn tiers(&self, _tenant: Uuid) -> anyhow::Result<Vec<Tier>> {
         Ok(self.tiers.lock().unwrap().clone())
     }
@@ -560,8 +570,8 @@ async fn a_friends_first_completed_move_pays_the_referrer_once() {
     let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
     p.record_booked(TENANT, FRIEND, first, tuesday()).await.unwrap();
     p.record_booked(TENANT, FRIEND, second, tuesday()).await.unwrap();
-    p.record_completed(first, tuesday()).await.unwrap();
-    p.record_completed(second, tuesday()).await.unwrap();
+    p.record_completed(first, tuesday(), tuesday()).await.unwrap();
+    p.record_completed(second, tuesday(), tuesday()).await.unwrap();
 
     assert_eq!(fake.balance(TENANT, ME, "PHP"), 3_000);
 }
@@ -582,7 +592,91 @@ async fn referral_rewards_off_pay_nothing_but_still_record_the_join() {
     p.claim_referral(TENANT, FRIEND, &code).await.unwrap();
     let shipment = Uuid::new_v4();
     p.record_booked(TENANT, FRIEND, shipment, tuesday()).await.unwrap();
-    p.record_completed(shipment, tuesday()).await.unwrap();
+    p.record_completed(shipment, tuesday(), tuesday()).await.unwrap();
     assert_eq!(fake.balance(TENANT, ME, "PHP"), 0);
     assert_eq!(p.referrals(TENANT, ME, tuesday()).await.unwrap().invitees.len(), 1);
+}
+
+// ── Tier upgrades ────────────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct Announced(Mutex<Vec<logisticos_events::payloads::TierChanged>>);
+
+#[async_trait]
+impl TierEvents for Announced {
+    async fn tier_changed(&self, e: &logisticos_events::payloads::TierChanged) -> anyhow::Result<()> {
+        self.0.lock().unwrap().push(e.clone());
+        Ok(())
+    }
+}
+
+fn with_ladder() -> (Promotions, Arc<Fake>, Arc<Announced>) {
+    let bronze = Tier { id: Uuid::new_v4(), name: "Bronze".into(), min_moves: 1, perk: "Priority support".into(), accessorial_bps: 0, cap_cents: 0, referral_multiplier: 1 };
+    let fake = Arc::new(Fake { tiers: Mutex::new(vec![bronze, silver()]), ..Default::default() });
+    let announced = Arc::new(Announced::default());
+    let p = Promotions::new(fake.clone(), fake.clone(), rules(0)).with_tier_events(announced.clone());
+    (p, fake, announced)
+}
+
+async fn complete_one(p: &Promotions, at: DateTime<Utc>, now: DateTime<Utc>) {
+    let shipment = Uuid::new_v4();
+    p.record_booked(TENANT, ME, shipment, at).await.unwrap();
+    p.record_completed(shipment, at, now).await.unwrap();
+}
+
+#[tokio::test]
+async fn crossing_a_rung_is_announced_once_with_what_it_gives() {
+    let (p, _, announced) = with_ladder();
+    complete_one(&p, tuesday(), tuesday()).await; // 1 → Bronze
+    complete_one(&p, tuesday(), tuesday()).await; // 2 → Silver
+    complete_one(&p, tuesday(), tuesday()).await; // 3 → still Silver
+
+    let got = announced.0.lock().unwrap().clone();
+    assert_eq!(got.len(), 2);
+    assert_eq!((got[0].tier_name.as_str(), got[0].previous_tier.as_deref()), ("Bronze", None));
+    assert_eq!(got[0].perk, "Priority support");
+    assert_eq!((got[1].tier_name.as_str(), got[1].previous_tier.as_deref()), ("Silver", Some("Bronze")));
+    assert_eq!(got[1].perk, "15% off extras on every move");
+    assert_eq!(got[1].account_id, ME);
+}
+
+#[tokio::test]
+async fn a_replayed_old_completion_counts_but_is_not_pushed() {
+    let (p, _, announced) = with_ladder();
+    complete_one(&p, tuesday(), tuesday() + Duration::days(3)).await;
+    assert!(announced.0.lock().unwrap().is_empty());
+    assert_eq!(p.loyalty(TENANT, ME, true, tuesday()).await.unwrap().tier.map(|t| t.name).as_deref(), Some("Bronze"));
+}
+
+#[tokio::test]
+async fn a_redelivered_completion_announces_nothing_new() {
+    let (p, _, announced) = with_ladder();
+    let shipment = Uuid::new_v4();
+    p.record_booked(TENANT, ME, shipment, tuesday()).await.unwrap();
+    p.record_completed(shipment, tuesday(), tuesday()).await.unwrap();
+    p.record_completed(shipment, tuesday(), tuesday()).await.unwrap();
+    assert_eq!(announced.0.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_fractional_discount_reads_without_trailing_zeros() {
+    let t = Tier { accessorial_bps: 1_250, ..silver() };
+    assert_eq!(tier_perk_text(&t), "12.5% off extras on every move");
+}
+
+#[tokio::test]
+async fn a_company_rate_switched_off_stops_applying_and_back_on_restores_it() {
+    let (p, fake) = setup(Fake { corporates: Mutex::new(vec![acme()]), ..Default::default() }, 0);
+    let id = fake.corporates.lock().unwrap()[0].id;
+    fake.links.lock().unwrap().push((TENANT, ME, id));
+
+    p.set_corporate_active(TENANT, id, false).await.unwrap();
+    let off = p.price(&quote(None), tuesday()).await.unwrap();
+    assert!(off.lines.iter().all(|l| l.kind != LineKind::Corporate));
+
+    p.set_corporate_active(TENANT, id, true).await.unwrap();
+    let on = p.price(&quote(None), tuesday()).await.unwrap();
+    assert!(on.lines.iter().any(|l| l.kind == LineKind::Corporate));
+
+    assert!(p.set_corporate_active(TENANT, Uuid::new_v4(), false).await.is_err());
 }

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -53,7 +53,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/promotions/corporate/me", get(corporate).post(link_corporate).delete(unlink_corporate))
         .route("/v1/promotions/admin/tiers", get(admin_tiers).put(admin_replace_tiers))
         .route("/v1/promotions/admin/corporate-accounts", get(admin_corporates).post(admin_create_corporate))
+        .route("/v1/promotions/admin/corporate-accounts/:id/deactivate", post(admin_corporate_off))
+        .route("/v1/promotions/admin/corporate-accounts/:id/activate", post(admin_corporate_on))
         .route("/v1/promotions/admin/credits", post(admin_grant_credit))
+        .route("/v1/promotions/admin/credits/:account_id", get(admin_account_credit))
         .route("/v1/promotions/admin/offers", get(admin_list).post(admin_create))
         .route("/v1/promotions/admin/offers/:id/deactivate", post(admin_deactivate))
         .route("/v1/promotions/admin/offers/:id/activate", post(admin_activate))
@@ -154,6 +157,13 @@ async fn admin_tiers(State(s): Shared, claims: AuthClaims) -> Result<Json<serde_
 /// `PUT /v1/promotions/admin/tiers` — the ladder, replaced whole.
 async fn admin_replace_tiers(State(s): Shared, claims: AuthClaims, Json(tiers): Json<Vec<NewTier>>) -> Result<Json<serde_json::Value>, AppError> {
     claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    // Quotes apply a tier only where the plan includes loyalty. A ladder set
+    // without it would be advertised — and pushed — but never taken off.
+    if !tiers.is_empty() && !claims.has_feature("loyalty_program") {
+        return Err(AppError::BusinessRule(
+            "Your plan doesn't include the loyalty programme, so tiers would never apply — upgrade the plan first".into(),
+        ));
+    }
     let ladder = s.promotions.replace_ladder(claims.tenant_id, tiers).await?;
     tracing::info!(tenant_id = %claims.tenant_id, user_id = %claims.user_id, tiers = ladder.len(), "loyalty ladder replaced");
     Ok(Json(serde_json::json!({ "data": ladder })))
@@ -173,6 +183,40 @@ async fn admin_create_corporate(
     let corp = s.promotions.create_corporate(claims.tenant_id, req).await?;
     tracing::info!(tenant_id = %claims.tenant_id, user_id = %claims.user_id, code = %corp.code, "corporate rate created");
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "data": corp }))))
+}
+
+async fn admin_corporate_off(State(s): Shared, claims: AuthClaims, Path(id): Path<Uuid>) -> Result<StatusCode, AppError> {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    s.promotions.set_corporate_active(claims.tenant_id, id, false).await?;
+    tracing::info!(tenant_id = %claims.tenant_id, user_id = %claims.user_id, corporate_id = %id, "corporate rate switched off");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn admin_corporate_on(State(s): Shared, claims: AuthClaims, Path(id): Path<Uuid>) -> Result<StatusCode, AppError> {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    s.promotions.set_corporate_active(claims.tenant_id, id, true).await?;
+    tracing::info!(tenant_id = %claims.tenant_id, user_id = %claims.user_id, corporate_id = %id, "corporate rate switched on");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct CurrencyQuery {
+    currency: Option<String>,
+}
+
+/// `GET /v1/promotions/admin/credits/:account_id` — one customer's balance
+/// and history, for the grant screen. Same permission as granting.
+async fn admin_account_credit(
+    State(s): Shared,
+    claims: AuthClaims,
+    Path(account_id): Path<Uuid>,
+    Query(q): Query<CurrencyQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    claims.require_permission(permissions::BILLING_ADMIN)?;
+    let currency = q.currency.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(str::to_ascii_uppercase);
+    let currency = currency.as_deref().or(claims.currency.as_deref());
+    let view = s.promotions.credit(claims.tenant_id, account_id, currency).await?;
+    Ok(Json(serde_json::json!({ "data": view })))
 }
 
 /// `POST /v1/promotions/admin/credits` — goodwill credit. Money-shaped, so
