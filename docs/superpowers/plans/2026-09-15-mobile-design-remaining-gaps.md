@@ -259,3 +259,34 @@ type-checked and unit-tested but not rendered.
 survey correcting the inventory, promotions on home moves, scan/photo/video capture (no detection
 service), slot capacity (every window is offered), the survey fee's refund under Part C, and road
 distance (straight line, as the rate card).
+
+## Whole-home follow-up — the architect's decisions (2026-09-19)
+
+Decided by the user; **(default)** marks where a range or an unstated case was filled in here and
+is config, not code.
+
+1. **Crew.** The contractor who accepts the job brings the crew the app states. Lead + helpers by
+   size: Studio 1+1, 1BR 1+2, 2BR 1+3, 3BR 1+4, 4BR 1+5. **(default)** 5BR+ 1+6, villa 6BR+ 1+7;
+   offices: up to 10 desks 1+3, 10–30 1+5, 30–75 1+7, whole floor 1+9. Per truck at least one
+   driver and two helpers: crew = max(size table, trucks × 3), plus one helper each for a walk-up,
+   a heavy item and a long carry (the design's access rules). Priced as helpers × hours.
+2. **Multi-truck.** Over **75 m³** the move is a Large Estate: single-truck options (the
+   "fewer trucks, more trips" plan) are locked out. **Model A — Enterprise Team Lead** is built:
+   such a job is offered only to leads tagged multi-truck capable with enough trucks and helpers;
+   they accept one job and bring both trucks. **Model B (paired co-leads) is not built** — it needs
+   multi-driver assignment in dispatch; it is the fallback if the enterprise pool is too thin.
+3. **Customer view.** One line: "Team {lead} · N trucks & M-person crew", once a lead accepts.
+4. **Provider filtering.** Drivers carry service lines (`freight_move`, `home_move`) and coverage
+   (`local`, `international`). Existing drivers default to freight/local; home moves go only to
+   home-move leads, international ones only to international-capable leads.
+5. **Survey addendum.** The surveyor (the team lead) lists additional items, resources and packing
+   materials — only ever adding; the agreed price can never go down. The customer approves or
+   declines in the app; approval charges the difference.
+6. **Promotions on home moves:** unchanged (none).
+7. **Survey fee.** Charged at booking as a deposit credited toward the move. Cancelling more than
+   **(default) 12 h** before the survey (range given 4–12 h) refunds it in full; once the survey is
+   done, or the lead has arrived, it is retained and paid to the lead. A reschedule rolls it over.
+8. **Slot capacity.** Leads set working days and off days and a max jobs per day **(default 1)**.
+   A window is open while available home-move leads for that date exceed moves already booked in
+   it (and multi-truck leads exceed Large Estate moves); full windows grey out, and the response
+   names the next open one. **Waitlist and surge: not built.**
