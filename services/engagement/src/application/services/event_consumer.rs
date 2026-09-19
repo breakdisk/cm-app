@@ -956,7 +956,15 @@ pub async fn handle_campaign_triggered(
         let recipient = match channel_str {
             "whatsapp" | "sms" => r["phone"].as_str().unwrap_or("").to_owned(),
             "email"            => r["email"].as_str().unwrap_or("").to_owned(),
-            "push"             => customer_id.to_string(),
+            // A campaign addresses a CDP profile, whose id is not the app
+            // user's. Its phone and email are the customer's login, so the
+            // device is found by those; the profile id is the fallback.
+            "push" => crate::infrastructure::channels::push::Recipient::contact(
+                tenant_id,
+                r["phone"].as_str().unwrap_or(""),
+                r["email"].as_str().unwrap_or(""),
+            )
+            .unwrap_or_else(|| customer_id.to_string()),
             // Social channels use platform_id (Facebook PSID, Telegram chat_id,
             // Slack user_id, etc.). Falls back to customer_id for stub dispatch.
             "messenger" | "telegram" | "x" | "viber" | "wechat" | "line" | "slack" => {
@@ -1055,9 +1063,12 @@ pub async fn handle_campaign_triggered(
                 &notification.rendered_body,
             );
             let deep_link = data["variables"]["deep_link"].as_str().filter(|s| !s.is_empty());
+            // The address the send went to; for push and the social channels,
+            // the profile's phone or email, so a push campaign reaches the inbox too.
             let address = match channel_str {
                 "email" | "sms" | "whatsapp" => normalise_address(&recipient),
-                _ => None,
+                _ => r["phone"].as_str().and_then(normalise_address)
+                    .or_else(|| r["email"].as_str().and_then(normalise_address)),
             };
             if let Err(e) = db
                 .set_campaign_send_inbox(send_id, tenant_id, &title, &inbox_body, deep_link, address.as_deref())
