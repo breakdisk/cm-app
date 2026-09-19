@@ -232,3 +232,28 @@ earliest-offset replay does not spam). A ladder is refused where the plan lacks 
 so invoice-receipt and support-answer taps never navigated.
 **Still open:** campaign pushes address CDP profile ids, not app user ids; the admin page was
 type-checked and unit-tested but not rendered.
+
+### B — intent routing, done 2026-09-19 (, , )
+- ai-layer : stateless (no session, no tools), one structured answer
+   incl. the property fields, from
+   (default Haiku 4.5). Held to rules: closed intents, clamped numbers,
+  support only with a running job. Plan-gated like chat (); the prompt is never logged.
+- App: Home/Voice → Thinking, whose first step waits on it (5 s); unsure/refused/offline falls back to
+  the regex — and offline, the handoff's home rules run first. Support → Support screen.
+- order-intake 0014 : the parse is stored with the booking, best-effort.
+
+### A — whole-home moves, done 2026-09-19 (, , )
+- order-intake:  (property, survey rule, the arithmetic in integers, the calendar
+  with the two-day survey gap); 0015  (55 design presets as platform defaults,
+  tenant overrides per group); 0016 . ,
+   (server catalogue + server-geocoded distance; token carries the
+  whole job, -discriminated),  (verifies, checks the schedule, mints
+  a parcel-shaped token for the shared create path), .
+   is refused on the parcel endpoint; its schedule is   (it decides the cancellation tier); no 70 kg cap; auto-dispatch off.
+- App: six screens (A1–A6) + Home tile + read-back panel from the prompt.
+**Config:**  (off at 0), , ,
+, , , truck size/payload, .
+**Not built (decisions or services missing):** crew identity (ops assign; no crew model), the survey
+correcting the inventory, promotions on home moves, scan/photo/video capture (no detection service),
+slot capacity (every window is offered), the survey fee's refund per Part C, road distance (straight
+line, as the rate card).
