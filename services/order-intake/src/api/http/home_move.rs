@@ -23,8 +23,8 @@ use crate::api::http::AppState;
 use crate::application::commands::{AddressInput, CreateShipmentCommand, HomeBooking, IntakeInput};
 use crate::domain::value_objects::cancel_authority::is_tenant_wide;
 use crate::domain::value_objects::home_move::{
-    check_schedule, move_slots, price, resolve, survey_slots, CatalogueItem, DeclaredItem, HomePrice, PricedItem,
-    Property, PropertyType, Slot, TruckPlan, SURVEY_LEAD_DAYS,
+    check_schedule, local_today, move_slots, move_window_open, price, resolve, survey_slots, survey_window_open,
+    CatalogueItem, DayCapacity, DeclaredItem, HomePrice, PricedItem, Property, PropertyType, TruckPlan, SURVEY_LEAD_DAYS,
 };
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
 use crate::infrastructure::db::home_catalogue::catalogue_for;
@@ -110,20 +110,98 @@ pub async fn catalogue(
     }})))
 }
 
-/// `GET /v1/shipments/home/slots` — the survey windows and move starts on
-/// offer, and the rule that joins them. The server re-checks the pair at
-/// booking; this is so the app never shows an illegal one.
-pub async fn slots(State(s): State<AppState>, _claims: AuthClaims) -> Result<Json<serde_json::Value>, AppError> {
+#[derive(Debug, Default, Deserialize)]
+pub struct SlotsQuery {
+    /// From the quote: a Large Estate needs a free multi-truck lead.
+    #[serde(default)]
+    pub large_estate: bool,
+    /// From the quote: a move abroad needs an international lead.
+    #[serde(default)]
+    pub international: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SlotView {
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    /// A team is free for it. False greys it out.
+    pub open: bool,
+}
+
+/// The calendar with each window's capacity: the teams driver-ops says the
+/// date has, less the moves and surveys already booked. When capacity cannot
+/// be read, every window is offered and `checked` says it was not counted.
+async fn calendar(
+    s: &AppState,
+    tenant_id: Uuid,
+    large_estate: bool,
+    international: bool,
+) -> Result<(Vec<SlotView>, Vec<SlotView>, bool), AppError> {
+    let rates = &s.svc.home_rates;
+    let offset = rates.utc_offset_minutes;
+    let now = Utc::now();
+    let surveys = survey_slots(now, offset);
+    let moves = move_slots(now, offset);
+    let (Some(first), Some(last)) = (surveys.first().or(moves.first()), moves.last()) else {
+        return Ok((Vec::new(), Vec::new(), false));
+    };
+    let from = local_today(first.starts_at, offset);
+    let to = local_today(last.starts_at, offset);
+
+    let capacity = match s.svc.home_teams.capacity(tenant_id, from, to).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(err = %e, "home-move capacity unreadable — offering every window unchecked");
+            None
+        }
+    };
+    let Some(capacity) = capacity else {
+        let open = |sl: &crate::domain::value_objects::home_move::Slot| SlotView { starts_at: sl.starts_at, ends_at: sl.ends_at, open: true };
+        return Ok((surveys.iter().map(open).collect(), moves.iter().map(open).collect(), false));
+    };
+    let by_date: std::collections::HashMap<chrono::NaiveDate, DayCapacity> =
+        capacity.into_iter().map(|c| (c.date, c)).collect();
+    let booked = home_moves::booked_between(&s.pool, tenant_id, first.starts_at, last.ends_at)
+        .await
+        .map_err(AppError::Internal)?;
+    let none = DayCapacity::default();
+    let cap_of = |at: DateTime<Utc>| by_date.get(&local_today(at, offset)).unwrap_or(&none);
+
+    let survey_view = surveys
+        .iter()
+        .map(|sl| SlotView { starts_at: sl.starts_at, ends_at: sl.ends_at, open: survey_window_open(cap_of(sl.starts_at), &booked, sl.starts_at) })
+        .collect();
+    let move_view = moves
+        .iter()
+        .map(|sl| SlotView {
+            starts_at: sl.starts_at,
+            ends_at: sl.ends_at,
+            open: move_window_open(cap_of(sl.starts_at), &booked, sl.starts_at, large_estate, international, offset),
+        })
+        .collect();
+    Ok((survey_view, move_view, true))
+}
+
+/// `GET /v1/shipments/home/slots?large_estate=&international=` — the survey
+/// windows and move starts, each open or full, the next open move, and the
+/// rule that joins survey and move. The server re-checks at booking; this is
+/// so the app never offers a full window or an illegal pair.
+pub async fn slots(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<SlotsQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
     let rates = &s.svc.home_rates;
     if !rates.offered() {
         return Err(not_offered());
     }
-    let now = Utc::now();
-    let survey: Vec<Slot> = survey_slots(now, rates.utc_offset_minutes);
-    let moves: Vec<Slot> = move_slots(now, rates.utc_offset_minutes);
+    let (survey, moves, checked) = calendar(&s, claims.tenant_id, q.large_estate, q.international).await?;
+    let next_open_move = moves.iter().find(|m| m.open).map(|m| m.starts_at);
     Ok(Json(serde_json::json!({ "data": {
         "survey": survey,
         "move": moves,
+        "next_open_move": next_open_move,
+        "capacity_checked": checked,
         "survey_lead_days": SURVEY_LEAD_DAYS,
         "utc_offset_minutes": rates.utc_offset_minutes,
     }})))
@@ -326,6 +404,21 @@ pub async fn book(
     let now = Utc::now();
     let parcel = admit(&payload, claims.tenant_id, claims.user_id, req.survey_at, req.move_at, now, rates.utc_offset_minutes)?;
 
+    // The windows may have filled since the calendar was drawn.
+    let (surveys, moves, _) = calendar(&s, claims.tenant_id, payload.large_estate, payload.international).await?;
+    if !moves.iter().any(|m| m.starts_at == req.move_at && m.open) {
+        let next = moves.iter().find(|m| m.open).map(|m| m.starts_at.to_rfc3339()).unwrap_or_default();
+        return Err(AppError::Conflict(format!(
+            "SLOT_FULL: every verified moving team is booked for that move window{}",
+            if next.is_empty() { String::new() } else { format!(" — the next open one is {next}") }
+        )));
+    }
+    if let Some(survey_at) = req.survey_at {
+        if !surveys.iter().any(|s| s.starts_at == survey_at && s.open) {
+            return Err(AppError::Conflict("SLOT_FULL: every lead is surveying in that window — pick another".into()));
+        }
+    }
+
     let phone = req
         .contact_phone
         .as_deref()
@@ -450,7 +543,16 @@ pub async fn detail(
     if record.account_id != claims.user_id && !tenant_wide {
         return Err(not_found());
     }
-    Ok(Json(serde_json::json!({ "data": record })))
+    // The lead who reserved it, once one has — "Team {lead}". A failure to
+    // ask leaves it unnamed rather than failing the page.
+    let lead = match s.svc.home_teams.reservation(id).await {
+        Ok(r) => r.map(|r| r.lead_name).filter(|n| !n.is_empty()),
+        Err(e) => {
+            tracing::warn!(shipment_id = %id, err = %e, "reserved lead unreadable");
+            None
+        }
+    };
+    Ok(Json(serde_json::json!({ "data": record, "lead_name": lead })))
 }
 
 #[cfg(test)]

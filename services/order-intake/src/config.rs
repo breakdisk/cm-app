@@ -145,6 +145,15 @@ pub struct ServicesConfig {
     /// quotes carry no discount and one that asked for a code says so.
     #[serde(default)]
     pub promotions_url: Option<String>,
+    /// Mesh-internal driver-ops. `SERVICES__DRIVER_OPS_URL`. The home-move
+    /// calendar asks it how many teams each date has; unset, windows are
+    /// offered without a capacity check (and say so).
+    #[serde(default)]
+    pub driver_ops_url: Option<String>,
+    /// Mesh-internal dispatch. `SERVICES__DISPATCH_URL`. The lead who
+    /// reserved a home move, for the customer's "Team {lead}" line.
+    #[serde(default)]
+    pub dispatch_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

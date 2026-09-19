@@ -493,10 +493,65 @@ pub struct Slot {
     pub ends_at: DateTime<Utc>,
 }
 
+/// How many home-move teams a date can take, as driver-ops counts them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct DayCapacity {
+    pub date: NaiveDate,
+    pub leads: i64,
+    pub lead_jobs: i64,
+    pub multi_truck_leads: i64,
+    pub multi_truck_jobs: i64,
+    pub international_leads: i64,
+}
+
+/// A move already booked, as the calendar needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookedMove {
+    pub move_at: DateTime<Utc>,
+    pub survey_at: Option<DateTime<Utc>>,
+    pub large_estate: bool,
+    pub international: bool,
+}
+
+/// Whether a move window still has a team for this move: a lead free in the
+/// window and a job left in the day — among multi-truck leads for a Large
+/// Estate, among international leads for one abroad.
+pub fn move_window_open(
+    cap: &DayCapacity,
+    booked: &[BookedMove],
+    start: DateTime<Utc>,
+    large_estate: bool,
+    international: bool,
+    offset_min: i32,
+) -> bool {
+    let day = local_today(start, offset_min);
+    let same_day: Vec<&BookedMove> = booked.iter().filter(|b| local_today(b.move_at, offset_min) == day).collect();
+    let in_window = same_day.iter().filter(|b| b.move_at == start).count() as i64;
+    if in_window >= cap.leads || same_day.len() as i64 >= cap.lead_jobs {
+        return false;
+    }
+    if large_estate {
+        let large_day = same_day.iter().filter(|b| b.large_estate).count() as i64;
+        let large_window = same_day.iter().filter(|b| b.large_estate && b.move_at == start).count() as i64;
+        if large_day >= cap.multi_truck_jobs || large_window >= cap.multi_truck_leads {
+            return false;
+        }
+    }
+    if international && same_day.iter().filter(|b| b.international).count() as i64 >= cap.international_leads {
+        return false;
+    }
+    true
+}
+
+/// Whether a survey window still has a lead to send: the surveyor is the lead.
+pub fn survey_window_open(cap: &DayCapacity, booked: &[BookedMove], start: DateTime<Utc>) -> bool {
+    (booked.iter().filter(|b| b.survey_at == Some(start)).count() as i64) < cap.leads
+}
+
 /// The gap the inventory needs between the survey and the move.
 pub const SURVEY_LEAD_DAYS: i64 = 2;
 
-fn local_today(now: DateTime<Utc>, offset_min: i32) -> NaiveDate {
+pub fn local_today(now: DateTime<Utc>, offset_min: i32) -> NaiveDate {
     (now + Duration::minutes(i64::from(offset_min))).date_naive()
 }
 
@@ -736,6 +791,57 @@ mod tests {
         let moves = move_slots(now(), 480);
         // First move: Sun 20 is skipped → Mon 21 08:00 Manila.
         assert_eq!(moves[0].starts_at, Utc.with_ymd_and_hms(2026, 9, 21, 0, 0, 0).unwrap());
+    }
+
+    fn cap(leads: i64, jobs: i64, multi: i64, intl: i64) -> DayCapacity {
+        DayCapacity {
+            date: NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(),
+            leads,
+            lead_jobs: jobs,
+            multi_truck_leads: multi,
+            multi_truck_jobs: multi,
+            international_leads: intl,
+        }
+    }
+
+    fn booked(at: DateTime<Utc>, large: bool) -> BookedMove {
+        BookedMove { move_at: at, survey_at: None, large_estate: large, international: false }
+    }
+
+    #[test]
+    fn a_window_closes_when_its_teams_or_the_days_jobs_run_out() {
+        let morning = Utc.with_ymd_and_hms(2026, 9, 21, 0, 0, 0).unwrap(); // 08:00 Manila
+        let afternoon = morning + Duration::hours(5);
+        // Two leads, one job each.
+        let two = cap(2, 2, 0, 0);
+        assert!(move_window_open(&two, &[], morning, false, false, 480));
+        assert!(move_window_open(&two, &[booked(morning, false)], morning, false, false, 480));
+        assert!(!move_window_open(&two, &[booked(morning, false), booked(morning, false)], morning, false, false, 480));
+        // One lead with two jobs a day: morning taken, afternoon still open.
+        let one = cap(1, 2, 0, 0);
+        assert!(!move_window_open(&one, &[booked(morning, false)], morning, false, false, 480));
+        assert!(move_window_open(&one, &[booked(morning, false)], afternoon, false, false, 480));
+        // Jobs for the day spent: every window closed.
+        assert!(!move_window_open(&cap(3, 1, 0, 0), &[booked(morning, false)], afternoon, false, false, 480));
+        // Nobody working.
+        assert!(!move_window_open(&DayCapacity::default(), &[], morning, false, false, 480));
+    }
+
+    #[test]
+    fn a_large_estate_needs_a_free_multi_truck_lead_and_abroad_an_international_one() {
+        let morning = Utc.with_ymd_and_hms(2026, 9, 21, 0, 0, 0).unwrap();
+        assert!(!move_window_open(&cap(3, 3, 0, 0), &[], morning, true, false, 480));
+        assert!(move_window_open(&cap(3, 3, 1, 0), &[], morning, true, false, 480));
+        assert!(!move_window_open(&cap(3, 3, 1, 0), &[booked(morning + Duration::hours(5), true)], morning, true, false, 480));
+        assert!(!move_window_open(&cap(3, 3, 0, 0), &[], morning, false, true, 480));
+    }
+
+    #[test]
+    fn a_survey_window_closes_when_every_lead_is_surveying_in_it() {
+        let at = Utc.with_ymd_and_hms(2026, 9, 18, 0, 0, 0).unwrap();
+        let surveyed = BookedMove { move_at: at + Duration::days(3), survey_at: Some(at), large_estate: false, international: false };
+        assert!(survey_window_open(&cap(2, 2, 0, 0), std::slice::from_ref(&surveyed), at));
+        assert!(!survey_window_open(&cap(1, 2, 0, 0), &[surveyed], at));
     }
 
     #[test]

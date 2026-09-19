@@ -265,6 +265,8 @@ pub struct ShipmentService {
     pub promotions: Option<Arc<crate::infrastructure::http::PromotionsClient>>,
     /// Whole-home moving rates. All zero by default, which refuses home moves.
     pub home_rates: crate::domain::value_objects::home_move::HomeRates,
+    /// The teams each date has, and a move's reserved lead.
+    pub home_teams: Arc<crate::infrastructure::http::home_capacity_client::HomeTeamsClient>,
 }
 
 /// What a verified quote was discounted by, all spent at booking.
@@ -300,7 +302,14 @@ impl ShipmentService {
             repo, publisher, normalizer, awb_generator, payment, carrier, accessorials, cancellation_policy,
             promotions: None,
             home_rates: Default::default(),
+            home_teams: Arc::new(crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(None, None)),
         }
+    }
+
+    #[must_use]
+    pub fn with_home_teams(mut self, client: crate::infrastructure::http::home_capacity_client::HomeTeamsClient) -> Self {
+        self.home_teams = Arc::new(client);
+        self
     }
 
     #[must_use]
