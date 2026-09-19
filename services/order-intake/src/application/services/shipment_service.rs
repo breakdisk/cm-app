@@ -134,6 +134,18 @@ pub trait ShipmentRepository: Send + Sync {
         filter: &'a ShipmentListFilter,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>>;
 
+    /// A survey addendum's payment was captured (or failed). Captured: it is
+    /// paid and the move takes the additions — inventory, crew, trucks and
+    /// total. Failed: it goes back to pending for the customer to try again.
+    /// Idempotent. Default no-op for test doubles.
+    fn settle_home_addendum<'a>(
+        &'a self,
+        _addendum_id: uuid::Uuid,
+        _captured: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// A whole-home move's survey (time, deposit, whether it was done).
     /// Default none, so test doubles need not implement it.
     fn home_survey<'a>(

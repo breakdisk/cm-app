@@ -2,6 +2,8 @@
 pub mod home_catalogue;
 /// Booked whole-home moves.
 pub mod home_moves;
+/// The survey's addendum to a booked home move.
+pub mod home_addenda;
 
 use std::pin::Pin;
 use std::future::Future;
@@ -566,6 +568,57 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(event.location.as_deref())
             .execute(&self.pool)
             .await?;
+            Ok(())
+        })
+    }
+
+    fn settle_home_addendum<'a>(
+        &'a self,
+        addendum_id: uuid::Uuid,
+        captured: bool,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut tx = self.pool.begin().await?;
+            if !captured {
+                sqlx::query(
+                    "UPDATE order_intake.home_addenda
+                        SET status = 'pending', payment_intent_id = NULL, checkout_url = NULL, decided_at = NULL
+                      WHERE id = $1 AND status = 'approved'",
+                )
+                .bind(addendum_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Ok(());
+            }
+            let paid = sqlx::query(
+                "UPDATE order_intake.home_addenda SET status = 'paid', paid_at = NOW()
+                  WHERE id = $1 AND status = 'approved'
+                  RETURNING shipment_id, items, total_cents, trucks, helpers, crew_total, large_estate",
+            )
+            .bind(addendum_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            // Already paid (a redelivery), or never approved: nothing to apply.
+            if let Some(r) = paid {
+                let shipment_id: uuid::Uuid = r.get("shipment_id");
+                sqlx::query(
+                    "UPDATE order_intake.home_moves
+                        SET items = items || $2, total_cents = total_cents + $3,
+                            trucks = $4, helpers = $5, crew_total = $6, large_estate = $7
+                      WHERE shipment_id = $1",
+                )
+                .bind(shipment_id)
+                .bind(r.get::<serde_json::Value, _>("items"))
+                .bind(r.get::<i64, _>("total_cents"))
+                .bind(r.get::<i32, _>("trucks"))
+                .bind(r.get::<i32, _>("helpers"))
+                .bind(r.get::<i32, _>("crew_total"))
+                .bind(r.get::<bool, _>("large_estate"))
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
             Ok(())
         })
     }

@@ -442,6 +442,65 @@ pub fn price(rates: &HomeRates, property: &Property, items: &[PricedItem], dista
     }
 }
 
+// ── The survey's addendum ────────────────────────────────────────────────────
+
+/// Materials and resources the surveyor adds, priced by them and approved by
+/// the customer: packing boxes, a hoist, an extra day of a helper.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurveyExtra {
+    /// "material" | "resource"
+    pub kind: String,
+    pub name: String,
+    pub qty: u32,
+    pub unit_cents: i64,
+}
+
+pub const MAX_EXTRAS: usize = 50;
+/// The most one extra line may cost per unit, in minor units.
+pub const MAX_EXTRA_UNIT_CENTS: i64 = 1_000_000;
+
+pub fn validate_extras(extras: &[SurveyExtra]) -> Result<(), String> {
+    if extras.len() > MAX_EXTRAS {
+        return Err(format!("At most {MAX_EXTRAS} extras"));
+    }
+    for e in extras {
+        if !matches!(e.kind.as_str(), "material" | "resource") {
+            return Err(format!("\"{}\" is a material or a resource", e.name));
+        }
+        if e.name.trim().is_empty() || e.name.len() > 80 {
+            return Err("Each extra needs a name of 1–80 characters".into());
+        }
+        if !(1..=100).contains(&e.qty) {
+            return Err(format!("{}: quantity is 1–100", e.name));
+        }
+        if !(1..=MAX_EXTRA_UNIT_CENTS).contains(&e.unit_cents) {
+            return Err(format!("{}: the unit price must be above zero and within the limit", e.name));
+        }
+    }
+    Ok(())
+}
+
+/// What the survey's additions cost: the whole job re-priced with them, less
+/// what was agreed (never below zero — the price does not go down), plus the
+/// extras. Returns the re-priced job and the two amounts.
+#[allow(clippy::too_many_arguments)]
+pub fn addendum_amount(
+    rates: &HomeRates,
+    property: &Property,
+    booked: &[PricedItem],
+    added: &[PricedItem],
+    extras: &[SurveyExtra],
+    distance_centikm: i64,
+    plan: TruckPlan,
+    agreed_cents: i64,
+) -> (HomePrice, i64, i64) {
+    let all: Vec<PricedItem> = booked.iter().chain(added).cloned().collect();
+    let repriced = price(rates, property, &all, distance_centikm, plan);
+    let items_cents = (repriced.total_cents - agreed_cents).max(0);
+    let extras_cents = extras.iter().map(|e| i64::from(e.qty) * e.unit_cents).sum();
+    (repriced, items_cents, extras_cents)
+}
+
 // ── The survey fee when a move is cancelled ──────────────────────────────────
 
 /// A booked move's survey, as a cancellation needs it.
@@ -748,6 +807,41 @@ mod tests {
         assert_eq!(home_retention_bps(9_900, 4_500, 150_000), 10_000);
         // Rounded down: 1.00 of 3.00 is 3,333.3 bps.
         assert_eq!(home_retention_bps(0, 100, 300), 3_333);
+    }
+
+    #[test]
+    fn an_addendum_charges_the_increase_and_never_lowers_the_price() {
+        let booked = vec![item("living", "sofa", 1, 2_100, 78)];
+        let prop = apartment("3 bedroom");
+        let agreed = price(&rates(), &prop, &booked, 1_000, TruckPlan::Trucks).total_cents;
+
+        // Nothing found: nothing owed.
+        let (_, items, extras) = addendum_amount(&rates(), &prop, &booked, &[], &[], 1_000, TruckPlan::Trucks, agreed);
+        assert_eq!((items, extras), (0, 0));
+
+        // Twenty boxes more: the re-priced job less what was agreed.
+        let boxes = vec![item("storage", "box", 20, 200, 18)];
+        let (repriced, items, _) = addendum_amount(&rates(), &prop, &booked, &boxes, &[], 1_000, TruckPlan::Trucks, agreed);
+        assert_eq!(items, repriced.total_cents - agreed);
+
+        // Rates dropped since booking: still nothing negative.
+        let cheaper = HomeRates { trip_cents: 1, helper_hour_cents: 1, ..rates() };
+        let (_, items, _) = addendum_amount(&cheaper, &prop, &booked, &boxes, &[], 1_000, TruckPlan::Trucks, agreed);
+        assert_eq!(items, 0);
+
+        let wrap = SurveyExtra { kind: "material".into(), name: "Bubble wrap roll".into(), qty: 3, unit_cents: 450 };
+        let (_, _, extras) = addendum_amount(&rates(), &prop, &booked, &[], std::slice::from_ref(&wrap), 1_000, TruckPlan::Trucks, agreed);
+        assert_eq!(extras, 1_350);
+    }
+
+    #[test]
+    fn extras_are_named_bounded_and_priced() {
+        let ok = SurveyExtra { kind: "resource".into(), name: "Hoist".into(), qty: 1, unit_cents: 50_000 };
+        assert!(validate_extras(std::slice::from_ref(&ok)).is_ok());
+        assert!(validate_extras(&[SurveyExtra { kind: "gift".into(), ..ok.clone() }]).is_err());
+        assert!(validate_extras(&[SurveyExtra { unit_cents: 0, ..ok.clone() }]).is_err());
+        assert!(validate_extras(&[SurveyExtra { qty: 0, ..ok.clone() }]).is_err());
+        assert!(validate_extras(&[SurveyExtra { name: " ".into(), ..ok }]).is_err());
     }
 
     #[test]

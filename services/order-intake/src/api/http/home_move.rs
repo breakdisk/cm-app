@@ -23,11 +23,12 @@ use crate::api::http::AppState;
 use crate::application::commands::{AddressInput, CreateShipmentCommand, HomeBooking, IntakeInput};
 use crate::domain::value_objects::cancel_authority::is_tenant_wide;
 use crate::domain::value_objects::home_move::{
-    check_schedule, local_today, move_slots, move_window_open, price, resolve, survey_slots, survey_window_open,
+    addendum_amount, validate_extras, SurveyExtra, check_schedule, local_today, move_slots, move_window_open, price, resolve, survey_slots, survey_window_open,
     CatalogueItem, DayCapacity, DeclaredItem, HomePrice, PricedItem, Property, PropertyType, TruckPlan, SURVEY_LEAD_DAYS,
 };
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
 use crate::infrastructure::db::home_catalogue::catalogue_for;
+use crate::infrastructure::db::home_addenda::{self, NewAddendum};
 use crate::infrastructure::db::home_moves::{self, HomeMoveRecord};
 
 /// A home move takes longer to review than a parcel; the token lives longer.
@@ -526,6 +527,176 @@ pub async fn book(
     ))
 }
 
+/// Who may act on a booked home move.
+enum Party {
+    Customer,
+    Lead,
+    Staff,
+}
+
+/// The customer who booked it, the lead who reserved it, or staff who reach
+/// every shipment in the tenant. Anyone else reads the move as missing.
+async fn party_of(s: &AppState, claims: &AuthClaims, record: &HomeMoveRecord) -> Option<Party> {
+    if record.account_id == claims.user_id {
+        return Some(Party::Customer);
+    }
+    if is_tenant_wide(
+        claims.has_permission(permissions::SHIPMENT_CREATE),
+        claims.has_permission(permissions::SHIPMENT_UPDATE),
+    ) {
+        return Some(Party::Staff);
+    }
+    match s.svc.home_teams.reservation(record.shipment_id).await {
+        Ok(Some(r)) if r.driver_id == claims.user_id => Some(Party::Lead),
+        _ => None,
+    }
+}
+
+async fn record_for(s: &AppState, claims: &AuthClaims, id: Uuid) -> Result<(HomeMoveRecord, Party), AppError> {
+    let not_found = || AppError::NotFound { resource: "Home move", id: id.to_string() };
+    let record = home_moves::get(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?.ok_or_else(not_found)?;
+    let party = party_of(s, claims, &record).await.ok_or_else(not_found)?;
+    Ok((record, party))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SurveyRequest {
+    /// Catalogue items found beyond the booking. Additions only.
+    #[serde(default)]
+    pub items: Vec<DeclaredItem>,
+    #[serde(default)]
+    pub extras: Vec<SurveyExtra>,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// `POST /v1/shipments/:id/home/survey` — the lead's survey. It marks the
+/// survey done (the deposit is kept from now on), and when it found more
+/// than was booked, opens an addendum for the customer to approve. It can
+/// only add: the agreed price never goes down.
+pub async fn submit_survey(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SurveyRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let (record, party) = record_for(&s, &claims, id).await?;
+    if matches!(party, Party::Customer) {
+        return Err(AppError::Forbidden { resource: "survey".into() });
+    }
+    validate_extras(&req.extras).map_err(AppError::Validation)?;
+    let property: Property = serde_json::from_value(record.property.clone()).map_err(|e| AppError::Internal(e.into()))?;
+    let booked: Vec<PricedItem> = serde_json::from_value(record.items.clone()).map_err(|e| AppError::Internal(e.into()))?;
+    let plan = if record.plan == "trips" { TruckPlan::Trips } else { TruckPlan::Trucks };
+    let added = if req.items.is_empty() {
+        Vec::new()
+    } else {
+        let catalogue = catalogue_for(&s.pool, claims.tenant_id).await.map_err(AppError::Internal)?;
+        resolve(&property, &req.items, &catalogue).map_err(AppError::Validation)?
+    };
+    let (repriced, items_cents, extras_cents) = addendum_amount(
+        &s.svc.home_rates, &property, &booked, &added, &req.extras, record.distance_centikm, plan, record.total_cents,
+    );
+    home_addenda::mark_survey_submitted(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?;
+    if items_cents + extras_cents == 0 {
+        tracing::info!(shipment_id = %id, by = %claims.user_id, "home survey done — nothing added");
+        return Ok((StatusCode::OK, Json(serde_json::json!({ "data": { "survey_submitted": true, "addendum": null } }))));
+    }
+    let addendum = home_addenda::insert(&s.pool, &NewAddendum {
+        shipment_id: id,
+        tenant_id: claims.tenant_id,
+        submitted_by: claims.user_id,
+        items: serde_json::to_value(&added).map_err(|e| AppError::Internal(e.into()))?,
+        extras: serde_json::to_value(&req.extras).map_err(|e| AppError::Internal(e.into()))?,
+        note: req.note.chars().take(500).collect(),
+        items_cents,
+        extras_cents,
+        currency: record.currency.clone(),
+        trucks: i32::try_from(repriced.trucks).unwrap_or(i32::MAX),
+        helpers: i32::try_from(repriced.helpers).unwrap_or(i32::MAX),
+        crew_total: i32::try_from(repriced.crew_total).unwrap_or(i32::MAX),
+        large_estate: repriced.large_estate,
+    })
+    .await
+    .map_err(AppError::Internal)?
+    .ok_or_else(|| AppError::Conflict("An addendum is already waiting on the customer for this move".into()))?;
+    tracing::info!(shipment_id = %id, addendum_id = %addendum.id, total = addendum.total_cents, "home survey addendum opened");
+    Ok((StatusCode::CREATED, Json(serde_json::json!({ "data": { "survey_submitted": true, "addendum": addendum } }))))
+}
+
+/// `GET /v1/shipments/:id/home/addendum` — the latest addendum, if any.
+pub async fn get_addendum(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    record_for(&s, &claims, id).await?;
+    let latest = home_addenda::latest(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?;
+    Ok(Json(serde_json::json!({ "data": latest })))
+}
+
+async fn customer_addendum(
+    s: &AppState,
+    claims: &AuthClaims,
+    id: Uuid,
+    addendum_id: Uuid,
+) -> Result<(HomeMoveRecord, home_addenda::AddendumRecord), AppError> {
+    let (record, party) = record_for(s, claims, id).await?;
+    // Only the customer answers for the customer's money.
+    if !matches!(party, Party::Customer) {
+        return Err(AppError::Forbidden { resource: "addendum".into() });
+    }
+    let addendum = home_addenda::get(&s.pool, claims.tenant_id, addendum_id)
+        .await
+        .map_err(AppError::Internal)?
+        .filter(|a| a.shipment_id == id)
+        .ok_or_else(|| AppError::NotFound { resource: "Addendum", id: addendum_id.to_string() })?;
+    Ok((record, addendum))
+}
+
+/// `POST /v1/shipments/:id/home/addendum/:addendum_id/approve` — the
+/// customer agrees; the difference is charged as its own payment.
+pub async fn approve_addendum(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path((id, addendum_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (_, addendum) = customer_addendum(&s, &claims, id, addendum_id).await?;
+    if addendum.status != "pending" {
+        return Err(AppError::Conflict(format!("This addendum is already {}", addendum.status)));
+    }
+    let payment = s.svc.payment.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable("Online payment is not configured for this deployment".into())
+    })?;
+    let return_url = format!(
+        "{}/payment/return?shipment_id={id}&addendum_id={addendum_id}",
+        payment.shipment_return_url_base.trim_end_matches('/'),
+    );
+    let intent = payment
+        .client
+        .create_home_addendum_intent(claims.tenant_id, addendum_id, addendum.total_cents, &addendum.currency, &return_url)
+        .await
+        .map_err(AppError::Internal)?;
+    if !home_addenda::approve(&s.pool, addendum_id, intent.intent_id, &intent.checkout_url).await.map_err(AppError::Internal)? {
+        return Err(AppError::Conflict("This addendum was answered meanwhile".into()));
+    }
+    Ok(Json(serde_json::json!({ "data": { "status": "approved", "checkout_url": intent.checkout_url } })))
+}
+
+/// `POST /v1/shipments/:id/home/addendum/:addendum_id/decline` — the
+/// customer declines; the move stands as booked.
+pub async fn decline_addendum(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path((id, addendum_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, AppError> {
+    customer_addendum(&s, &claims, id, addendum_id).await?;
+    if !home_addenda::decline(&s.pool, addendum_id).await.map_err(AppError::Internal)? {
+        return Err(AppError::Conflict("This addendum was already answered".into()));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `GET /v1/shipments/:id/home` — the booked move's detail. The customer who
 /// booked it, or staff who reach every shipment in the tenant; anyone else
 /// reads it as missing.
@@ -534,15 +705,7 @@ pub async fn detail(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let not_found = || AppError::NotFound { resource: "Home move", id: id.to_string() };
-    let record = home_moves::get(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?.ok_or_else(not_found)?;
-    let tenant_wide = is_tenant_wide(
-        claims.has_permission(permissions::SHIPMENT_CREATE),
-        claims.has_permission(permissions::SHIPMENT_UPDATE),
-    );
-    if record.account_id != claims.user_id && !tenant_wide {
-        return Err(not_found());
-    }
+    let (record, _) = record_for(&s, &claims, id).await?;
     // The lead who reserved it, once one has — "Team {lead}". A failure to
     // ask leaves it unnamed rather than failing the page.
     let lead = match s.svc.home_teams.reservation(id).await {

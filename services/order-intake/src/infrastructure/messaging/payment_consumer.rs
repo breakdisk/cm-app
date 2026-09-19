@@ -42,6 +42,10 @@ use crate::domain::entities::shipment::PaymentRequirement;
 /// creates, and therefore the only kind this consumer acts on.
 const SHIPPING_FEE_PURPOSE: &str = "shipping_fee";
 
+/// A whole-home move's survey addendum, paid on its own; reference_id is
+/// the addendum's id, never a shipment's.
+const HOME_ADDENDUM_PURPOSE: &str = "home_addendum";
+
 pub struct PaymentConsumer {
     inner: KafkaConsumer,
     svc: Arc<ShipmentService>,
@@ -81,6 +85,9 @@ pub async fn handle(topic: &str, json: serde_json::Value, svc: &ShipmentService)
         topics::PAYMENT_INTENT_CAPTURED => {
             let evt: Event<PaymentIntentCaptured> = serde_json::from_value(json)
                 .context("failed to deserialize payment.intent.captured event")?;
+            if evt.data.purpose == HOME_ADDENDUM_PURPOSE {
+                return svc.repo.settle_home_addendum(evt.data.reference_id, true).await;
+            }
             if evt.data.purpose != SHIPPING_FEE_PURPOSE {
                 return Ok(());
             }
@@ -89,6 +96,9 @@ pub async fn handle(topic: &str, json: serde_json::Value, svc: &ShipmentService)
         topics::PAYMENT_INTENT_FAILED => {
             let evt: Event<PaymentIntentFailed> = serde_json::from_value(json)
                 .context("failed to deserialize payment.intent.failed event")?;
+            if evt.data.purpose == HOME_ADDENDUM_PURPOSE {
+                return svc.repo.settle_home_addendum(evt.data.reference_id, false).await;
+            }
             if evt.data.purpose != SHIPPING_FEE_PURPOSE {
                 return Ok(());
             }
