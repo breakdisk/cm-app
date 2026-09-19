@@ -304,6 +304,7 @@ is config, not code.
 | Operations: onboard a driver for freight or home moves; the move on the shipment panel | admin-portal `ProviderProfileModal`, `HomeMoveSection` | `3674e31f`, `6dcd00ed` |
 | Gateway route for `/v1/home-reservations` | api-gateway `proxy/mod.rs` | `b76e2dde` |
 | Lead's app: a claim reads as a reservation (it used to fail to parse); reserved moves; the survey form; working and off days | driver-app `HomeMoveApiService`, `feature:profile` Home moves / Survey / Availability | `31d55373` |
+| Cancelling takes a shipment out of dispatch and off the driver: queue row, open offers, home reservation, route and assignment, driver-ops task (+ push). Before this, neither service consumed `shipment.cancelled` | dispatch migration `0016`, driver-ops migration `0018`, both `shipment_cancelled_consumer.rs` | `83e7a92a` |
 
 **Not built** — each needs a decision or a later slice:
 - **Model B (paired co-leads).** Needs multi-driver assignment in dispatch.
