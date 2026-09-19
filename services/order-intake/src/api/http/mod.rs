@@ -554,6 +554,7 @@ async fn internal_create_shipment(
         merchant_name:     None,
         delivery_category: None,
         quote_token:       None,
+        intake:            None,
         idempotency_key:   None,
     };
 

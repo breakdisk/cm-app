@@ -134,6 +134,17 @@ pub trait ShipmentRepository: Send + Sync {
         filter: &'a ShipmentListFilter,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>>;
 
+    /// Record how a booking was described (the prompt box's parse). Default
+    /// no-op so test doubles need not implement it.
+    fn record_intake<'a>(
+        &'a self,
+        _tenant_id: uuid::Uuid,
+        _shipment_id: uuid::Uuid,
+        _intake: (String, Option<String>, Option<f64>, serde_json::Value),
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Append an immutable timeline event. Default no-op so non-DB test doubles
     /// don't need to implement it; the Postgres repo overrides this.
     fn record_event<'a>(
@@ -795,6 +806,14 @@ impl ShipmentService {
             location:    pickup_city,
         }).await {
             tracing::warn!(error = %e, shipment_id = %shipment.id, "confirmed timeline event failed (non-fatal)");
+        }
+
+        // ── How it was described ──────────────────────────────────────────────
+        // Measurement only, and best-effort: a booking never fails over it.
+        if let Some(intake) = cmd.intake.as_ref().and_then(crate::application::commands::IntakeInput::to_store) {
+            if let Err(e) = self.repo.record_intake(cmd.tenant_id, shipment.id.inner(), intake).await {
+                tracing::warn!(error = %e, shipment_id = %shipment.id, "intake record failed (non-fatal)");
+            }
         }
 
         // ── Publish the lifecycle events ──────────────────────────────────────

@@ -564,6 +564,32 @@ impl ShipmentRepository for PgShipmentRepository {
         })
     }
 
+    fn record_intake<'a>(
+        &'a self,
+        tenant_id: uuid::Uuid,
+        shipment_id: uuid::Uuid,
+        intake: (String, Option<String>, Option<f64>, serde_json::Value),
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let (source, intent, confidence, extracted) = intake;
+            sqlx::query(
+                r#"INSERT INTO order_intake.shipment_intake
+                       (shipment_id, tenant_id, source, intent, confidence, extracted)
+                   VALUES ($1, $2, $3, $4, $5, $6)
+                   ON CONFLICT (shipment_id) DO NOTHING"#,
+            )
+            .bind(shipment_id)
+            .bind(tenant_id)
+            .bind(source)
+            .bind(intent)
+            .bind(confidence)
+            .bind(extracted)
+            .execute(&self.pool)
+            .await?;
+            Ok(())
+        })
+    }
+
     fn save_pieces<'a>(
         &'a self,
         pieces: &'a [Piece],

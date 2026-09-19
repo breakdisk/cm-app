@@ -13,6 +13,10 @@ use infrastructure::tools::ToolRegistry;
 #[derive(Clone)]
 pub struct AppState {
     pub runner:       Arc<AgentRunner>,
+    /// A small, fast model for routing the Move app's prompt box. Separate
+    /// from the agent runner's client so a cheap per-send call never runs on
+    /// the agents' model.
+    pub classifier:   Arc<dyn logisticos_agent_runtime::claude::ClaudeApi>,
     pub session_repo: Arc<dyn SessionRepository>,
     pub tools:        Arc<ToolRegistry>,
     pub jwt:          Arc<logisticos_auth::jwt::JwtService>,
