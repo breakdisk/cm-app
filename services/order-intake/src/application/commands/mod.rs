@@ -104,6 +104,11 @@ pub struct CreateShipmentCommand {
     /// until the corresponding payment intent captures.
     #[serde(default)]
     pub quote_token: Option<String>,
+    /// Set only by the home-move booking path, never from a request body: the
+    /// booked move time decides the cancellation tier, so a client that could
+    /// set it could choose its own fee.
+    #[serde(skip)]
+    pub home_booking: Option<HomeBooking>,
     /// How the booking was described, when it came from the prompt box or
     /// voice: what was read from the sentence, before the customer corrected
     /// it. Stored for measuring the reader; never used to price or route.
@@ -116,7 +121,7 @@ pub struct CreateShipmentCommand {
     pub idempotency_key: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Validate, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Validate, Serialize)]
 pub struct AddressInput {
     #[validate(length(min = 5))]
     pub line1: String,
@@ -212,6 +217,13 @@ pub struct BulkRowError {
     pub row_index: usize,
     pub merchant_reference: Option<String>,
     pub error: String,
+}
+
+/// A whole-home move being booked: the move time, already held to the
+/// calendar by the home-move path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeBooking {
+    pub move_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// What the prompt box read, as the app sends it with the booking.

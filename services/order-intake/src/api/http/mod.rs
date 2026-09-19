@@ -488,9 +488,11 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments/home/catalogue", get(home_move::catalogue))
         .route("/shipments/home/slots",     get(home_move::slots))
         .route("/shipments/home/quote",     post(home_move::quote))
+        .route("/shipments/home",           post(home_move::book))
         .route("/accessorials",     get(accessorials::list_accessorials))
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
+        .route("/shipments/:id/home",       get(home_move::detail))
         .route("/shipments/:id/cancel",     post(cancel_shipment))
         .route("/shipments/:id/cancellation-preview", get(cancellation_preview))
         .route("/shipments/:id/reschedule", post(reschedule_shipment))
@@ -559,6 +561,7 @@ async fn internal_create_shipment(
         merchant_name:     None,
         delivery_category: None,
         quote_token:       None,
+        home_booking:      None,
         intake:            None,
         idempotency_key:   None,
     };

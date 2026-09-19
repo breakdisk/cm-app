@@ -22,6 +22,9 @@ pub enum ServiceType {
     SameDay,
     Balikbayan,
     International,
+    /// A whole home or office, priced by `home_move` and booked only through
+    /// `POST /v1/shipments/home`.
+    HomeMove,
 }
 
 impl ServiceType {
@@ -32,6 +35,7 @@ impl ServiceType {
             Self::SameDay => "same_day",
             Self::Balikbayan => "balikbayan",
             Self::International => "international",
+            Self::HomeMove => "home_move",
         }
     }
 
@@ -54,6 +58,7 @@ impl ServiceType {
             "same_day"      => Ok(Self::SameDay),
             "balikbayan"    => Ok(Self::Balikbayan),
             "international" => Ok(Self::International),
+            "home_move"     => Ok(Self::HomeMove),
             other => Err(format!("Unknown service type: {other}")),
         }
     }

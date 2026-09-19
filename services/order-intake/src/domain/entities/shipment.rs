@@ -141,6 +141,8 @@ impl Shipment {
             ServiceType::SameDay       => 20000,  // PHP 200.00
             ServiceType::Balikbayan    => 50000,  // PHP 500.00 per box (fallback)
             ServiceType::International => 75000,  // PHP 750.00 per box (fallback)
+            // Priced by its own path and always booked from its quote.
+            ServiceType::HomeMove      => 0,
         };
         // Weight surcharge: +PHP 10 per 0.5kg over 1kg
         let weight_kg = self.weight.grams as f64 / 1000.0;
@@ -206,6 +208,7 @@ pub fn ae_base_fee_for(service_type: ServiceType, weight_grams: u32) -> logistic
         ServiceType::SameDay       => 4_500,   // AED 45.00
         ServiceType::Balikbayan    => 12_000,  // AED 120.00 per box (fallback)
         ServiceType::International => 15_000,  // AED 150.00 per box (fallback)
+        ServiceType::HomeMove      => 0,
     };
     let weight_kg = weight_grams as f64 / 1000.0;
     let surcharge = if weight_kg > 1.0 {

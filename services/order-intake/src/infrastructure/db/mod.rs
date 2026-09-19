@@ -1,5 +1,7 @@
 /// The whole-home moving catalogue.
 pub mod home_catalogue;
+/// Booked whole-home moves.
+pub mod home_moves;
 
 use std::pin::Pin;
 use std::future::Future;
@@ -133,6 +135,7 @@ impl ShipmentRow {
             "same_day"      => ServiceType::SameDay,
             "balikbayan"    => ServiceType::Balikbayan,
             "international" => ServiceType::International,
+            "home_move"     => ServiceType::HomeMove,
             _               => ServiceType::Standard,
         };
         let status = match self.status.as_str() {

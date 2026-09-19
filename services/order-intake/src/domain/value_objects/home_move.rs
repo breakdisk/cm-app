@@ -470,31 +470,6 @@ pub fn check_schedule(
     }
 }
 
-// ── The signed quote ─────────────────────────────────────────────────────────
-
-/// What a home-move quote token carries: the whole job, normalised, so the
-/// booking can neither re-declare the inventory nor re-price it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HomeQuotePayload {
-    /// Always "home_move". The parcel token is signed with the same secret;
-    /// this is what stops one being presented as the other.
-    pub kind: String,
-    pub tenant_id: uuid::Uuid,
-    pub account_id: uuid::Uuid,
-    pub property: Property,
-    pub items: Vec<PricedItem>,
-    pub plan: TruckPlan,
-    pub distance_centikm: i64,
-    pub origin_text: String,
-    pub destination_text: String,
-    pub total_cents: i64,
-    pub currency: String,
-    pub survey_required: bool,
-    pub expires_at: DateTime<Utc>,
-}
-
-pub const HOME_QUOTE_KIND: &str = "home_move";
-
 #[cfg(test)]
 mod tests {
     use super::*;

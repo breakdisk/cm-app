@@ -345,6 +345,11 @@ impl ShipmentService {
 
         // ── Validate service type ────────────────────────────────────────────
         let service_type = ServiceType::parse(&cmd.service_type).map_err(AppError::Validation)?;
+        // A home move is booked only through its own path, which prices it,
+        // holds the survey and move to the calendar, and sets the schedule.
+        if service_type == ServiceType::HomeMove && cmd.home_booking.is_none() {
+            return Err(AppError::Validation("Book a whole-home move through /v1/shipments/home".into()));
+        }
         tracing::info!(step = "service_type_ok", ?service_type, "create");
 
         let service_code = match service_type {
@@ -353,6 +358,8 @@ impl ShipmentService {
             ServiceType::SameDay       => ServiceCode::SameDay,
             ServiceType::Balikbayan    => ServiceCode::Balikbayan,
             ServiceType::International => ServiceCode::International,
+            // No AWB letter of its own: the service type column says what it is.
+            ServiceType::HomeMove      => ServiceCode::Standard,
         };
 
         // ── Business rule: same-day cutoff at 14:00 ──────────────────────────
@@ -371,7 +378,9 @@ impl ShipmentService {
         let is_per_piece = matches!(service_type, ServiceType::Balikbayan | ServiceType::International)
             && cmd.pieces.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
         let weight = ShipmentWeight::from_grams(cmd.weight_grams);
-        if !is_per_piece {
+        // A household is tonnes, not a 70 kg parcel; its weight is the
+        // catalogue's sum, signed into its quote.
+        if !is_per_piece && service_type != ServiceType::HomeMove {
             weight.validate().map_err(|e| AppError::Validation(e.to_string()))?;
         }
 
@@ -591,8 +600,8 @@ impl ShipmentService {
             payment_status,
             pending_dispatch_events: None,
             idempotency_key: cmd.idempotency_key.clone(),
-            // Nothing books a slot yet; whole-home moving (part 2, Part A) will.
-            scheduled_pickup_at: None,
+            // Only a whole-home move books a slot, and only its own path sets it.
+            scheduled_pickup_at: cmd.home_booking.as_ref().map(|h| h.move_at),
             cancellation_policy_version: Some(self.cancellation_policy.version.clone()),
             booking_amount_cents: verified_amount_cents,
             booking_currency: verified_currency.clone(),

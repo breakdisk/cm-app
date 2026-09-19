@@ -3527,6 +3527,26 @@ mod home_moves {
             .await
     }
 
+    /// The ordinary create endpoint cannot book a home move: it would skip the
+    /// home pricing, the calendar and the 70 kg cap all at once.
+    #[tokio::test]
+    async fn a_home_move_cannot_be_booked_through_the_parcel_endpoint() {
+        let (server, jwt) = server(HomeRates { trip_cents: 22_000, ..HomeRates::default() });
+        let token = mint_merchant_token_with_currency(&jwt, uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), Some("PHP"));
+        let mut body = valid_shipment_body();
+        body["service_type"] = json!("home_move");
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+        assert_eq!(resp.status_code().as_u16(), 422);
+        assert!(String::from_utf8_lossy(&resp.bytes).contains("/v1/shipments/home"));
+    }
+
     #[tokio::test]
     async fn home_moves_are_refused_until_a_trip_rate_is_set() {
         let (server, jwt) = server(HomeRates::default());
