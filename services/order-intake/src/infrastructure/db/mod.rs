@@ -1,3 +1,6 @@
+/// The whole-home moving catalogue.
+pub mod home_catalogue;
+
 use std::pin::Pin;
 use std::future::Future;
 

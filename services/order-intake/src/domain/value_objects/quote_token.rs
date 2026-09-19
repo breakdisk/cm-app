@@ -92,7 +92,15 @@ pub enum QuoteTokenError {
 
 /// Sign a payload into `base64(json).base64(hmac-sha256)`.
 pub fn sign(secret: &[u8], payload: &QuoteTokenPayload) -> String {
-    let json = serde_json::to_vec(payload).expect("QuoteTokenPayload always serializes");
+    sign_payload(secret, payload)
+}
+
+/// The signing core, for any serializable payload. Callers that sign more
+/// than one kind of payload with one secret must put a discriminator in the
+/// payload itself (see `home_move::HomeQuotePayload::kind`), so one kind can
+/// never be presented as another.
+pub fn sign_payload<T: Serialize>(secret: &[u8], payload: &T) -> String {
+    let json = serde_json::to_vec(payload).expect("quote payloads always serialize");
     let json_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json);
 
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
@@ -106,6 +114,16 @@ pub fn sign(secret: &[u8], payload: &QuoteTokenPayload) -> String {
 /// matches the shipment actually being booked — the caller does that, since
 /// only it knows what "matches" means for the request in hand.
 pub fn verify(secret: &[u8], token: &str) -> Result<QuoteTokenPayload, QuoteTokenError> {
+    let payload: QuoteTokenPayload = verify_payload(secret, token)?;
+    if payload.expires_at < Utc::now() {
+        return Err(QuoteTokenError::Expired);
+    }
+    Ok(payload)
+}
+
+/// The verifying core: the signature, then the shape. Expiry is the caller's,
+/// since only it knows which field holds it.
+pub fn verify_payload<T: serde::de::DeserializeOwned>(secret: &[u8], token: &str) -> Result<T, QuoteTokenError> {
     let (json_b64, sig_b64) = token.split_once('.').ok_or(QuoteTokenError::Malformed)?;
 
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
@@ -123,14 +141,7 @@ pub fn verify(secret: &[u8], token: &str) -> Result<QuoteTokenPayload, QuoteToke
     let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(json_b64)
         .map_err(|_| QuoteTokenError::Malformed)?;
-    let payload: QuoteTokenPayload = serde_json::from_slice(&json)
-        .map_err(|_| QuoteTokenError::Malformed)?;
-
-    if payload.expires_at < Utc::now() {
-        return Err(QuoteTokenError::Expired);
-    }
-
-    Ok(payload)
+    serde_json::from_slice(&json).map_err(|_| QuoteTokenError::Malformed)
 }
 
 #[cfg(test)]

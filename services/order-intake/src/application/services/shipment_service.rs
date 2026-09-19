@@ -254,6 +254,8 @@ pub struct ShipmentService {
     /// Mesh-internal promotions client: prices a promo code into a quote and
     /// spends it at booking. `None` when `SERVICES__PROMOTIONS_URL` is unset.
     pub promotions: Option<Arc<crate::infrastructure::http::PromotionsClient>>,
+    /// Whole-home moving rates. All zero by default, which refuses home moves.
+    pub home_rates: crate::domain::value_objects::home_move::HomeRates,
 }
 
 /// What a verified quote was discounted by, all spent at booking.
@@ -285,7 +287,17 @@ impl ShipmentService {
         accessorials: crate::config::AccessorialsConfig,
         cancellation_policy: CancellationPolicy,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator, payment, carrier, accessorials, cancellation_policy, promotions: None }
+        Self {
+            repo, publisher, normalizer, awb_generator, payment, carrier, accessorials, cancellation_policy,
+            promotions: None,
+            home_rates: Default::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_home_rates(mut self, rates: crate::domain::value_objects::home_move::HomeRates) -> Self {
+        self.home_rates = rates;
+        self
     }
 
     #[must_use]

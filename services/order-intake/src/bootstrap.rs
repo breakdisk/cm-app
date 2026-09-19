@@ -183,8 +183,14 @@ pub async fn run() -> anyhow::Result<()> {
             cfg.accessorials.clone(),
             cfg.cancellation_policy.clone(),
         )
-        .with_promotions(promotions),
+        .with_promotions(promotions)
+        .with_home_rates(cfg.home_move.clone()),
     );
+    if cfg.home_move.offered() {
+        tracing::info!(trip_cents = cfg.home_move.trip_cents, "whole-home moves ENABLED");
+    } else {
+        tracing::info!("whole-home moves disabled — HOME_MOVE__TRIP_CENTS unset");
+    }
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();
 

@@ -3482,3 +3482,68 @@ mod promo_booking {
         assert_eq!(repo.shipments.lock().unwrap().len(), 0);
     }
 }
+
+/// Whole-home moving over HTTP: off until a trip rate is set, and a calendar
+/// that holds its own rule. Pricing is covered by the domain's tests; the
+/// quote needs the catalogue table, which these tests do not have.
+mod home_moves {
+    use super::*;
+    use logisticos_order_intake::domain::value_objects::home_move::HomeRates;
+
+    fn server(rates: HomeRates) -> (TestClient, JwtService) {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let svc = Arc::new(
+            ShipmentService::new(
+                Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
+                Arc::new(NoOpEventPublisher),
+                Arc::new(PassthroughNormalizer),
+                Arc::new(MockAwbGenerator::default()),
+                None,
+                None,
+                Default::default(),
+                Default::default(),
+            )
+            .with_home_rates(rates),
+        );
+        let state = AppState {
+            query: Arc::new(ShipmentQueryService::new(Arc::clone(&repo) as Arc<dyn ShipmentRepository>)),
+            svc,
+            jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+                .expect("lazy pool construction is infallible"),
+        };
+        (TestClient::new(router(state)), JwtService::new(TEST_JWT_SECRET, 3600, 86400))
+    }
+
+    async fn get_slots(server: &TestClient, jwt: &JwtService) -> TestResponse {
+        let token = mint_merchant_token_with_currency(jwt, uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), Some("PHP"));
+        server
+            .get("/v1/shipments/home/slots")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn home_moves_are_refused_until_a_trip_rate_is_set() {
+        let (server, jwt) = server(HomeRates::default());
+        assert_eq!(get_slots(&server, &jwt).await.status_code().as_u16(), 503);
+    }
+
+    #[tokio::test]
+    async fn the_calendar_offers_surveys_before_moves_and_states_the_gap() {
+        let (server, jwt) = server(HomeRates { trip_cents: 22_000, ..HomeRates::default() });
+        let resp = get_slots(&server, &jwt).await;
+        assert_eq!(resp.status_code().as_u16(), 200);
+        let body: serde_json::Value = resp.json();
+        let data = &body["data"];
+        assert_eq!(data["survey_lead_days"], 2);
+        let first_survey = data["survey"][0]["starts_at"].as_str().unwrap().to_owned();
+        let first_move = data["move"][0]["starts_at"].as_str().unwrap().to_owned();
+        assert!(first_survey < first_move, "the first survey window comes before the first move");
+        assert!(data["move"].as_array().unwrap().len() > 10);
+    }
+}

@@ -40,6 +40,10 @@ pub struct Config {
     /// three payment fields is always a misconfiguration.
     #[serde(default)]
     pub accessorials: AccessorialsConfig,
+    /// Whole-home moving rates, `HOME_MOVE__*` (e.g. `HOME_MOVE__TRIP_CENTS`).
+    /// Absent, every rate is zero and home moves are refused.
+    #[serde(default)]
+    pub home_move: crate::domain::value_objects::home_move::HomeRates,
     /// HMAC-SHA256 signing secret for short-TTL quote tokens
     /// (`domain::value_objects::quote_token`). A top-level field, so it is
     /// read from the env var QUOTE_TOKEN_SECRET directly — no `__` prefix,
@@ -332,6 +336,7 @@ mod config_tests {
         let cfg = Config {
             services: ServicesConfig::default(),
             accessorials: AccessorialsConfig::default(),
+            home_move: Default::default(),
             cancellation_policy: Default::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
@@ -359,6 +364,7 @@ mod config_tests {
         let cfg = Config {
             services: ServicesConfig::default(),
             accessorials: AccessorialsConfig::default(),
+            home_move: Default::default(),
             cancellation_policy: Default::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),

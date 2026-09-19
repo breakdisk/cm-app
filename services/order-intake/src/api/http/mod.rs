@@ -39,6 +39,7 @@ fn acting_as(claims: &AuthClaims) -> ActingAs {
 }
 
 pub mod accessorials;
+pub mod home_move;
 pub mod quote;
 
 // ---------------------------------------------------------------------------
@@ -483,6 +484,10 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments",        post(create_shipment).get(list_shipments))
         .route("/shipments/bulk",   post(bulk_create_shipments))
         .route("/shipments/quote",  post(quote::get_quote))
+        // Whole-home moving: the catalogue, the calendar, a signed quote.
+        .route("/shipments/home/catalogue", get(home_move::catalogue))
+        .route("/shipments/home/slots",     get(home_move::slots))
+        .route("/shipments/home/quote",     post(home_move::quote))
         .route("/accessorials",     get(accessorials::list_accessorials))
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
