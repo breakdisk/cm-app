@@ -89,6 +89,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/users/me",                  get(users::get_me).put(users::update_me))
         .route("/users",                     get(users::list_users).post(users::invite_user))
+        .route("/users/lookup",              get(users::lookup_user))
         .route("/users/:id",                 get(users::get_user))
         .route("/users/:id/invite-link",     post(users::generate_invite_link))
         .route("/users/:id/roles",           patch(users::patch_user_roles))

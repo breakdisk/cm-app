@@ -7,6 +7,9 @@ pub struct User {
     pub id: UserId,
     pub tenant_id: TenantId,
     pub email: String,
+    /// Never serialized: every user endpoint returns this struct as JSON, and
+    /// until this they returned the hash with it.
+    #[serde(skip_serializing, default)]
     pub password_hash: String,
     pub first_name: String,
     pub last_name: String,
@@ -73,5 +76,18 @@ impl User {
     pub fn revoke_role(&mut self, role: &str) {
         self.roles.retain(|r| r != role);
         self.updated_at = Utc::now();
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+
+    #[test]
+    fn a_user_as_json_never_carries_the_password_hash() {
+        let u = User::new(TenantId::new(), "a@b.co".into(), "$argon2id$secret".into(), "A".into(), "B".into(), vec![]);
+        let json = serde_json::to_value(&u).unwrap();
+        assert!(json.get("password_hash").is_none());
+        assert!(!json.to_string().contains("argon2id"));
     }
 }
