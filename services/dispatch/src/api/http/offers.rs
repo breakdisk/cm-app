@@ -15,8 +15,6 @@ use logisticos_errors::AppError;
 use logisticos_types::{DriverId, TenantId};
 use crate::api::http::AppState;
 
-/// `GET /v1/offers/open` — live offers for the authenticated driver.
-/// App-restart / missed-FCM recovery path.
 /// `GET /v1/home-reservations/mine` — the lead's reserved whole-home moves:
 /// surveys to do and moves to run, soonest first.
 pub async fn my_home_moves(
@@ -28,6 +26,8 @@ pub async fn my_home_moves(
     Ok(Json(serde_json::json!({ "data": moves })))
 }
 
+/// `GET /v1/offers/open` — live offers for the authenticated driver.
+/// App-restart / missed-FCM recovery path.
 pub async fn list_open(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,

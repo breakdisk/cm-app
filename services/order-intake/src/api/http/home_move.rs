@@ -698,8 +698,8 @@ pub async fn decline_addendum(
 }
 
 /// `GET /v1/shipments/:id/home` — the booked move's detail. The customer who
-/// booked it, or staff who reach every shipment in the tenant; anyone else
-/// reads it as missing.
+/// booked it, the lead who reserved it (for the survey), or staff who reach
+/// every shipment in the tenant; anyone else reads it as missing.
 pub async fn detail(
     State(s): State<AppState>,
     claims: AuthClaims,
