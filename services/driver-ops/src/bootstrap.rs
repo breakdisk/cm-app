@@ -165,6 +165,7 @@ pub async fn run() -> anyhow::Result<()> {
         jwt: Arc::clone(&jwt),
         roster_tx,
         fcm: fcm_for_state,
+        providers: Arc::new(crate::infrastructure::db::PgProviderStore::new(pool.clone())),
     });
 
     use tower_http::cors::CorsLayer;

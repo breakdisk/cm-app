@@ -1,3 +1,4 @@
+pub mod provider;
 pub mod leave_policy;
 
 /// Geofence radius around a delivery address — driver must be within this to mark arrival.

@@ -1,4 +1,5 @@
 pub mod drivers;
+pub mod provider;
 pub mod tasks;
 pub mod location;
 pub mod health;
@@ -18,6 +19,8 @@ pub struct AppState {
     pub roster_tx: tokio::sync::broadcast::Sender<RosterEvent>,
     /// Optional FCM client for push notifications. None when FCM env vars are unset.
     pub fcm: Option<Arc<FcmClient>>,
+    /// Which jobs each driver is onboarded for, and when they work.
+    pub providers: Arc<dyn crate::infrastructure::db::ProviderStore>,
 }
 
 /// Events fanned out to WebSocket subscribers. Tenant-scoped on the server side —
@@ -70,6 +73,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Internal service-to-service — no JWT. The gateway refuses every
         // `/internal/` path; Istio mTLS gates the caller inside the mesh.
         .route("/v1/internal/shipments/:shipment_id/driver-contact", get(tasks::internal_driver_contact))
+        .route("/v1/internal/home-leads/capacity", get(provider::internal_home_capacity))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }
@@ -85,6 +89,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers",              get(drivers::list_drivers).post(drivers::register_driver))
         .route("/drivers/summary",      get(drivers::get_summary))
         .route("/drivers/me",           get(drivers::get_me_driver))
+        .route("/drivers/me/provider",     get(provider::get_my_provider))
+        .route("/drivers/me/availability", put(provider::put_my_availability))
         // Static sub-path before /drivers/:id — same matchit ordering rule.
         .route("/drivers/me/earnings",  get(tasks::my_earnings))
         .route("/drivers/me/hos",       get(drivers::get_my_hos))
@@ -93,6 +99,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers/:id",          get(drivers::get_driver).patch(drivers::update_driver).delete(drivers::delete_driver))
         // Admin override: force a driver's status (FLEET_MANAGE permission)
         .route("/drivers/:id/status",        put(drivers::set_driver_status))
+        .route("/drivers/:id/provider",      get(provider::get_provider).put(provider::put_provider))
         // Admin override: cancel all pending/in-progress tasks for a driver
         .route("/drivers/:id/cancel-tasks",  post(drivers::cancel_driver_tasks))
         // MCP tool endpoint: get live location for a specific driver
