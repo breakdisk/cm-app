@@ -40,6 +40,7 @@ fn acting_as(claims: &AuthClaims) -> ActingAs {
 
 pub mod accessorials;
 pub mod home_move;
+pub mod home_waitlist;
 pub mod quote;
 
 // ---------------------------------------------------------------------------
@@ -486,6 +487,10 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments/home/slots",     get(home_move::slots))
         .route("/shipments/home/quote",     post(home_move::quote))
         .route("/shipments/home",           post(home_move::book))
+        // The priority waitlist for fully booked dates.
+        .route("/shipments/home/waitlist",   post(home_waitlist::join).get(home_waitlist::mine))
+        .route("/shipments/home/waitlist/:id",       axum::routing::delete(home_waitlist::withdraw))
+        .route("/shipments/home/waitlist/:id/claim", post(home_waitlist::claim))
         .route("/accessorials",     get(accessorials::list_accessorials))
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))

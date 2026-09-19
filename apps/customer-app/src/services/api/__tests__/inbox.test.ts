@@ -49,3 +49,14 @@ test('a campaign link opens only screens the app knows', () => {
   expect(linkTarget('logisticos://inbox')).toBe('MoveInbox');
   expect(linkTarget(null)).toBeNull();
 });
+
+test('a home-move push opens the held window or the move', () => {
+  const { homeLink } = require('../inbox');
+  const id = '0b2f6c1e-8a4d-4f7b-9c1a-2d3e4f5a6b7c';
+  expect(homeLink(`logisticos://move/home/waitlist/${id}`)).toEqual({ screen: 'MoveHomeWaitlist', params: { id } });
+  expect(homeLink(`logisticos://move/home/job/${id}`)).toEqual({ screen: 'MoveHomeJob', params: { id } });
+  expect(homeLink(`https://evil.example/move/home/job/${id}`)).toBeNull();
+  expect(homeLink('logisticos://move/home/job/../../admin')).toBeNull();
+  expect(homeLink(null)).toBeNull();
+});
+

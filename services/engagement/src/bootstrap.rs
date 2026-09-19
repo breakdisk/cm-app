@@ -316,6 +316,7 @@ async fn run_kafka_consumer(
         topics::OTP_REQUESTED,      // email OTP delivery for passwordless login
         topics::AGENT_ESCALATION_RESOLVED, // human answered an escalated AI chat
         topics::TIER_CHANGED,       // a customer moved up a loyalty tier
+        topics::HOME_NOTICE,        // a home move's waitlist window, survey addendum
     ]).expect("Engagement consumer subscription failed");
 
     loop {

@@ -130,3 +130,43 @@ test('the team is named once a lead takes it', () => {
   expect(teamLine('Idris Kamal', 2, 7)).toBe('Team Idris Kamal · 2 trucks & 7-person crew');
 });
 
+describe('surge', () => {
+  const { surgeLabel, surgedTotal, surgeFromError, NO_SURGE_BPS } = require('../homeMove');
+  it('labels a surging window only', () => {
+    expect(surgeLabel(NO_SURGE_BPS)).toBeNull();
+    expect(surgeLabel(undefined)).toBeNull();
+    expect(surgeLabel(12_000)).toBe('High demand ×1.2');
+    expect(surgeLabel(15_000)).toBe('High demand ×1.5');
+    expect(surgeLabel(20_000)).toBe('High demand ×2');
+  });
+  it('surges the fare, never the survey fee — as the server does', () => {
+    expect(surgedTotal({ total_cents: 154_500, survey_cents: 4_500 }, 12_000)).toBe(184_500);
+    expect(surgedTotal({ total_cents: 150_000 }, NO_SURGE_BPS)).toBe(150_000);
+    expect(surgedTotal({ total_cents: 150_000 }, undefined)).toBe(150_000);
+    // Rounded like the server: (333 × 3,333 + 5,000) / 10,000 = 111.
+    expect(surgedTotal({ total_cents: 333 }, 13_333)).toBe(444);
+  });
+  it('reads the new surge out of a refusal', () => {
+    expect(surgeFromError('SURGE_CHANGED:13500: that window is now in high demand')).toBe(13_500);
+    expect(surgeFromError('SLOT_FULL: every team is booked')).toBeNull();
+  });
+});
+
+describe('the waitlist', () => {
+  const { fullDates, holdLeft } = require('../homeMove');
+  const at = (iso: string, open: boolean) => ({ starts_at: iso, ends_at: iso, open });
+  it('offers only dates where every window is full', () => {
+    const move = [
+      at('2026-09-26T00:00:00Z', false), at('2026-09-26T05:00:00Z', false), // Sat, both full
+      at('2026-09-27T00:00:00Z', false), at('2026-09-27T05:00:00Z', true),  // Sun, one open
+    ];
+    expect(fullDates({ move, utc_offset_minutes: 480 })).toEqual(['2026-09-26']);
+  });
+  it('counts a hold down and ends it', () => {
+    const now = Date.parse('2026-09-19T08:00:00Z');
+    expect(holdLeft('2026-09-19T08:04:12Z', now)).toBe('4:12');
+    expect(holdLeft('2026-09-19T08:00:00Z', now)).toBeNull();
+    expect(holdLeft('not a date', now)).toBeNull();
+  });
+});
+

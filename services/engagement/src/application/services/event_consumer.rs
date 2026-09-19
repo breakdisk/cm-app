@@ -164,6 +164,12 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &["push"],
         }),
+        // A home-move notice; the template is chosen by its kind below.
+        topics::HOME_NOTICE => Some(EventNotificationMapping {
+            template_id: "home_notice",
+            priority: NotificationPriority::High,
+            channels: &["push"],
+        }),
         _ => None,
     }
 }
@@ -245,12 +251,21 @@ pub async fn process_event(
     let is_otp_event          = event_type == topics::OTP_REQUESTED;
     let is_support_resolution = event_type == topics::AGENT_ESCALATION_RESOLVED;
     let is_tier_changed       = event_type == topics::TIER_CHANGED;
+    let is_home_notice        = event_type == topics::HOME_NOTICE;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
     let (resolved_template, resolved_channels): (&str, &[&str]) = if is_otp_event || is_withdrawal_event {
         // Template/channels already set correctly in get_mapping(); pass through.
         (mapping.template_id, mapping.channels)
+    } else if is_home_notice {
+        match home_notice_template(data["kind"].as_str().unwrap_or("")) {
+            Some(t) => (t, &["push"]),
+            None => {
+                warn!(kind = data["kind"].as_str().unwrap_or(""), "HOME_NOTICE of an unknown kind — skipping");
+                return;
+            }
+        }
     } else if is_invoice_event {
         let recipient_type = data["recipient_type"].as_str().unwrap_or("merchant");
         if recipient_type == "customer" {
@@ -262,7 +277,13 @@ pub async fn process_event(
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_tier_changed {
+    let (customer_id, phone, email, vars) = if is_home_notice {
+        let Some(account_id) = data["account_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok()) else {
+            warn!(event_type, "HOME_NOTICE missing account_id — skipping notification");
+            return;
+        };
+        (account_id, String::new(), String::new(), data["vars"].clone())
+    } else if is_tier_changed {
         // `account_id` is the identity user id promotions keys an account
         // by — the same key the push channel looks device tokens up with.
         let Some(account_id) = data["account_id"].as_str()
@@ -538,6 +559,14 @@ pub async fn process_event(
             "tier_upgraded" => (
                 Some(format!("You're now {}", vars["tier_name"].as_str().unwrap_or("a member"))),
                 "You've reached {{tier_name}}: {{perk}}. It comes off your moves by itself — no code needed.".to_owned(),
+            ),
+            "home_waitlist_offered" => (
+                Some("A moving team just opened up".to_owned()),
+                "{{window}} is yours for {{hold_minutes}} minutes. Open the app to book it before it goes to the next in line.".to_owned(),
+            ),
+            "home_addendum_pending" => (
+                Some("Your survey found more to move".to_owned()),
+                "Your crew lead added {{amount}} to your move. Approve it in the app — nothing extra is loaded until you do.".to_owned(),
             ),
             "support_resolution" => (
                 Some("Your support request has an answer".to_owned()),
@@ -1161,5 +1190,27 @@ pub async fn handle_campaign_triggered(
         &serde_json::to_vec(&completed_payload).unwrap_or_default(),
     ).await {
         error!(campaign_id = %campaign_id, err = %e, "Failed to publish CAMPAIGN_COMPLETED");
+    }
+}
+
+/// The template for a home-move notice's kind. None for a kind this build
+/// does not know: dropped with a warning, never sent as something else.
+fn home_notice_template(kind: &str) -> Option<&'static str> {
+    match kind {
+        "waitlist_offered" => Some("home_waitlist_offered"),
+        "addendum_pending" => Some("home_addendum_pending"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod home_notice_tests {
+    use super::home_notice_template;
+
+    #[test]
+    fn each_kind_has_its_message_and_an_unknown_one_none() {
+        assert_eq!(home_notice_template("waitlist_offered"), Some("home_waitlist_offered"));
+        assert_eq!(home_notice_template("addendum_pending"), Some("home_addendum_pending"));
+        assert_eq!(home_notice_template("something_new"), None);
     }
 }

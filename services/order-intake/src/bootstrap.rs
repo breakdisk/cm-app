@@ -286,6 +286,20 @@ pub async fn run() -> anyhow::Result<()> {
         jwt,
         pool: pool_for_dims,
     };
+    // The priority waitlist: every minute, lapse unclaimed holds and offer
+    // opened windows to the queue, first come first served.
+    if cfg.home_move.offered() {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                if let Err(e) = crate::api::http::home_waitlist::sweep(&sweep_state).await {
+                    tracing::warn!(err = %e, "home waitlist sweep failed — next minute");
+                }
+            }
+        });
+    }
     let app = router(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors);

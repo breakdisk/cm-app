@@ -12,7 +12,7 @@ import { Platform } from 'react-native';
 import { getIdentityClient } from './api/client';
 import { navigationRef } from '../navigation/navigationRef';
 import { IS_MOVE_APP } from '../config/variant';
-import { linkTarget } from './api/inbox';
+import { homeLink, linkTarget } from './api/inbox';
 
 const STORED_PUSH_TOKEN_KEY = 'push_token';
 const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
@@ -34,6 +34,16 @@ if (!isExpoGo) {
     const data = response.notification.request.content.data as Record<string, unknown>;
     const deepLink = data?.deep_link as string | undefined;
     if (!deepLink) return;
+
+    // A home move: a waitlist window held for them, or an addendum to approve.
+    const home = IS_MOVE_APP ? homeLink(deepLink) : null;
+    if (home) {
+      if (navigationRef.isReady()) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (navigationRef as any).navigate('Main', { screen: home.screen, params: home.params });
+      }
+      return;
+    }
 
     // The Move app's own screens: a tier upgrade opens Offers, a campaign
     // opens whatever it links to. `Main` is the Move stack in this variant.

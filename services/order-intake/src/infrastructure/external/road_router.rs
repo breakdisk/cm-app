@@ -17,13 +17,13 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use logisticos_types::Coordinates;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const MAPBOX_DIRECTIONS_URL: &str = "https://api.mapbox.com/directions/v5/mapbox/driving";
 const ROUTE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What a distance was measured along.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DistanceBasis {
     /// The driving route.

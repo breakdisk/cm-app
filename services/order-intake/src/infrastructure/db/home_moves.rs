@@ -35,6 +35,13 @@ pub struct HomeMoveRecord {
     pub lead_commission_cents: i64,
     #[serde(skip_serializing)]
     pub lead_payout_cents: i64,
+    /// The window's surge when booked (bps; 10000 is none) and what it added
+    /// to the fare. Shown to the customer.
+    pub surge_bps: i32,
+    pub surge_cents: i64,
+    /// The surge, passed to the lead whole; inside `lead_payout_cents`.
+    #[serde(skip_serializing)]
+    pub lead_bonus_cents: i64,
 }
 
 /// Once per shipment: a retried booking (same idempotency key, same
@@ -45,8 +52,8 @@ pub async fn insert(pool: &PgPool, r: &HomeMoveRecord) -> anyhow::Result<()> {
                (shipment_id, tenant_id, account_id, property, items, plan, distance_centikm,
                 survey_required, survey_at, move_at, total_cents, currency,
                 trucks, helpers, crew_total, large_estate, international, survey_cents,
-                lead_gross_cents, lead_commission_cents, lead_payout_cents)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                lead_gross_cents, lead_commission_cents, lead_payout_cents, surge_bps, surge_cents, lead_bonus_cents)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
            ON CONFLICT (shipment_id) DO NOTHING"#,
     )
     .bind(r.shipment_id)
@@ -70,6 +77,9 @@ pub async fn insert(pool: &PgPool, r: &HomeMoveRecord) -> anyhow::Result<()> {
     .bind(r.lead_gross_cents)
     .bind(r.lead_commission_cents)
     .bind(r.lead_payout_cents)
+    .bind(r.surge_bps)
+    .bind(r.surge_cents)
+    .bind(r.lead_bonus_cents)
     .execute(pool)
     .await?;
     Ok(())
@@ -111,7 +121,7 @@ pub async fn get(pool: &PgPool, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::R
         r#"SELECT shipment_id, tenant_id, account_id, property, items, plan, distance_centikm,
                   survey_required, survey_at, move_at, total_cents, currency,
                   trucks, helpers, crew_total, large_estate, international, survey_cents, survey_submitted_at,
-                  lead_gross_cents, lead_commission_cents, lead_payout_cents
+                  lead_gross_cents, lead_commission_cents, lead_payout_cents, surge_bps, surge_cents, lead_bonus_cents
              FROM order_intake.home_moves
             WHERE tenant_id = $1 AND shipment_id = $2"#,
     )
@@ -142,6 +152,9 @@ pub async fn get(pool: &PgPool, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::R
         lead_gross_cents: r.get("lead_gross_cents"),
         lead_commission_cents: r.get("lead_commission_cents"),
         lead_payout_cents: r.get("lead_payout_cents"),
+        surge_bps: r.get("surge_bps"),
+        surge_cents: r.get("surge_cents"),
+        lead_bonus_cents: r.get("lead_bonus_cents"),
     }))
 }
 
@@ -175,9 +188,12 @@ mod tests {
             lead_gross_cents: 145_500,
             lead_commission_cents: 29_100,
             lead_payout_cents: 116_400,
+            surge_bps: 10_000,
+            surge_cents: 0,
+            lead_bonus_cents: 0,
         };
         let json = serde_json::to_value(&r).expect("serializes");
-        for hidden in ["lead_gross_cents", "lead_commission_cents", "lead_payout_cents"] {
+        for hidden in ["lead_gross_cents", "lead_commission_cents", "lead_payout_cents", "lead_bonus_cents"] {
             assert!(json.get(hidden).is_none(), "{hidden} leaked");
         }
         assert_eq!(json["total_cents"], 150_000);

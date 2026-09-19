@@ -260,6 +260,11 @@ create_topic "logisticos.driver.job.dropped"
 # promotions, consumed by engagement (the push to the customer).
 create_topic "logisticos.promotions.tier.changed"
 
+# A notice about a customer's whole-home move (a waitlisted window opening, a
+# survey addendum to approve). Published by order-intake, consumed by
+# engagement (the push).
+create_topic "logisticos.order.home.notice"
+
 # Identity. Both of these DID exist on the broker -- auto-created because a
 # publish happened to land before the consumer subscribed. That is the coin
 # flip this script exists to remove, not a reprieve.

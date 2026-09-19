@@ -596,6 +596,22 @@ pub struct AssignmentRejected {
 /// A completed move lifted an account to a higher loyalty tier. Only
 /// upgrades are published: a tier lost to the 12-month window going by is
 /// not news anyone wants pushed at them.
+/// A notice to a customer about their whole-home move. `kind` picks the
+/// message ("waitlist_offered", "addendum_pending"); an unknown kind is
+/// logged and dropped by the notifier, never guessed at.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomeNotice {
+    pub tenant_id:    Uuid,
+    /// Identity user id — the key engagement's push channel looks tokens up by.
+    pub account_id:   Uuid,
+    pub kind:         String,
+    /// What it is about: a waitlist place, a shipment.
+    pub reference_id: Uuid,
+    /// The words the message needs, and `deep_link`.
+    #[serde(default)]
+    pub vars:         serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TierChanged {
     pub tenant_id:       Uuid,

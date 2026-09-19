@@ -27,6 +27,7 @@ import { MoveHomeQuoteScreen } from '../screens/move/home/MoveHomeQuoteScreen';
 import { MoveHomeScheduleScreen } from '../screens/move/home/MoveHomeScheduleScreen';
 import { MoveHomeBookedScreen } from '../screens/move/home/MoveHomeBookedScreen';
 import { MoveHomeJobScreen } from '../screens/move/home/MoveHomeJobScreen';
+import { MoveHomeWaitlistScreen } from '../screens/move/home/MoveHomeWaitlistScreen';
 import { M } from '../screens/move/theme';
 import { SupportScreen } from '../screens/support/SupportScreen';
 import { ProfileScreen } from '../screens/profile/ProfileScreen';
@@ -68,6 +69,7 @@ export function MoveNavigator() {
       <Stack.Screen name="MoveHomeSchedule" component={MoveHomeScheduleScreen} />
       <Stack.Screen name="MoveHomeBooked" component={MoveHomeBookedScreen} options={{ gestureEnabled: false }} />
       <Stack.Screen name="MoveHomeJob" component={MoveHomeJobScreen} />
+      <Stack.Screen name="MoveHomeWaitlist" component={MoveHomeWaitlistScreen} />
       <Stack.Screen name="Support" component={SupportScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen name="KYC" component={KYCScreen} />

@@ -51,6 +51,8 @@ export interface Slot {
   ends_at: string;
   /** A team is free for it. Absent on an older server: treat as open. */
   open?: boolean;
+  /** The window's price multiplier in bps; 10000 (or absent) is none. */
+  surge_bps?: number;
 }
 
 export interface HomeSlots {
@@ -136,10 +138,11 @@ export async function getCatalogue(type: PropertyType): Promise<HomeCatalogue | 
 }
 
 /** Windows for this move: a Large Estate or a move abroad needs its own kind of team. */
-export async function getSlots(opts: { large_estate?: boolean; international?: boolean } = {}): Promise<HomeSlots> {
-  const r = await getOrderClient().get<{ data: HomeSlots }>('/v1/shipments/home/slots', {
-    params: { large_estate: !!opts.large_estate, international: !!opts.international },
-  });
+export async function getSlots(opts: { large_estate?: boolean; international?: boolean; waitlist_id?: string } = {}): Promise<HomeSlots> {
+  const params: Record<string, unknown> = { large_estate: !!opts.large_estate, international: !!opts.international };
+  // Claiming a hold: the server leaves it out of the count, so it shows open.
+  if (opts.waitlist_id) params.waitlist_id = opts.waitlist_id;
+  const r = await getOrderClient().get<{ data: HomeSlots }>('/v1/shipments/home/slots', { params });
   return r.data.data;
 }
 
@@ -183,6 +186,10 @@ export async function bookHome(req: {
   notes?: string;
   intake?: unknown;
   idempotency_key: string;
+  /** The surge shown for the window; the server refuses a higher one (SURGE_CHANGED). */
+  accepted_surge_bps?: number;
+  /** Booking a window held off the waitlist. */
+  waitlist_id?: string;
 }): Promise<HomeBooked> {
   const r = await getOrderClient().post<HomeBooked>('/v1/shipments/home', req);
   return r.data;
@@ -442,4 +449,97 @@ export function readChips(r: HomeRead, size: string | null): string[] {
   if (r.pickup_floor != null) chips.push(`${FLOORS[r.pickup_floor]} floor`);
   if (r.pickup_has_lift != null) chips.push(r.pickup_has_lift ? 'Lift' : 'No lift');
   return chips;
+}
+
+// ── Surge ────────────────────────────────────────────────────────────────────
+
+export const NO_SURGE_BPS = 10_000;
+
+/** "High demand ×1.3" for a surging window; null otherwise. */
+export function surgeLabel(bps?: number | null): string | null {
+  if (!bps || bps <= NO_SURGE_BPS) return null;
+  return `High demand ×${(bps / NO_SURGE_BPS).toFixed(1).replace(/\.0$/, '')}`;
+}
+
+/**
+ * The total for a window: the fare surges, the survey fee never does. The
+ * server's arithmetic, for showing the price before booking — the server
+ * charges its own figure and refuses a surge above what was shown.
+ */
+export function surgedTotal(q: Pick<HomeQuote, 'total_cents' | 'survey_cents'>, bps?: number | null): number {
+  const surge = Math.max(0, (bps ?? NO_SURGE_BPS) - NO_SURGE_BPS);
+  const fare = Math.max(0, q.total_cents - (q.survey_cents ?? 0));
+  return q.total_cents + Math.floor((fare * surge + 5_000) / 10_000);
+}
+
+/** The surge a SURGE_CHANGED refusal names, if any. */
+export function surgeFromError(message: string): number | null {
+  const m = message.match(/SURGE_CHANGED:(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+// ── The priority waitlist ────────────────────────────────────────────────────
+
+export interface WaitlistPlace {
+  id: string;
+  wanted_date: string;
+  status: 'waiting' | 'offered' | 'booked' | 'lapsed' | 'withdrawn';
+  offered_move_at?: string | null;
+  hold_expires_at?: string | null;
+  /** Places ahead in the queue, while waiting. */
+  ahead?: number | null;
+}
+
+export interface WaitlistClaim {
+  waitlist_id: string;
+  move_at: string;
+  hold_expires_at: string;
+  quote: HomeQuote;
+}
+
+/** Queue for a fully booked date (YYYY-MM-DD, local). */
+export async function joinWaitlist(quoteToken: string, date: string): Promise<WaitlistPlace> {
+  const r = await getOrderClient().post<{ data: WaitlistPlace }>('/v1/shipments/home/waitlist', { quote_token: quoteToken, date });
+  return r.data.data;
+}
+
+export async function getWaitlist(): Promise<WaitlistPlace[]> {
+  try {
+    const r = await getOrderClient().get<{ data: WaitlistPlace[] }>('/v1/shipments/home/waitlist');
+    return r.data.data ?? [];
+  } catch (err: any) {
+    if (err?.status === 404 || err?.status === 503) return [];
+    throw err;
+  }
+}
+
+export async function withdrawWaitlist(id: string): Promise<void> {
+  await getOrderClient().delete(`/v1/shipments/home/waitlist/${id}`);
+}
+
+/** A window held for you: the move priced for it, and how long it is held. */
+export async function claimWaitlist(id: string): Promise<WaitlistClaim> {
+  const r = await getOrderClient().post<{ data: WaitlistClaim }>(`/v1/shipments/home/waitlist/${id}/claim`);
+  return r.data.data;
+}
+
+/**
+ * Local dates (YYYY-MM-DD) shown in the calendar where every move window is
+ * full — the ones a customer can queue for.
+ */
+export function fullDates(slots: Pick<HomeSlots, 'move' | 'utc_offset_minutes'>): string[] {
+  const byDay = new Map<string, boolean>();
+  for (const m of slots.move) {
+    const day = new Date(new Date(m.starts_at).getTime() + slots.utc_offset_minutes * 60_000).toISOString().slice(0, 10);
+    byDay.set(day, (byDay.get(day) ?? false) || m.open !== false);
+  }
+  return [...byDay.entries()].filter(([, anyOpen]) => !anyOpen).map(([day]) => day);
+}
+
+/** Whole minutes and seconds left on a hold: "4:12", or null once it ends. */
+export function holdLeft(expiresIso: string, now: number = Date.now()): string | null {
+  const ms = new Date(expiresIso).getTime() - now;
+  if (!(ms > 0)) return null;
+  const s = Math.ceil(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }

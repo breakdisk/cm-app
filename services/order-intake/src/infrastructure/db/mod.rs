@@ -4,6 +4,7 @@ pub mod home_catalogue;
 pub mod home_moves;
 /// The survey's addendum to a booked home move.
 pub mod home_addenda;
+pub mod home_waitlist;
 
 use std::pin::Pin;
 use std::future::Future;

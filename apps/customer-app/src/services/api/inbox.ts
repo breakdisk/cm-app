@@ -67,6 +67,16 @@ const LINKS: Record<string, string> = {
   inbox: 'MoveInbox',
 };
 
+/**
+ * A home-move push's destination: a held waitlist window, or the move itself
+ * (an addendum to approve). Only our scheme and an id-shaped path.
+ */
+export function homeLink(deepLink?: string | null): { screen: 'MoveHomeWaitlist' | 'MoveHomeJob'; params: { id: string } } | null {
+  const m = (deepLink ?? '').match(/^logisticos:\/\/move\/home\/(waitlist|job)\/([0-9a-f-]{36})$/i);
+  if (!m) return null;
+  return { screen: m[1].toLowerCase() === 'waitlist' ? 'MoveHomeWaitlist' : 'MoveHomeJob', params: { id: m[2] } };
+}
+
 export function linkTarget(deepLink?: string | null): string | null {
   if (!deepLink) return null;
   const key = deepLink.replace(/^[a-z]+:\/\//i, '').replace(/^\/+/, '').split(/[/?#]/)[0].toLowerCase();

@@ -184,9 +184,22 @@ pub struct HomeRates {
     /// The platform's commission on a lead's pay and on the survey fee.
     #[serde(default = "default_commission_bps")]
     pub commission_bps: i64,
+    /// A move window surges once less than this share of its teams is free
+    /// (bps; 0 turns surge off) …
+    #[serde(default = "default_surge_threshold_bps")]
+    pub surge_threshold_bps: i64,
+    /// … from this multiplier at the threshold …
+    #[serde(default = "default_surge_min_bps")]
+    pub surge_min_bps: i64,
+    /// … to this one for the last free team.
+    #[serde(default = "default_surge_max_bps")]
+    pub surge_max_bps: i64,
 }
 
 fn default_commission_bps() -> i64 { 2_000 }
+fn default_surge_threshold_bps() -> i64 { 2_000 }
+fn default_surge_min_bps() -> i64 { 12_000 }
+fn default_surge_max_bps() -> i64 { 15_000 }
 
 fn default_large_estate_l() -> i64 { 75_000 }
 fn default_survey_refund_hours() -> i64 { 12 }
@@ -221,6 +234,9 @@ impl Default for HomeRates {
             payout_per_m3_cents: 0,
             payout_per_km_cents: 0,
             commission_bps: default_commission_bps(),
+            surge_threshold_bps: default_surge_threshold_bps(),
+            surge_min_bps: default_surge_min_bps(),
+            surge_max_bps: default_surge_max_bps(),
         }
     }
 }
@@ -650,23 +666,58 @@ pub fn move_window_open(
     international: bool,
     offset_min: i32,
 ) -> bool {
+    window_free_bps(cap, booked, start, large_estate, international, offset_min).is_some()
+}
+
+/// The share of a move window's binding capacity still free, in bps — the
+/// tightest of: leads free in the window, jobs left in the day, and for a
+/// Large Estate or a move abroad, those among the leads who can take it.
+/// None when the window is full.
+pub fn window_free_bps(
+    cap: &DayCapacity,
+    booked: &[BookedMove],
+    start: DateTime<Utc>,
+    large_estate: bool,
+    international: bool,
+    offset_min: i32,
+) -> Option<i64> {
     let day = local_today(start, offset_min);
     let same_day: Vec<&BookedMove> = booked.iter().filter(|b| local_today(b.move_at, offset_min) == day).collect();
-    let in_window = same_day.iter().filter(|b| b.move_at == start).count() as i64;
-    if in_window >= cap.leads || same_day.len() as i64 >= cap.lead_jobs {
-        return false;
-    }
+    let count = |f: &dyn Fn(&BookedMove) -> bool| same_day.iter().filter(|b| f(b)).count() as i64;
+    let mut limits = vec![(cap.leads, count(&|b| b.move_at == start)), (cap.lead_jobs, same_day.len() as i64)];
     if large_estate {
-        let large_day = same_day.iter().filter(|b| b.large_estate).count() as i64;
-        let large_window = same_day.iter().filter(|b| b.large_estate && b.move_at == start).count() as i64;
-        if large_day >= cap.multi_truck_jobs || large_window >= cap.multi_truck_leads {
-            return false;
-        }
+        limits.push((cap.multi_truck_leads, count(&|b| b.large_estate && b.move_at == start)));
+        limits.push((cap.multi_truck_jobs, count(&|b| b.large_estate)));
     }
-    if international && same_day.iter().filter(|b| b.international).count() as i64 >= cap.international_leads {
-        return false;
+    if international {
+        limits.push((cap.international_leads, count(&|b| b.international)));
     }
-    true
+    limits
+        .into_iter()
+        .map(|(total, used)| if total <= 0 || used >= total { None } else { Some((total - used) * 10_000 / total) })
+        .try_fold(10_000, |least, free| free.map(|f| least.min(f)))
+}
+
+/// No surge: the fare as quoted.
+pub const NO_SURGE_BPS: i64 = 10_000;
+
+/// A window's price multiplier (bps) from its free capacity: none at or above
+/// the threshold, rising linearly from the minimum at the threshold to the
+/// maximum for the last free team.
+pub fn surge_bps(rates: &HomeRates, free_bps: i64) -> i64 {
+    let threshold = rates.surge_threshold_bps.clamp(0, 10_000);
+    if threshold == 0 || free_bps >= threshold {
+        return NO_SURGE_BPS;
+    }
+    let lo = rates.surge_min_bps.max(NO_SURGE_BPS);
+    let hi = rates.surge_max_bps.max(lo);
+    let short = threshold - free_bps.clamp(0, threshold);
+    lo + (hi - lo) * short / threshold
+}
+
+/// What a surge adds to a fare, rounded to the nearest unit.
+pub fn surge_cents(fare_cents: i64, bps: i64) -> i64 {
+    (fare_cents.max(0) * (bps - NO_SURGE_BPS).max(0) + 5_000) / 10_000
 }
 
 /// Whether a survey window still has a lead to send: the surveyor is the lead.
@@ -1073,6 +1124,53 @@ mod tests {
         assert_eq!(survey_pay(&silly, 4_500).net_cents, 0);
         assert_eq!(survey_pay(&pay_rates(), 4_500), LeadPay { gross_cents: 4_500, commission_cents: 900, net_cents: 3_600 });
         assert_eq!(survey_pay(&pay_rates(), -5), LeadPay::default());
+    }
+
+
+    // ── Surge ──
+
+    fn cap2(leads: i64, jobs: i64) -> DayCapacity {
+        DayCapacity { date: NaiveDate::from_ymd_opt(2026, 9, 26).expect("date"), leads, lead_jobs: jobs, multi_truck_leads: 1, multi_truck_jobs: 1, international_leads: 0 }
+    }
+
+    fn booked_at(start: DateTime<Utc>, n: usize) -> Vec<BookedMove> {
+        (0..n).map(|_| BookedMove { move_at: start, survey_at: None, large_estate: false, international: false }).collect()
+    }
+
+    #[test]
+    fn free_capacity_is_the_tightest_share_left() {
+        let start = Utc.with_ymd_and_hms(2026, 9, 26, 0, 0, 0).single().expect("start");
+        // 10 leads, 3 already in this window, 10 jobs a day between them.
+        assert_eq!(window_free_bps(&cap2(10, 10), &booked_at(start, 3), start, false, false, 480), Some(7_000));
+        // The day's jobs bind first.
+        assert_eq!(window_free_bps(&cap2(10, 4), &booked_at(start, 3), start, false, false, 480), Some(2_500));
+        // Full is None — and closed.
+        assert_eq!(window_free_bps(&cap2(3, 10), &booked_at(start, 3), start, false, false, 480), None);
+        assert!(!move_window_open(&cap2(3, 10), &booked_at(start, 3), start, false, false, 480));
+        // A move abroad with no international lead is never open.
+        assert_eq!(window_free_bps(&cap2(10, 10), &[], start, false, true, 480), None);
+    }
+
+    #[test]
+    fn surge_starts_below_twenty_percent_free_and_tops_out_at_one_and_a_half() {
+        let r = HomeRates::default();
+        assert_eq!(surge_bps(&r, 10_000), NO_SURGE_BPS);
+        assert_eq!(surge_bps(&r, 2_000), NO_SURGE_BPS, "at the threshold: no surge");
+        assert_eq!(surge_bps(&r, 1_999), 12_001, "just under: just over 1.2x");
+        assert_eq!(surge_bps(&r, 1_000), 13_500);
+        assert_eq!(surge_bps(&r, 0), 15_000);
+        // Off when the threshold is 0.
+        assert_eq!(surge_bps(&HomeRates { surge_threshold_bps: 0, ..r.clone() }, 100), NO_SURGE_BPS);
+        // A max under the min is read as the min: never a discount.
+        assert_eq!(surge_bps(&HomeRates { surge_min_bps: 12_000, surge_max_bps: 9_000, ..r }, 0), 12_000);
+    }
+
+    #[test]
+    fn a_surge_adds_to_the_fare_and_nothing_else() {
+        assert_eq!(surge_cents(150_000, 12_000), 30_000);
+        assert_eq!(surge_cents(150_000, NO_SURGE_BPS), 0);
+        assert_eq!(surge_cents(150_000, 9_000), 0);
+        assert_eq!(surge_cents(333, 13_333), 111);
     }
 
 }

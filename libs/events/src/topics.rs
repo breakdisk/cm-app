@@ -134,6 +134,13 @@ pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbo
 /// promotions; engagement pushes it to the customer.
 pub const TIER_CHANGED:              &str = "logisticos.promotions.tier.changed";
 
+// Whole-home moves
+/// Something about a customer's home move they should hear about now — a
+/// waitlisted window opening, a survey addendum to approve. `kind` names it,
+/// so a new notice is data, not a topic. Published by order-intake;
+/// engagement pushes it.
+pub const HOME_NOTICE:               &str = "logisticos.order.home.notice";
+
 // ── OmniDeliv (hyperlocal delivery product) ─────────────────────────────────
 //
 // Namespaced under `omnideliv.` rather than `logisticos.` because it is a
@@ -221,6 +228,7 @@ mod tests {
             SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED, AGENT_ESCALATION_RESOLVED,
             WHATSAPP_INBOUND,
             TIER_CHANGED,
+            HOME_NOTICE,
         ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),

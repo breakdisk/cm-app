@@ -23,12 +23,14 @@ use crate::api::http::AppState;
 use crate::application::commands::{AddressInput, CreateShipmentCommand, HomeBooking, IntakeInput};
 use crate::domain::value_objects::cancel_authority::is_tenant_wide;
 use crate::domain::value_objects::home_move::{
-    addendum_amount, validate_extras, SurveyExtra, check_schedule, lead_pay, local_today, move_slots, move_window_open, price, resolve, survey_pay, survey_slots, survey_window_open, volume_of,
+    addendum_amount, validate_extras, SurveyExtra, check_schedule, lead_pay, local_today, move_slots, price, resolve, survey_pay, survey_slots, survey_window_open, volume_of,
     CatalogueItem, DayCapacity, DeclaredItem, HomePrice, PricedItem, Property, PropertyType, TruckPlan, SURVEY_LEAD_DAYS,
+    surge_bps, surge_cents, window_free_bps, NO_SURGE_BPS,
 };
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
 use crate::infrastructure::db::home_catalogue::catalogue_for;
 use crate::infrastructure::db::home_addenda::{self, NewAddendum};
+use crate::infrastructure::db::home_waitlist;
 use crate::infrastructure::db::home_moves::{self, HomeMoveRecord};
 
 /// A home move takes longer to review than a parcel; the token lives longer.
@@ -62,6 +64,10 @@ pub struct HomeQuotePayload {
     pub large_estate: bool,
     pub international: bool,
     pub expires_at: DateTime<Utc>,
+    #[serde(default)]
+    pub distance_basis: Option<crate::infrastructure::external::DistanceBasis>,
+    #[serde(default)]
+    pub drive_minutes: Option<u32>,
 }
 
 pub const HOME_QUOTE_KIND: &str = "home_move";
@@ -119,6 +125,9 @@ pub struct SlotsQuery {
     /// From the quote: a move abroad needs an international lead.
     #[serde(default)]
     pub international: bool,
+    /// Claiming a waitlist hold: that hold is not counted against the caller.
+    #[serde(default)]
+    pub waitlist_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,16 +136,22 @@ pub struct SlotView {
     pub ends_at: DateTime<Utc>,
     /// A team is free for it. False greys it out.
     pub open: bool,
+    /// The window's price multiplier, bps: 10000 is none. A move window
+    /// whose teams are nearly all booked surges; a survey window never does.
+    pub surge_bps: i64,
 }
 
 /// The calendar with each window's capacity: the teams driver-ops says the
-/// date has, less the moves and surveys already booked. When capacity cannot
-/// be read, every window is offered and `checked` says it was not counted.
-async fn calendar(
+/// date has, less the moves and surveys already booked and the windows held
+/// for waitlisted customers (bar `claiming`, the hold being booked). Each
+/// move window carries its surge. When capacity cannot be read, every window
+/// is offered at no surge and `checked` says it was not counted.
+pub(crate) async fn calendar(
     s: &AppState,
     tenant_id: Uuid,
     large_estate: bool,
     international: bool,
+    claiming: Option<Uuid>,
 ) -> Result<(Vec<SlotView>, Vec<SlotView>, bool), AppError> {
     let rates = &s.svc.home_rates;
     let offset = rates.utc_offset_minutes;
@@ -157,27 +172,37 @@ async fn calendar(
         }
     };
     let Some(capacity) = capacity else {
-        let open = |sl: &crate::domain::value_objects::home_move::Slot| SlotView { starts_at: sl.starts_at, ends_at: sl.ends_at, open: true };
+        let open = |sl: &crate::domain::value_objects::home_move::Slot| SlotView { starts_at: sl.starts_at, ends_at: sl.ends_at, open: true, surge_bps: NO_SURGE_BPS };
         return Ok((surveys.iter().map(open).collect(), moves.iter().map(open).collect(), false));
     };
     let by_date: std::collections::HashMap<chrono::NaiveDate, DayCapacity> =
         capacity.into_iter().map(|c| (c.date, c)).collect();
-    let booked = home_moves::booked_between(&s.pool, tenant_id, first.starts_at, last.ends_at)
+    let mut booked = home_moves::booked_between(&s.pool, tenant_id, first.starts_at, last.ends_at)
         .await
         .map_err(AppError::Internal)?;
+    booked.extend(home_waitlist::holds(&s.pool, tenant_id, claiming).await.map_err(AppError::Internal)?);
     let none = DayCapacity::default();
     let cap_of = |at: DateTime<Utc>| by_date.get(&local_today(at, offset)).unwrap_or(&none);
 
     let survey_view = surveys
         .iter()
-        .map(|sl| SlotView { starts_at: sl.starts_at, ends_at: sl.ends_at, open: survey_window_open(cap_of(sl.starts_at), &booked, sl.starts_at) })
-        .collect();
-    let move_view = moves
-        .iter()
         .map(|sl| SlotView {
             starts_at: sl.starts_at,
             ends_at: sl.ends_at,
-            open: move_window_open(cap_of(sl.starts_at), &booked, sl.starts_at, large_estate, international, offset),
+            open: survey_window_open(cap_of(sl.starts_at), &booked, sl.starts_at),
+            surge_bps: NO_SURGE_BPS,
+        })
+        .collect();
+    let move_view = moves
+        .iter()
+        .map(|sl| {
+            let free = window_free_bps(cap_of(sl.starts_at), &booked, sl.starts_at, large_estate, international, offset);
+            SlotView {
+                starts_at: sl.starts_at,
+                ends_at: sl.ends_at,
+                open: free.is_some(),
+                surge_bps: free.map_or(NO_SURGE_BPS, |f| surge_bps(rates, f)),
+            }
         })
         .collect();
     Ok((survey_view, move_view, true))
@@ -196,7 +221,16 @@ pub async fn slots(
     if !rates.offered() {
         return Err(not_offered());
     }
-    let (survey, moves, checked) = calendar(&s, claims.tenant_id, q.large_estate, q.international).await?;
+    // The caller's own live hold is theirs to book, not a full window.
+    let claiming = match q.waitlist_id {
+        Some(id) => home_waitlist::get(&s.pool, claims.tenant_id, id)
+            .await
+            .map_err(AppError::Internal)?
+            .filter(|e| e.account_id == claims.user_id && e.status == "offered" && e.hold_expires_at.is_some_and(|x| x > Utc::now()))
+            .map(|e| e.id),
+        None => None,
+    };
+    let (survey, moves, checked) = calendar(&s, claims.tenant_id, q.large_estate, q.international, claiming).await?;
     let next_open_move = moves.iter().find(|m| m.open).map(|m| m.starts_at);
     Ok(Json(serde_json::json!({ "data": {
         "survey": survey,
@@ -301,6 +335,8 @@ pub async fn quote(
         large_estate: priced.large_estate,
         international,
         expires_at,
+        distance_basis: Some(drive.basis),
+        drive_minutes: drive.minutes,
     };
     let quote_token = quote_token::sign_payload(payment.quote_token_secret.as_bytes(), &payload);
 
@@ -339,6 +375,13 @@ pub struct HomeBookRequest {
     pub intake: Option<IntakeInput>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// The surge the customer was shown for the window (bps). Booking is
+    /// refused (`SURGE_CHANGED`) if the window has surged past it since.
+    #[serde(default)]
+    pub accepted_surge_bps: Option<i64>,
+    /// Booking a window held for this customer off the waitlist.
+    #[serde(default)]
+    pub waitlist_id: Option<Uuid>,
 }
 
 fn tenant_code(slug: &str) -> String {
@@ -412,11 +455,32 @@ pub async fn book(
         .map_err(|e| AppError::Validation(format!("Invalid quote: {e}")))?;
 
     let now = Utc::now();
-    let parcel = admit(&payload, claims.tenant_id, claims.user_id, req.survey_at, req.move_at, now, rates.utc_offset_minutes)?;
+    let mut parcel = admit(&payload, claims.tenant_id, claims.user_id, req.survey_at, req.move_at, now, rates.utc_offset_minutes)?;
+
+    // A window held off the waitlist is this customer's for its hold, and
+    // only that window.
+    let claiming = match req.waitlist_id {
+        None => None,
+        Some(id) => {
+            let held = home_waitlist::get(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?;
+            match held {
+                Some(e) if e.account_id == claims.user_id
+                    && e.status == "offered"
+                    && e.offered_move_at == Some(req.move_at)
+                    && e.hold_expires_at.is_some_and(|x| x > now) => Some(id),
+                _ => {
+                    return Err(AppError::Conflict(
+                        "HOLD_LAPSED: that window is no longer held for you — pick an open one or rejoin the waitlist".into(),
+                    ))
+                }
+            }
+        }
+    };
 
     // The windows may have filled since the calendar was drawn.
-    let (surveys, moves, _) = calendar(&s, claims.tenant_id, payload.large_estate, payload.international).await?;
-    if !moves.iter().any(|m| m.starts_at == req.move_at && m.open) {
+    let (surveys, moves, _) = calendar(&s, claims.tenant_id, payload.large_estate, payload.international, claiming).await?;
+    let window = moves.iter().find(|m| m.starts_at == req.move_at && m.open);
+    if window.is_none() {
         let next = moves.iter().find(|m| m.open).map(|m| m.starts_at.to_rfc3339()).unwrap_or_default();
         return Err(AppError::Conflict(format!(
             "SLOT_FULL: every verified moving team is booked for that move window{}",
@@ -428,6 +492,15 @@ pub async fn book(
             return Err(AppError::Conflict("SLOT_FULL: every lead is surveying in that window — pick another".into()));
         }
     }
+    // Surge on the fare (never the survey fee), at most what the customer saw.
+    let surge = window.map_or(NO_SURGE_BPS, |w| w.surge_bps);
+    if surge > req.accepted_surge_bps.unwrap_or(NO_SURGE_BPS) {
+        return Err(AppError::Conflict(format!(
+            "SURGE_CHANGED:{surge}: that window is now in high demand — look at the new price before booking"
+        )));
+    }
+    let surge_added = surge_cents(payload.total_cents - payload.survey_cents, surge);
+    parcel.amount_cents += surge_added;
 
     let phone = req
         .contact_phone
@@ -441,8 +514,10 @@ pub async fn book(
     let name = req.contact_name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or("Customer").to_owned();
     let is_customer = claims.roles.iter().any(|r| r == "customer");
     let item_count: u32 = payload.items.iter().map(|i| i.qty).sum();
-    // The lead's pay, less commission. The survey deposit is its own pay.
+    // The lead's pay, less commission. The survey deposit is its own pay; a
+    // surge is passed to the lead whole, as a High-Demand Bonus.
     let pay = lead_pay(rates, volume_of(&payload.items), payload.distance_centikm, payload.total_cents - payload.survey_cents);
+    let lead_payout = pay.net_cents + surge_added;
 
     let cmd = CreateShipmentCommand {
         tenant_id: claims.tenant_id,
@@ -492,7 +567,7 @@ pub async fn book(
                 move_at: req.move_at,
                 move_date: Some((req.move_at + Duration::minutes(i64::from(rates.utc_offset_minutes))).date_naive()),
                 survey_at: req.survey_at,
-                lead_payout_cents: Some(pay.net_cents).filter(|p| *p > 0),
+                lead_payout_cents: Some(lead_payout).filter(|p| *p > 0),
             },
         }),
         intake: req.intake,
@@ -513,7 +588,7 @@ pub async fn book(
         survey_required: payload.survey_required,
         survey_at: req.survey_at,
         move_at: req.move_at,
-        total_cents: payload.total_cents,
+        total_cents: payload.total_cents + surge_added,
         currency: payload.currency.clone(),
         trucks: i32::try_from(payload.trucks).unwrap_or(i32::MAX),
         helpers: i32::try_from(payload.helpers).unwrap_or(i32::MAX),
@@ -524,9 +599,15 @@ pub async fn book(
         survey_submitted_at: None,
         lead_gross_cents: pay.gross_cents,
         lead_commission_cents: pay.commission_cents,
-        lead_payout_cents: pay.net_cents,
+        lead_payout_cents: lead_payout,
+        surge_bps: i32::try_from(surge).unwrap_or(i32::MAX),
+        surge_cents: surge_added,
+        lead_bonus_cents: surge_added,
     };
     home_moves::insert(&s.pool, &record).await.map_err(AppError::Internal)?;
+    if let Some(id) = claiming {
+        home_waitlist::mark_booked(&s.pool, id).await.map_err(AppError::Internal)?;
+    }
     tracing::info!(
         tenant_id = %claims.tenant_id, shipment_id = %record.shipment_id, total_cents = record.total_cents,
         survey = record.survey_required, "home move booked"
@@ -827,6 +908,8 @@ mod tests {
             large_estate: false,
             international: false,
             expires_at: now + Duration::minutes(30),
+            distance_basis: None,
+            drive_minutes: None,
         }
     }
 

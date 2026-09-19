@@ -11,6 +11,7 @@ import { M } from '../theme';
 import { Ambient, Field, Label, Panel, PrimaryButton, Toggle, TopBar } from '../ui';
 import { setDraft, useHomeDraft } from './homeDraft';
 import { apiMessage, h, Pills, ReadBackPanel } from './homeUi';
+import { WaitlistPanel } from './WaitlistPanel';
 
 const TYPES: { value: PropertyType; label: string }[] = [
   { value: 'apartment', label: 'Apartment' },
@@ -53,6 +54,7 @@ export function MoveHomeSetScreen({ navigation }: { navigation: any }) {
       <TopBar label="Whole-home move" onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={[h.content, { paddingBottom: 24 }]} keyboardShouldPersistTaps="handled">
         <Text style={h.heading}>The home, then the inventory.</Text>
+        <WaitlistPanel onClaim={(id) => navigation.navigate('MoveHomeWaitlist', { id })} />
         <ReadBackPanel read={d.read} />
 
         {catalogue === null && (
