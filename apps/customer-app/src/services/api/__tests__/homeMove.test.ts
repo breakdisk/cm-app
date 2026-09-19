@@ -1,6 +1,7 @@
 jest.mock('../client', () => ({ getOrderClient: jest.fn() }));
 
 import {
+  crewLine, firstOpenSurvey, teamLine,
   declared, isHomeMove, moveOk, readChips, readHome, sizeFromRead, slotDay, surveyRequired, totals, validMovePick,
   type HomeCatalogue, type HomeSlots,
 } from '../homeMove';
@@ -104,3 +105,28 @@ test('the draft inventory becomes declared lines and running totals', () => {
   expect(declared(inv)).toHaveLength(2);
   expect(totals(inv, catalogue)).toEqual({ volumeL: 4200, weightKg: 156, count: 2 });
 });
+
+describe('full windows', () => {
+  const slots = (moveOpen: boolean[]): HomeSlots => ({
+    survey: [{ starts_at: '2026-09-18T00:00:00Z', ends_at: '2026-09-18T02:00:00Z', open: false }, { starts_at: '2026-09-18T02:00:00Z', ends_at: '2026-09-18T04:00:00Z', open: true }],
+    move: moveOpen.map((open, i) => ({ starts_at: `2026-09-2${1 + i}T00:00:00Z`, ends_at: `2026-09-2${1 + i}T04:00:00Z`, open })),
+    survey_lead_days: 2,
+    utc_offset_minutes: 480,
+  });
+
+  test('a full move window is never picked; the next open one is', () => {
+    expect(validMovePick(slots([false, true]), 0, 0, false)).toBe(1);
+    expect(moveOk(slots([false])[`move`][0], null, false, slots([false]))).toBe(false);
+  });
+
+  test('the survey starts on the first window a lead is free for', () => {
+    expect(firstOpenSurvey(slots([true]))).toBe(1);
+  });
+});
+
+test('the team is named once a lead takes it', () => {
+  expect(crewLine(1, 3)).toBe('1 truck & 3-person crew');
+  expect(teamLine(null, 2, 7)).toBe('2 trucks & 7-person crew');
+  expect(teamLine('Idris Kamal', 2, 7)).toBe('Team Idris Kamal · 2 trucks & 7-person crew');
+});
+

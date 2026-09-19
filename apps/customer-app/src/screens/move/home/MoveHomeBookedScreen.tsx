@@ -39,10 +39,10 @@ export function MoveHomeBookedScreen({ navigation, route }: { navigation: any; r
             <Text style={h.note}>Crew arrives {slotHours(at(moveAt, 4), offset).split(' – ')[0]}</Text>
           </Panel>
         )}
-        <Text style={h.note}>We'll message you when your crew lead is named.</Text>
+        <Text style={h.note}>We'll message you when your crew lead is named. The survey may find items to add — you approve those before anything more is charged.</Text>
       </ScrollView>
       <View style={[h.footer, { paddingBottom: insets.bottom + 12 }]}>
-        {!!id && <PrimaryButton label="TRACK IT" onPress={() => navigation.replace('Track', { awb, id })} />}
+        {!!id && <PrimaryButton label="YOUR MOVE" onPress={() => navigation.replace('MoveHomeJob', { id })} />}
         <GhostButton label="Back home" onPress={() => navigation.popToTop()} />
       </View>
     </View>

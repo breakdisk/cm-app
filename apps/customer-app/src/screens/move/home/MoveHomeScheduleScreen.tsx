@@ -4,15 +4,18 @@
  * dispatch; moving the survey later re-resolves the move to the first legal
  * day rather than trusting the earlier pick. The server holds the same rule.
  *
- * The crew is not named here: a crew is assigned by operations for the
- * booked day, and the same lead runs the survey and the move.
+ * Windows fill as verified teams are booked: a full one is greyed out, and
+ * when every window shown is full the next open one is named. The lead is
+ * named once one takes the job, and runs both the survey and the move.
  */
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
 import type { RootState } from '../../../store';
-import { bookHome, getSlots, moveOk, slotDay, slotHours, validMovePick, type HomeQuote, type HomeSlots } from '../../../services/api/homeMove';
+import {
+  bookHome, crewLine, firstOpenSurvey, getSlots, moveOk, slotDay, slotHours, validMovePick, type HomeQuote, type HomeSlots,
+} from '../../../services/api/homeMove';
 import { formatMoney } from '../format';
 import { M } from '../theme';
 import { Ambient, Field, Label, Panel, PrimaryButton, TopBar } from '../ui';
@@ -33,9 +36,15 @@ export function MoveHomeScheduleScreen({ navigation, route }: { navigation: any;
   // One key per booking attempt on this screen, so a retry is not a second move.
   const [key] = useState(makeKey);
 
-  useEffect(() => {
-    getSlots().then(setSlots).catch((e) => setError(apiMessage(e)));
-  }, []);
+  const loadSlots = React.useCallback(() => {
+    getSlots({ large_estate: quote?.large_estate, international: quote?.international })
+      .then((s) => {
+        setSlots(s);
+        setSurveyPick(firstOpenSurvey(s));
+      })
+      .catch((e) => setError(apiMessage(e)));
+  }, [quote?.large_estate, quote?.international]);
+  useEffect(() => { loadSlots(); }, [loadSlots]);
 
   const required = quote?.survey_required ?? false;
   const move = slots ? validMovePick(slots, surveyPick, movePick, required) : 0;
@@ -66,7 +75,10 @@ export function MoveHomeScheduleScreen({ navigation, route }: { navigation: any;
       }
     } catch (e) {
       const msg = apiMessage(e);
-      if (/expired|price the move again/i.test(msg)) {
+      if (/SLOT_FULL/.test(msg)) {
+        Alert.alert('That window just filled', 'Every verified moving team is booked for it now. Pick another — the next open one is highlighted.');
+        loadSlots();
+      } else if (/expired|price the move again/i.test(msg)) {
         Alert.alert('The quote expired', 'Prices hold for 30 minutes. Here it is again.', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       } else {
         Alert.alert("Couldn't book", msg);
@@ -88,6 +100,7 @@ export function MoveHomeScheduleScreen({ navigation, route }: { navigation: any;
           <>
             <Panel>
               <Text style={[h.note, { letterSpacing: 1.4 }]}>YOUR CREW</Text>
+              <Text style={[h.rowLabel, { marginTop: 4 }]}>{crewLine(quote.trucks, quote.crew_total ?? quote.trucks + quote.helpers)}</Text>
               <Text style={[h.body, { marginTop: 6 }]}>
                 {required
                   ? 'Your crew lead is named before the survey. The same lead surveys the home and runs the move, so you meet the same person twice.'
@@ -100,7 +113,7 @@ export function MoveHomeScheduleScreen({ navigation, route }: { navigation: any;
                 <Label>Survey</Label>
                 <View style={s.slots}>
                   {slots.survey.slice(0, 12).map((sl, i) => (
-                    <SlotPill key={sl.starts_at} on={i === surveyPick} top={slotDay(sl.starts_at, slots.utc_offset_minutes)} bottom={slotHours(sl, slots.utc_offset_minutes)} onPress={() => { setSurveyPick(i); setMovePick(validMovePick(slots, i, movePick, required)); }} />
+                    <SlotPill key={sl.starts_at} on={i === surveyPick} disabled={sl.open === false} top={slotDay(sl.starts_at, slots.utc_offset_minutes)} bottom={sl.open === false ? 'Fully booked' : slotHours(sl, slots.utc_offset_minutes)} onPress={() => { setSurveyPick(i); setMovePick(validMovePick(slots, i, movePick, required)); }} />
                   ))}
                 </View>
               </>
@@ -111,11 +124,22 @@ export function MoveHomeScheduleScreen({ navigation, route }: { navigation: any;
               {slots.move.slice(0, 16).map((sl, i) => {
                 const ok = moveOk(sl, survey, required, slots);
                 return (
-                  <SlotPill key={sl.starts_at} on={i === move} disabled={!ok} top={slotDay(sl.starts_at, slots.utc_offset_minutes)} bottom={`Crew arrives ${slotHours(sl, slots.utc_offset_minutes).split(' – ')[0]}`} onPress={() => setMovePick(i)} />
+                  <SlotPill key={sl.starts_at} on={i === move} disabled={!ok} top={slotDay(sl.starts_at, slots.utc_offset_minutes)} bottom={sl.open === false ? 'Fully booked' : `Crew arrives ${slotHours(sl, slots.utc_offset_minutes).split(' – ')[0]}`} onPress={() => setMovePick(i)} />
                 );
               })}
             </View>
-            {required && <Text style={h.note}>Move days before the survey plus two days are greyed out.</Text>}
+            {slots.move.slice(0, 16).every((m) => m.open === false) ? (
+              <Panel tone="amber">
+                <Text style={h.body}>
+                  All our verified moving teams are fully booked for these dates.
+                  {slots.next_open_move ? ` The next available slot is ${slotDay(slots.next_open_move, slots.utc_offset_minutes)}.` : ' Check back soon — teams open new days every week.'}
+                </Text>
+              </Panel>
+            ) : (
+              <Text style={h.note}>
+                {required ? 'Days before the survey plus two, and fully booked windows, are greyed out.' : 'Fully booked windows are greyed out.'}
+              </Text>
+            )}
 
             <Label>Contact</Label>
             <Panel>

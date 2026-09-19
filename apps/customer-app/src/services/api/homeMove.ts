@@ -49,6 +49,8 @@ export interface HomeCatalogue {
 export interface Slot {
   starts_at: string;
   ends_at: string;
+  /** A team is free for it. Absent on an older server: treat as open. */
+  open?: boolean;
 }
 
 export interface HomeSlots {
@@ -56,6 +58,10 @@ export interface HomeSlots {
   move: Slot[];
   survey_lead_days: number;
   utc_offset_minutes: number;
+  /** The first move start a team is free for. */
+  next_open_move?: string | null;
+  /** False when the server could not count teams and offered every window. */
+  capacity_checked?: boolean;
 }
 
 export interface DeclaredItem {
@@ -82,9 +88,14 @@ export interface HomeQuote {
   loads: number;
   trucks: number;
   trips_per_truck: number;
+  drivers?: number;
   helpers: number;
+  crew_total?: number;
   helper_hours: number;
+  large_estate?: boolean;
+  international?: boolean;
   survey_required: boolean;
+  survey_cents?: number;
   truck_name: string;
   currency: string;
   distance_km: number;
@@ -122,8 +133,11 @@ export async function getCatalogue(type: PropertyType): Promise<HomeCatalogue | 
   }
 }
 
-export async function getSlots(): Promise<HomeSlots> {
-  const r = await getOrderClient().get<{ data: HomeSlots }>('/v1/shipments/home/slots');
+/** Windows for this move: a Large Estate or a move abroad needs its own kind of team. */
+export async function getSlots(opts: { large_estate?: boolean; international?: boolean } = {}): Promise<HomeSlots> {
+  const r = await getOrderClient().get<{ data: HomeSlots }>('/v1/shipments/home/slots', {
+    params: { large_estate: !!opts.large_estate, international: !!opts.international },
+  });
   return r.data.data;
 }
 
@@ -172,6 +186,86 @@ export async function bookHome(req: {
   return r.data;
 }
 
+// ── A booked move ────────────────────────────────────────────────────────────
+
+export interface BookedHomeMove {
+  shipment_id: string;
+  property: { type: PropertyType; size: string };
+  items: { room: string; name: string; qty: number; volume_l: number }[];
+  survey_required: boolean;
+  survey_at?: string | null;
+  move_at: string;
+  total_cents: number;
+  currency: string;
+  trucks: number;
+  helpers: number;
+  crew_total: number;
+  large_estate: boolean;
+  survey_submitted_at?: string | null;
+}
+
+export interface SurveyExtra {
+  kind: 'material' | 'resource';
+  name: string;
+  qty: number;
+  unit_cents: number;
+}
+
+export interface Addendum {
+  id: string;
+  items: { room: string; name: string; qty: number; volume_l: number }[];
+  extras: SurveyExtra[];
+  note: string;
+  items_cents: number;
+  extras_cents: number;
+  total_cents: number;
+  currency: string;
+  trucks: number;
+  helpers: number;
+  crew_total: number;
+  status: 'pending' | 'approved' | 'declined' | 'paid';
+  checkout_url?: string | null;
+  created_at: string;
+}
+
+/** Null when this shipment is not a whole-home move (or not yours). */
+export async function getHomeMove(shipmentId: string): Promise<{ move: BookedHomeMove; lead: string | null } | null> {
+  try {
+    const r = await getOrderClient().get<{ data: BookedHomeMove; lead_name?: string | null }>(`/v1/shipments/${encodeURIComponent(shipmentId)}/home`);
+    return { move: r.data.data, lead: r.data.lead_name ?? null };
+  } catch (err: any) {
+    if (err?.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function getAddendum(shipmentId: string): Promise<Addendum | null> {
+  const r = await getOrderClient().get<{ data: Addendum | null }>(`/v1/shipments/${encodeURIComponent(shipmentId)}/home/addendum`);
+  return r.data.data;
+}
+
+/** Agree to the survey's additions: the difference is paid at the returned checkout. */
+export async function approveAddendum(shipmentId: string, addendumId: string): Promise<string> {
+  const r = await getOrderClient().post<{ data: { checkout_url: string } }>(
+    `/v1/shipments/${encodeURIComponent(shipmentId)}/home/addendum/${encodeURIComponent(addendumId)}/approve`,
+  );
+  return r.data.data.checkout_url;
+}
+
+export async function declineAddendum(shipmentId: string, addendumId: string): Promise<void> {
+  await getOrderClient().post(`/v1/shipments/${encodeURIComponent(shipmentId)}/home/addendum/${encodeURIComponent(addendumId)}/decline`);
+}
+
+/** "2 trucks & 7-person crew" — how the design names a team. */
+export function crewLine(trucks: number, crew: number): string {
+  return `${trucks} truck${trucks === 1 ? '' : 's'} & ${crew}-person crew`;
+}
+
+/** "Team Idris Kamal · 2 trucks & 7-person crew", or the crew alone before a lead takes it. */
+export function teamLine(lead: string | null, trucks: number, crew: number): string {
+  return lead ? `Team ${lead} · ${crewLine(trucks, crew)}` : crewLine(trucks, crew);
+}
+
 // ── Drawing helpers ──────────────────────────────────────────────────────────
 
 /** Surveyed unless an apartment of studio or one bedroom (the server's rule). */
@@ -216,6 +310,7 @@ function localDayNumber(iso: string, offsetMin: number): number {
 
 /** Whether a move start may follow the chosen survey. */
 export function moveOk(move: Slot, survey: Slot | null, required: boolean, slots: Pick<HomeSlots, 'survey_lead_days' | 'utc_offset_minutes'>): boolean {
+  if (move.open === false) return false;
   if (!required) return true;
   if (!survey) return false;
   return localDayNumber(move.starts_at, slots.utc_offset_minutes) - localDayNumber(survey.starts_at, slots.utc_offset_minutes) >= slots.survey_lead_days;
@@ -225,6 +320,12 @@ export function moveOk(move: Slot, survey: Slot | null, required: boolean, slots
  * The move pick to show: the one chosen, while it is still legal after the
  * survey moved; otherwise the first legal one. Never trusts a stored index.
  */
+/** The first survey window a lead is free for; 0 when none says otherwise. */
+export function firstOpenSurvey(slots: HomeSlots): number {
+  const i = slots.survey.findIndex((s) => s.open !== false);
+  return i >= 0 ? i : 0;
+}
+
 export function validMovePick(slots: HomeSlots, surveyPick: number, movePick: number, required: boolean): number {
   const survey = required ? slots.survey[surveyPick] ?? null : null;
   const chosen = slots.move[movePick];

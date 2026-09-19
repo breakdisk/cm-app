@@ -20,6 +20,7 @@ import { DeliveryPinCard } from '../../components/DeliveryPinCard';
 import { isTerminalStatus, LIVE_TRACKING_POLL_MS, mapPublicTracking, type TrackingResult } from '../tracking/mapTracking';
 import { ACTIVE_STATUSES, STATUS_WORDS } from './MoveHomeScreen';
 import { initials } from './format';
+import { getAddendum, getHomeMove, teamLine } from '../../services/api/homeMove';
 import { HEADING, M } from './theme';
 import { Ambient, GhostButton, Label, Panel, TopBar } from './ui';
 
@@ -241,6 +242,8 @@ export function MoveTrackScreen({ navigation, route }: { navigation: any; route:
           </Panel>
         )}
 
+        {!!id && <HomeMoveLink id={id} onOpen={() => navigation.navigate('MoveHomeJob', { id })} />}
+
         <Pressable
           onPress={() => navigation.navigate('MoveRules')}
           accessibilityRole="button"
@@ -293,3 +296,34 @@ const s = StyleSheet.create({
   moveTitle:        { fontFamily: HEADING, fontWeight: '700', fontSize: 18, color: M.ink, marginTop: 4 },
   moveStatus:       { fontSize: 11, letterSpacing: 1.4, textTransform: 'uppercase', color: M.accent },
 });
+
+/** On a whole-home move: the team, and a way to the survey and its addendum.
+ *  Renders nothing for any other shipment. */
+function HomeMoveLink({ id, onOpen }: { id: string; onOpen: () => void }) {
+  const [line, setLine] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    let live = true;
+    getHomeMove(id)
+      .then(async (res) => {
+        if (!live || !res) return;
+        setLine(teamLine(res.lead, res.move.trucks, res.move.crew_total));
+        const a = await getAddendum(id).catch(() => null);
+        if (live) setPending(!!a && (a.status === 'pending' || a.status === 'approved'));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [id]);
+  if (!line) return null;
+  return (
+    <Pressable onPress={onOpen} accessibilityRole="button" style={({ pressed }) => [pressed && { opacity: 0.8 }]}>
+      <Panel tone={pending ? 'amber' : 'accent'}>
+        <Text style={{ fontSize: 11, letterSpacing: 1.4, color: pending ? M.amber : M.label }}>
+          {pending ? 'THE SURVEY FOUND MORE — YOUR ANSWER NEEDED' : 'WHOLE-HOME MOVE'}
+        </Text>
+        <Text style={{ fontSize: 14, color: M.ink, marginTop: 4 }}>{line}</Text>
+      </Panel>
+    </Pressable>
+  );
+}
+

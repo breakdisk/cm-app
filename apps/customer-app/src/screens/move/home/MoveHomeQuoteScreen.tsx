@@ -8,7 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COUNTRY_FOR_CURRENCY } from '../../../services/api/move';
-import { declared, quoteHome, type HomeQuote, type TruckPlan } from '../../../services/api/homeMove';
+import { crewLine, declared, quoteHome, type HomeQuote, type TruckPlan } from '../../../services/api/homeMove';
 import { getMyTenant } from '../../../services/api/tenant';
 import { formatMoney } from '../format';
 import { M } from '../theme';
@@ -72,7 +72,7 @@ export function MoveHomeQuoteScreen({ navigation }: { navigation: any }) {
               <Text style={[h.note, { letterSpacing: 1.4 }]}>ALL-IN, DOOR TO DOOR</Text>
               <Text style={h.big}>{reconciles ? formatMoney(quote.total_cents, quote.currency, { whole: true }) : '—'}</Text>
               <Text style={h.body}>
-                {quote.loads} load{quote.loads === 1 ? '' : 's'} · {quote.trucks} × {quote.truck_name} · {quote.helpers} helpers for {quote.helper_hours} h
+                {crewLine(quote.trucks, quote.crew_total ?? quote.trucks + quote.helpers)} · {quote.loads} load{quote.loads === 1 ? '' : 's'} · {quote.helper_hours} h
               </Text>
               <Text style={[h.note, { marginTop: 6 }]}>
                 {(quote.volume_l / 1000).toFixed(1)} m³ · {quote.weight_kg.toLocaleString()} kg · {quote.distance_km.toFixed(1)} km, {quote.origin_text} → {quote.destination_text}
@@ -81,7 +81,11 @@ export function MoveHomeQuoteScreen({ navigation }: { navigation: any }) {
 
             <Label>How the trucks run</Label>
             <Pills label="Truck plan" options={PLANS} value={d.plan} onChange={(plan) => setDraft({ plan })} />
-            <Text style={h.note}>The same loads either way. One truck per load finishes in a day; fewer trucks doing two loads each costs less and takes longer.</Text>
+            <Text style={h.note}>
+              {quote.large_estate
+                ? 'A Large Estate: over 75 m³ always runs on at least two trucks, with a multi-truck team.'
+                : 'The same loads either way. One truck per load finishes in a day; fewer trucks doing two loads each costs less and takes longer.'}
+            </Text>
 
             <Label>How it's priced</Label>
             <Panel>
