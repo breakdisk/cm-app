@@ -45,6 +45,22 @@ pub struct TenantFinalized {
 }
 
 // Enriched ShipmentCreated — consumed by dispatch, engagement, analytics, delivery-experience
+/// What a whole-home move asks of the lead who takes it. Dispatch offers the
+/// job only to a home-move lead who can meet it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeMoveRequirement {
+    pub trucks:       i64,
+    pub helpers:      i64,
+    pub crew_total:   i64,
+    /// Over the Large Estate volume: only a multi-truck capable lead.
+    pub large_estate: bool,
+    /// Origin and destination in different countries.
+    pub international: bool,
+    pub move_at:      chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub survey_at:    Option<chrono::DateTime<chrono::Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipmentCreated {
     pub shipment_id:          Uuid,
@@ -52,6 +68,9 @@ pub struct ShipmentCreated {
     pub customer_id:          Uuid,
     pub customer_name:        String,
     pub customer_phone:       String,
+    /// Set only on a whole-home move: the crew and trucks the job needs.
+    #[serde(default)]
+    pub home_move:            Option<HomeMoveRequirement>,
     /// Customer email — used by engagement for receipt delivery. Empty if not provided.
     #[serde(default)]
     pub customer_email:       String,

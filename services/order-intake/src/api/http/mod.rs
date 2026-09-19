@@ -22,7 +22,7 @@ use crate::application::{
 };
 use crate::domain::entities::address_code::AddressCode;
 use crate::domain::value_objects::cancel_authority::{is_tenant_wide, ActingAs, Actor};
-use crate::domain::value_objects::cancellation_policy::{quote_cancellation, CancelTier};
+use crate::domain::value_objects::cancellation_policy::CancelTier;
 
 /// The by-id actor for this token. Tenant is always enforced. Merchants and
 /// customers (create without update) are limited to shipments they booked:
@@ -211,12 +211,7 @@ async fn cancellation_preview(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
     let shipment = s.query.get_for(id, &acting_as(&claims)).await?;
-    let quote = quote_cancellation(
-        &s.svc.cancellation_policy,
-        shipment.scheduled_pickup_at,
-        chrono::Utc::now(),
-        shipment.booking_amount_cents,
-    );
+    let (quote, survey_kept) = s.svc.cancellation_quote(&shipment, chrono::Utc::now()).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "cancellable":     shipment.can_cancel(),
         "policy_applies":  quote.tier != CancelTier::Unscheduled,
@@ -225,6 +220,8 @@ async fn cancellation_preview(
         "fee_bps":         quote.retention_bps,
         "fee_cents":       quote.fee_cents,
         "refund_cents":    quote.refund_cents,
+        // A whole-home move's survey deposit kept, inside fee_cents.
+        "survey_kept_cents": survey_kept,
         "currency":        shipment.booking_currency,
         "policy_version":  shipment.cancellation_policy_version,
     }))))

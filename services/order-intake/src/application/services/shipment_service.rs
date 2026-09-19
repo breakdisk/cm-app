@@ -134,6 +134,15 @@ pub trait ShipmentRepository: Send + Sync {
         filter: &'a ShipmentListFilter,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>>;
 
+    /// A whole-home move's survey (time, deposit, whether it was done).
+    /// Default none, so test doubles need not implement it.
+    fn home_survey<'a>(
+        &'a self,
+        _shipment_id: uuid::Uuid,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<crate::domain::value_objects::home_move::HomeSurvey>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Record how a booking was described (the prompt box's parse). Default
     /// no-op so test doubles need not implement it.
     fn record_intake<'a>(
@@ -639,6 +648,7 @@ impl ShipmentService {
                 customer_id:          shipment.customer_id.inner(),
                 customer_name:        cmd.customer_name.clone(),
                 customer_phone:       cmd.customer_phone.clone(),
+                home_move:            cmd.home_booking.as_ref().map(|h| h.requirement.clone()),
                 customer_email:       cmd.customer_email.clone().unwrap_or_default(),
                 origin_address:       format!("{}, {}", shipment.origin.city, shipment.origin.province),
                 origin_city:          shipment.origin.city.clone(),
@@ -877,6 +887,40 @@ impl ShipmentService {
         Ok(CreateShipmentResult { shipment, checkout_url })
     }
 
+    /// What cancelling now would cost: the policy's tier on the booked total,
+    /// and on a whole-home move the survey deposit it keeps on top. One
+    /// calculation for the preview and the cancellation both.
+    pub async fn cancellation_quote(
+        &self,
+        shipment: &Shipment,
+        now: chrono::DateTime<Utc>,
+    ) -> AppResult<(crate::domain::value_objects::cancellation_policy::CancellationQuote, i64)> {
+        use crate::domain::value_objects::home_move::{home_retention_bps, survey_retained_cents};
+        let mut quote = quote_cancellation(&self.cancellation_policy, shipment.scheduled_pickup_at, now, shipment.booking_amount_cents);
+        if shipment.service_type != ServiceType::HomeMove {
+            return Ok((quote, 0));
+        }
+        let Some(survey) = self.repo.home_survey(shipment.id.inner()).await.map_err(AppError::Internal)? else {
+            return Ok((quote, 0));
+        };
+        let kept = survey_retained_cents(
+            survey.survey_cents,
+            survey.survey_at,
+            survey.submitted,
+            now,
+            self.home_rates.survey_refund_until_hours,
+        );
+        if kept > 0 {
+            let total = shipment.booking_amount_cents.unwrap_or(0);
+            quote.retention_bps = home_retention_bps(quote.retention_bps, kept, total);
+            quote.fee_cents = shipment
+                .booking_amount_cents
+                .map(|b| (i128::from(b.max(0)) * i128::from(quote.retention_bps) / 10_000) as i64);
+            quote.refund_cents = shipment.booking_amount_cents.zip(quote.fee_cents).map(|(b, f)| b.max(0) - f);
+        }
+        Ok((quote, kept))
+    }
+
     pub async fn cancel(&self, cmd: CancelShipmentCommand) -> AppResult<()> {
         let id = ShipmentId::from_uuid(cmd.shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
@@ -893,13 +937,13 @@ impl ShipmentService {
         // Every cancellation is priced, even when the price is nothing. An
         // unscheduled one carries no retention, which payments reads as a full
         // refund: exactly what every cancellation was before the policy existed.
-        let quote = quote_cancellation(
-            &self.cancellation_policy,
-            shipment.scheduled_pickup_at,
-            Utc::now(),
-            shipment.booking_amount_cents,
-        );
+        let (quote, survey_kept) = self.cancellation_quote(&shipment, Utc::now()).await?;
         let mut data = serde_json::json!({ "shipment_id": shipment.id.inner(), "reason": cmd.reason });
+        if survey_kept > 0 {
+            // Inside the retention above; stated apart so the lead's survey
+            // pay can be traced to it.
+            data["survey_retained_cents"] = serde_json::json!(survey_kept);
+        }
         if quote.tier != CancelTier::Unscheduled {
             data["retention_bps"] = serde_json::json!(quote.retention_bps);
             data["cancellation_tier"] = serde_json::json!(quote.tier.as_str());

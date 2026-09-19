@@ -98,6 +98,19 @@ impl Property {
         self.kind != PropertyType::Apartment || index >= 2
     }
 
+    /// Helpers the lead brings for this size, before access and truck rules.
+    /// Studio to four bedrooms are the architect's table (1 to 5); the larger
+    /// homes and the offices extend it and are defaults.
+    pub fn size_helpers(&self) -> i64 {
+        let index = self.kind.sizes().iter().position(|s| *s == self.size).unwrap_or(0);
+        let table: &[i64] = match self.kind {
+            PropertyType::Apartment => &[1, 2, 3, 4, 5, 6],
+            PropertyType::Villa => &[1, 2, 3, 4, 5, 6, 7],
+            PropertyType::Offices => &[3, 5, 7, 9],
+        };
+        table.get(index).copied().unwrap_or(1)
+    }
+
     /// No lift above the second floor, at either end.
     pub fn walk_up(&self) -> bool {
         (!self.pickup_has_lift && self.pickup_floor > 2) || (!self.dropoff_has_lift && self.dropoff_floor > 2)
@@ -154,7 +167,16 @@ pub struct HomeRates {
     /// Local time for the slot calendar. No tenant time zone exists anywhere.
     #[serde(default = "default_utc_offset")]
     pub utc_offset_minutes: i32,
+    /// Over this packed volume the move is a Large Estate: never one truck.
+    #[serde(default = "default_large_estate_l")]
+    pub large_estate_l: i64,
+    /// Hours before the survey inside which cancelling keeps the survey fee.
+    #[serde(default = "default_survey_refund_hours")]
+    pub survey_refund_until_hours: i64,
 }
+
+fn default_large_estate_l() -> i64 { 75_000 }
+fn default_survey_refund_hours() -> i64 { 12 }
 
 fn default_min_hours() -> i64 { 4 }
 fn default_m3_per_hour() -> i64 { 6 }
@@ -180,6 +202,8 @@ impl Default for HomeRates {
             truck_payload_kg: default_payload_kg(),
             truck_name: default_truck_name(),
             utc_offset_minutes: default_utc_offset(),
+            large_estate_l: default_large_estate_l(),
+            survey_refund_until_hours: default_survey_refund_hours(),
         }
     }
 }
@@ -289,9 +313,18 @@ pub struct HomePrice {
     pub loads: i64,
     pub trucks: i64,
     pub trips_per_truck: i64,
+    /// One driver per truck; the first is the team lead.
+    pub drivers: i64,
     pub helpers: i64,
+    /// Drivers and helpers: the crew the accepting lead brings.
+    pub crew_total: i64,
     pub helper_hours: i64,
+    /// Over the Large Estate volume: at least two trucks, and only a
+    /// multi-truck capable lead may take it.
+    pub large_estate: bool,
     pub survey_required: bool,
+    /// The survey fee inside the total: a deposit credited toward the move.
+    pub survey_cents: i64,
     pub truck_name: String,
 }
 
@@ -310,14 +343,22 @@ pub fn price(rates: &HomeRates, property: &Property, items: &[PricedItem], dista
     // A load is limited by space or by payload, whichever runs out first.
     let usable_l = rates.truck_volume_l * rates.truck_usable_pct.clamp(1, 100) / 100;
     let loads = div_ceil(volume_l, usable_l).max(div_ceil(weight_kg, rates.truck_payload_kg)).max(1);
-    let trucks = match plan {
+    let large_estate = volume_l > rates.large_estate_l;
+    let mut trucks = match plan {
         TruckPlan::Trips => div_ceil(loads, 2).max(1),
         TruckPlan::Trucks => loads,
     };
+    // A Large Estate is never a one-truck job, whichever plan was asked for.
+    if large_estate {
+        trucks = trucks.max(2);
+    }
     let trips_per_truck = div_ceil(loads, trucks);
 
+    // The size decides the crew; a second truck needs its own pair of hands,
+    // so every truck carries at least two helpers once there is more than one.
     let heavy = items.iter().any(|i| i.weight_kg >= 80);
-    let helpers = 2 * trucks + i64::from(property.walk_up()) + i64::from(heavy) + i64::from(property.long_carry);
+    let base_helpers = if trucks > 1 { property.size_helpers().max(2 * trucks) } else { property.size_helpers() };
+    let helpers = base_helpers + i64::from(property.walk_up()) + i64::from(heavy) + i64::from(property.long_carry);
     let helper_hours = rates.min_helper_hours.max(div_ceil(volume_l, rates.m3_per_helper_hour.max(1) * 1000));
 
     let dismantle: i64 = items.iter().filter(|i| i.dismantle).map(|i| i64::from(i.qty)).sum();
@@ -375,7 +416,7 @@ pub fn price(rates: &HomeRates, property: &Property, items: &[PricedItem], dista
         lines.push(HomeLine {
             key: "survey_credit".into(),
             label: "Survey credit".into(),
-            note: "Credited back on booking".into(),
+            note: "A deposit, credited toward the move".into(),
             amount_cents: -rates.survey_cents,
         });
     }
@@ -390,11 +431,58 @@ pub fn price(rates: &HomeRates, property: &Property, items: &[PricedItem], dista
         loads,
         trucks,
         trips_per_truck,
+        drivers: trucks,
         helpers,
+        crew_total: trucks + helpers,
         helper_hours,
+        large_estate,
         survey_required,
+        survey_cents: if survey_required { rates.survey_cents.max(0) } else { 0 },
         truck_name: rates.truck_name.clone(),
     }
+}
+
+// ── The survey fee when a move is cancelled ──────────────────────────────────
+
+/// A booked move's survey, as a cancellation needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeSurvey {
+    pub survey_at: Option<DateTime<Utc>>,
+    pub survey_cents: i64,
+    pub submitted: bool,
+}
+
+/// How much of the survey deposit a cancellation keeps. Nothing more than
+/// the refund cutoff before the survey; all of it once inside the cutoff,
+/// once the survey has been done, or on a move that had no survey.
+pub fn survey_retained_cents(
+    survey_cents: i64,
+    survey_at: Option<DateTime<Utc>>,
+    survey_done: bool,
+    now: DateTime<Utc>,
+    refund_until_hours: i64,
+) -> i64 {
+    let Some(survey_at) = survey_at else { return 0 };
+    if survey_cents <= 0 {
+        return 0;
+    }
+    if survey_done || now >= survey_at - Duration::hours(refund_until_hours.max(0)) {
+        survey_cents
+    } else {
+        0
+    }
+}
+
+/// The share of the captured total a cancellation keeps: the move's own tier
+/// rate plus the survey fee kept, never more than the whole. Rounded down,
+/// in the customer's favour, as the tier rate is.
+pub fn home_retention_bps(tier_bps: i64, survey_retained: i64, total_cents: i64) -> i64 {
+    const FULL: i128 = 10_000;
+    if total_cents <= 0 {
+        return tier_bps.clamp(0, 10_000);
+    }
+    let survey_bps = (i128::from(survey_retained.max(0)) * FULL / i128::from(total_cents)) as i64;
+    (tier_bps.max(0) + survey_bps).clamp(0, 10_000)
 }
 
 // ── The calendar ─────────────────────────────────────────────────────────────
@@ -551,7 +639,60 @@ mod tests {
     fn a_walk_up_a_heavy_item_and_a_long_carry_each_add_a_helper() {
         let prop = Property { pickup_has_lift: false, long_carry: true, ..apartment("2 bedroom") };
         let items = vec![item("kitchen", "fridge", 1, 1_100, 116)];
-        assert_eq!(price(&rates(), &prop, &items, 500, TruckPlan::Trucks).helpers, 2 + 1 + 1 + 1);
+        // A two-bedroom's three, then one each for the walk-up, the heavy
+        // fridge and the long carry.
+        assert_eq!(price(&rates(), &prop, &items, 500, TruckPlan::Trucks).helpers, 3 + 1 + 1 + 1);
+    }
+
+    #[test]
+    fn the_crew_follows_the_size_table() {
+        let one_box = vec![item("living", "box", 1, 200, 5)];
+        for (size, helpers) in [("Studio", 1), ("1 bedroom", 2), ("2 bedroom", 3), ("3 bedroom", 4), ("4 bedroom", 5)] {
+            let p = price(&rates(), &apartment(size), &one_box, 500, TruckPlan::Trucks);
+            assert_eq!((p.drivers, p.helpers, p.crew_total), (1, helpers, 1 + helpers), "{size}");
+        }
+    }
+
+    #[test]
+    fn more_than_one_truck_carries_two_helpers_each() {
+        // 20 m³: two loads, two trucks. A studio's one helper becomes four.
+        let items = vec![item("living", "box", 100, 200, 5)];
+        let p = price(&rates(), &apartment("Studio"), &items, 500, TruckPlan::Trucks);
+        assert_eq!((p.trucks, p.helpers, p.crew_total), (2, 4, 6));
+    }
+
+    #[test]
+    fn a_large_estate_is_never_one_truck() {
+        let small_trucks = HomeRates { truck_volume_l: 100_000, ..rates() };
+        // 80 m³ fits one very large truck, but it is over the 75 m³ line.
+        let items = vec![item("living", "box", 400, 200, 5)];
+        let p = price(&small_trucks, &apartment("5 bedroom +"), &items, 500, TruckPlan::Trips);
+        assert!(p.large_estate);
+        assert_eq!(p.trucks, 2);
+        // Five bedrooms and up bring six, already over two a truck.
+        assert_eq!(p.helpers, 6);
+        let q = price(&small_trucks, &apartment("5 bedroom +"), &[item("living", "box", 10, 200, 5)], 500, TruckPlan::Trips);
+        assert!(!q.large_estate);
+        assert_eq!(q.trucks, 1);
+    }
+
+    #[test]
+    fn the_survey_fee_is_refunded_only_well_before_the_survey() {
+        let survey = Utc::now() + Duration::hours(20);
+        assert_eq!(survey_retained_cents(4_500, Some(survey), false, survey - Duration::hours(13), 12), 0);
+        assert_eq!(survey_retained_cents(4_500, Some(survey), false, survey - Duration::hours(11), 12), 4_500);
+        assert_eq!(survey_retained_cents(4_500, Some(survey), true, survey - Duration::hours(40), 12), 4_500, "done is kept");
+        assert_eq!(survey_retained_cents(4_500, None, false, survey, 12), 0, "no survey, no fee");
+    }
+
+    #[test]
+    fn retention_adds_the_survey_fee_to_the_tier_and_never_exceeds_the_whole() {
+        // 45.00 of 1,500.00 is 300 bps; with a 15% tier, 1,800.
+        assert_eq!(home_retention_bps(1_500, 4_500, 150_000), 1_800);
+        assert_eq!(home_retention_bps(0, 4_500, 150_000), 300);
+        assert_eq!(home_retention_bps(9_900, 4_500, 150_000), 10_000);
+        // Rounded down: 1.00 of 3.00 is 3,333.3 bps.
+        assert_eq!(home_retention_bps(0, 100, 300), 3_333);
     }
 
     #[test]

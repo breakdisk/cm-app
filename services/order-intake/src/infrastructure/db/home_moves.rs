@@ -20,6 +20,13 @@ pub struct HomeMoveRecord {
     pub move_at: DateTime<Utc>,
     pub total_cents: i64,
     pub currency: String,
+    pub trucks: i32,
+    pub helpers: i32,
+    pub crew_total: i32,
+    pub large_estate: bool,
+    pub international: bool,
+    pub survey_cents: i64,
+    pub survey_submitted_at: Option<DateTime<Utc>>,
 }
 
 /// Once per shipment: a retried booking (same idempotency key, same
@@ -28,8 +35,9 @@ pub async fn insert(pool: &PgPool, r: &HomeMoveRecord) -> anyhow::Result<()> {
     sqlx::query(
         r#"INSERT INTO order_intake.home_moves
                (shipment_id, tenant_id, account_id, property, items, plan, distance_centikm,
-                survey_required, survey_at, move_at, total_cents, currency)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                survey_required, survey_at, move_at, total_cents, currency,
+                trucks, helpers, crew_total, large_estate, international, survey_cents)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
            ON CONFLICT (shipment_id) DO NOTHING"#,
     )
     .bind(r.shipment_id)
@@ -44,6 +52,12 @@ pub async fn insert(pool: &PgPool, r: &HomeMoveRecord) -> anyhow::Result<()> {
     .bind(r.move_at)
     .bind(r.total_cents)
     .bind(&r.currency)
+    .bind(r.trucks)
+    .bind(r.helpers)
+    .bind(r.crew_total)
+    .bind(r.large_estate)
+    .bind(r.international)
+    .bind(r.survey_cents)
     .execute(pool)
     .await?;
     Ok(())
@@ -52,7 +66,8 @@ pub async fn insert(pool: &PgPool, r: &HomeMoveRecord) -> anyhow::Result<()> {
 pub async fn get(pool: &PgPool, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<HomeMoveRecord>> {
     let row = sqlx::query(
         r#"SELECT shipment_id, tenant_id, account_id, property, items, plan, distance_centikm,
-                  survey_required, survey_at, move_at, total_cents, currency
+                  survey_required, survey_at, move_at, total_cents, currency,
+                  trucks, helpers, crew_total, large_estate, international, survey_cents, survey_submitted_at
              FROM order_intake.home_moves
             WHERE tenant_id = $1 AND shipment_id = $2"#,
     )
@@ -73,5 +88,12 @@ pub async fn get(pool: &PgPool, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::R
         move_at: r.get("move_at"),
         total_cents: r.get("total_cents"),
         currency: r.get("currency"),
+        trucks: r.get("trucks"),
+        helpers: r.get("helpers"),
+        crew_total: r.get("crew_total"),
+        large_estate: r.get("large_estate"),
+        international: r.get("international"),
+        survey_cents: r.get("survey_cents"),
+        survey_submitted_at: r.get("survey_submitted_at"),
     }))
 }

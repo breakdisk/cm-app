@@ -224,6 +224,8 @@ pub struct BulkRowError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HomeBooking {
     pub move_at: chrono::DateTime<chrono::Utc>,
+    /// What the lead who takes it must bring; carried on shipment.created.
+    pub requirement: logisticos_events::payloads::HomeMoveRequirement,
 }
 
 /// What the prompt box read, as the app sends it with the booking.

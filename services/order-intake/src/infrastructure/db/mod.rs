@@ -570,6 +570,26 @@ impl ShipmentRepository for PgShipmentRepository {
         })
     }
 
+    fn home_survey<'a>(
+        &'a self,
+        shipment_id: uuid::Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<crate::domain::value_objects::home_move::HomeSurvey>>> + Send + 'a>> {
+        Box::pin(async move {
+            type SurveyRow = (Option<chrono::DateTime<chrono::Utc>>, i64, Option<chrono::DateTime<chrono::Utc>>);
+            let row: Option<SurveyRow> = sqlx::query_as(
+                "SELECT survey_at, survey_cents, survey_submitted_at FROM order_intake.home_moves WHERE shipment_id = $1",
+            )
+            .bind(shipment_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            Ok(row.map(|(survey_at, survey_cents, submitted_at)| crate::domain::value_objects::home_move::HomeSurvey {
+                survey_at,
+                survey_cents,
+                submitted: submitted_at.is_some(),
+            }))
+        })
+    }
+
     fn record_intake<'a>(
         &'a self,
         tenant_id: uuid::Uuid,

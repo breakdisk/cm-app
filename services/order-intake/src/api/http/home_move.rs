@@ -54,6 +54,12 @@ pub struct HomeQuotePayload {
     pub weight_kg: i64,
     pub currency: String,
     pub survey_required: bool,
+    pub survey_cents: i64,
+    pub trucks: i64,
+    pub helpers: i64,
+    pub crew_total: i64,
+    pub large_estate: bool,
+    pub international: bool,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -142,6 +148,9 @@ pub struct HomeQuoteResponse {
     pub origin_text: String,
     pub destination_text: String,
     pub plan: TruckPlan,
+    /// Origin and destination in different countries: only an
+    /// international-capable lead is offered it.
+    pub international: bool,
     pub quote_token: String,
     pub expires_at: DateTime<Utc>,
 }
@@ -180,6 +189,7 @@ pub async fn quote(
     let distance_centikm = (distance_km * 100.0).round() as i64;
 
     let priced = price(rates, &req.property, &items, distance_centikm, req.plan);
+    let international = !req.origin.country_code.trim().eq_ignore_ascii_case(req.destination.country_code.trim());
     let currency = claims.currency.clone().unwrap_or_else(|| "PHP".into());
     let expires_at = Utc::now() + Duration::minutes(HOME_QUOTE_TTL_MINUTES);
     let payload = HomeQuotePayload {
@@ -198,6 +208,12 @@ pub async fn quote(
         weight_kg: priced.weight_kg,
         currency: currency.clone(),
         survey_required: priced.survey_required,
+        survey_cents: priced.survey_cents,
+        trucks: priced.trucks,
+        helpers: priced.helpers,
+        crew_total: priced.crew_total,
+        large_estate: priced.large_estate,
+        international,
         expires_at,
     };
     let quote_token = quote_token::sign_payload(payment.quote_token_secret.as_bytes(), &payload);
@@ -211,6 +227,7 @@ pub async fn quote(
             origin_text: payload.origin_text,
             destination_text: payload.destination_text,
             plan: req.plan,
+            international,
             quote_token,
             expires_at,
         }),
@@ -359,7 +376,18 @@ pub async fn book(
         merchant_name: None,
         delivery_category: Some("large".into()),
         quote_token: Some(quote_token::sign(secret, &parcel)),
-        home_booking: Some(HomeBooking { move_at: req.move_at }),
+        home_booking: Some(HomeBooking {
+            move_at: req.move_at,
+            requirement: logisticos_events::payloads::HomeMoveRequirement {
+                trucks: payload.trucks,
+                helpers: payload.helpers,
+                crew_total: payload.crew_total,
+                large_estate: payload.large_estate,
+                international: payload.international,
+                move_at: req.move_at,
+                survey_at: req.survey_at,
+            },
+        }),
         intake: req.intake,
         idempotency_key: req.idempotency_key,
     };
@@ -380,6 +408,13 @@ pub async fn book(
         move_at: req.move_at,
         total_cents: payload.total_cents,
         currency: payload.currency.clone(),
+        trucks: i32::try_from(payload.trucks).unwrap_or(i32::MAX),
+        helpers: i32::try_from(payload.helpers).unwrap_or(i32::MAX),
+        crew_total: i32::try_from(payload.crew_total).unwrap_or(i32::MAX),
+        large_estate: payload.large_estate,
+        international: payload.international,
+        survey_cents: payload.survey_cents,
+        survey_submitted_at: None,
     };
     home_moves::insert(&s.pool, &record).await.map_err(AppError::Internal)?;
     tracing::info!(
@@ -449,6 +484,12 @@ mod tests {
             weight_kg: 1_200,
             currency: "PHP".into(),
             survey_required,
+            survey_cents: if survey_required { 4_500 } else { 0 },
+            trucks: 1,
+            helpers: 2,
+            crew_total: 3,
+            large_estate: false,
+            international: false,
             expires_at: now + Duration::minutes(30),
         }
     }
