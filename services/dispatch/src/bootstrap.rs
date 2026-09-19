@@ -115,13 +115,52 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Gig offer broadcast ("grab") service + its expiry sweeper.
     let offer_repo = Arc::new(crate::infrastructure::db::PgTaskOfferRepository::new(pool.clone()));
-    let offer_service = Arc::new(crate::application::services::OfferService::new(
-        Arc::clone(&offer_repo),
-        Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
-        Arc::clone(&driver_avail) as _,
-        Arc::clone(&kafka),
-        Some(Arc::clone(&compliance_cache)),
-    ));
+    let home_repo = Arc::new(crate::infrastructure::db::HomeRepo::new(pool.clone()));
+    let offer_service = Arc::new(
+        crate::application::services::OfferService::new(
+            Arc::clone(&offer_repo),
+            Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
+            Arc::clone(&driver_avail) as _,
+            Arc::clone(&kafka),
+            Some(Arc::clone(&compliance_cache)),
+        )
+        .with_home(Arc::clone(&home_repo)),
+    );
+
+    // Home-move activation: a lead's reservation becomes the real assignment
+    // twelve hours before the move. Until then the lead keeps working, since
+    // an assignment is active and one per driver. A lead still busy then is
+    // retried every five minutes.
+    {
+        let home = Arc::clone(&home_repo);
+        let dispatch = Arc::clone(&dispatch_service);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                tick.tick().await;
+                let due = match home.due(chrono::Utc::now() + chrono::Duration::hours(12)).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!(err = %e, "home-activation: listing due reservations failed");
+                        continue;
+                    }
+                };
+                for (tenant_id, shipment_id, driver_id) in due {
+                    let cmd = QuickDispatchCommand { shipment_id, preferred_driver_id: Some(driver_id) };
+                    match dispatch.quick_dispatch(TenantId::from_uuid(tenant_id), cmd).await {
+                        Ok(_) => {
+                            if let Err(e) = home.mark_activated(shipment_id).await {
+                                tracing::error!(%shipment_id, err = %e, "home-activation: assigned but not marked — it will not be assigned twice (queue is dispatched)");
+                            } else {
+                                tracing::info!(%shipment_id, %driver_id, "home move activated for its lead");
+                            }
+                        }
+                        Err(e) => tracing::warn!(%shipment_id, %driver_id, err = %e, "home-activation: not yet — retrying"),
+                    }
+                }
+            }
+        });
+    }
     // Sweeper: every 10 s, escalate expired waves (wider radius, fresh TTL)
     // or expire wave-3 offers onto the ops console. 10 s granularity against
     // a 30 s TTL keeps worst-case wave lag at ~33% of the TTL.
@@ -325,6 +364,7 @@ pub async fn run() -> anyhow::Result<()> {
         jwt:          Arc::clone(&jwt),
         queue_repo:   queue_repo as Arc<dyn DispatchQueueRepository>,
         drivers_repo: drivers_repo as Arc<dyn DriverProfilesRepository>,
+        home:         Some(home_repo),
     });
     use tower_http::cors::CorsLayer;
     use axum::http::{HeaderName, HeaderValue, Method};

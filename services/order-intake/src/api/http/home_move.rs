@@ -385,6 +385,7 @@ pub async fn book(
                 large_estate: payload.large_estate,
                 international: payload.international,
                 move_at: req.move_at,
+                move_date: Some((req.move_at + Duration::minutes(i64::from(rates.utc_offset_minutes))).date_naive()),
                 survey_at: req.survey_at,
             },
         }),

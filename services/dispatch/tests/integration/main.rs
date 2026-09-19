@@ -418,6 +418,7 @@ fn build_test_app_with_queue(
     ));
 
     let state = Arc::new(AppState {
+        home: None,
         dispatch_service,
         offer_service,
         jwt,

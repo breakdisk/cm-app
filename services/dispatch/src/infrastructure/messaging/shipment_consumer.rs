@@ -43,6 +43,7 @@ pub async fn start_shipment_consumer(
         .create()?;
 
     consumer.subscribe(&[topics::SHIPMENT_CREATED])?;
+    let home = crate::infrastructure::db::HomeRepo::new(pool.clone());
     let repo = Arc::new(PgDispatchQueueRepository::new(pool));
 
     loop {
@@ -57,7 +58,7 @@ pub async fn start_shipment_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_shipment_created(payload, &*repo, &dispatch_service, &offer_service, ai_dispatch_enabled).await {
+                            if let Err(e) = handle_shipment_created(payload, &*repo, &dispatch_service, &offer_service, ai_dispatch_enabled, Some(&home)).await {
                                 tracing::warn!(err = %e, "shipment consumer: handler error (skipping)");
                             }
                         }
@@ -75,12 +76,14 @@ pub async fn start_shipment_consumer(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_shipment_created(
     payload: &[u8],
     repo: &dyn DispatchQueueRepository,
     dispatch_service: &DriverAssignmentService,
     offer_service: &OfferService,
     ai_dispatch_enabled: bool,
+    home_repo: Option<&crate::infrastructure::db::HomeRepo>,
 ) -> anyhow::Result<()> {
     let event: Event<ShipmentCreated> = serde_json::from_slice(payload)?;
     // Use tenant_id from the Event envelope (authoritative), not merchant_id from the payload
@@ -89,6 +92,7 @@ async fn handle_shipment_created(
     let shipment_id = d.shipment_id;
     let booked_by_customer = d.booked_by_customer;
     let auto_dispatch = d.auto_dispatch;
+    let home_move = d.home_move.clone();
 
     let row = DispatchQueueRow {
         id:                   Uuid::new_v4(),
@@ -127,6 +131,21 @@ async fn handle_shipment_created(
 
     repo.upsert(&row).await?;
     tracing::info!(shipment_id = %shipment_id, booked_by_customer, auto_dispatch, "Shipment added to dispatch queue");
+
+    // A whole-home move: record what it needs and offer it to the leads who
+    // can meet it. It never falls through to the nearest driver.
+    if let Some(req) = home_move {
+        if let Some(home) = home_repo {
+            home.save_requirement(tenant_id, shipment_id, &req).await?;
+            match offer_service.broadcast(TenantId::from_uuid(tenant_id), shipment_id).await {
+                Ok(offer) => tracing::info!(shipment_id = %shipment_id, offer_id = %offer.id, "Home move offered to leads"),
+                Err(e) => tracing::warn!(shipment_id = %shipment_id, reason = %e, "Home move not offered — it waits for ops"),
+            }
+        } else {
+            tracing::error!(shipment_id = %shipment_id, "Home move arrived but home moves are not wired — it waits for ops");
+        }
+        return Ok(());
+    }
 
     // Agentic-first: if the order-intake handler flagged this shipment for
     // auto-dispatch, assign the best available driver immediately.

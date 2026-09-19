@@ -390,6 +390,13 @@ impl DriverAssignmentService {
                 cmd.shipment_id, queue_item.status
             )));
         }
+        // A home move is a named lead's: the one who claimed it, or one ops
+        // chose. Never the nearest driver, who may have no crew and no truck.
+        if queue_item.service_type == "home_move" && cmd.preferred_driver_id.is_none() {
+            return Err(AppError::BusinessRule(
+                "A whole-home move is assigned to a named lead — broadcast it to home-move leads, or choose one".into(),
+            ));
+        }
 
         // 2. Find driver (explicit or auto-selected by proximity score)
         let driver_id = match cmd.preferred_driver_id {

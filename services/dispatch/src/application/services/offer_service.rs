@@ -33,6 +33,10 @@ pub const OFFER_TTL_SECS: i64 = 30;
 /// Candidates fanned out per wave — bounds claim contention and FCM volume.
 pub const OFFER_WAVE_SIZE: usize = 10;
 pub const OFFER_MAX_WAVES: i32 = 3;
+/// A home move is offered weeks ahead: leads get an hour, not thirty seconds.
+pub const HOME_OFFER_TTL_SECS: i64 = 3_600;
+/// The widest a home offer goes at once.
+pub const HOME_OFFER_MAX_LEADS: usize = 25;
 
 /// Error markers the HTTP layer maps to typed 409s.
 pub const ERR_OFFER_TAKEN: &str = "OFFER_TAKEN";
@@ -44,6 +48,7 @@ pub struct OfferService {
     driver_avail_repo: Arc<dyn DriverAvailabilityRepository>,
     kafka:             Arc<KafkaProducer>,
     compliance_cache:  Option<Arc<Mutex<ComplianceCache>>>,
+    home:              Option<Arc<crate::infrastructure::db::HomeRepo>>,
 }
 
 impl OfferService {
@@ -54,7 +59,115 @@ impl OfferService {
         kafka:             Arc<KafkaProducer>,
         compliance_cache:  Option<Arc<Mutex<ComplianceCache>>>,
     ) -> Self {
-        Self { offer_repo, queue_repo, driver_avail_repo, kafka, compliance_cache }
+        Self { offer_repo, queue_repo, driver_avail_repo, kafka, compliance_cache, home: None }
+    }
+
+    #[must_use]
+    pub fn with_home(mut self, home: Arc<crate::infrastructure::db::HomeRepo>) -> Self {
+        self.home = Some(home);
+        self
+    }
+
+    /// Offer a home move to every lead who can take it: onboarded for home
+    /// moves, the right coverage, enough trucks and helpers, working that
+    /// day and not full. Nearest first where a last position is known. One
+    /// long wave, never escalated to the geo pool.
+    async fn broadcast_home(
+        &self,
+        home: &crate::infrastructure::db::HomeRepo,
+        tenant_id: TenantId,
+        queue_item: &DispatchQueueRow,
+    ) -> AppResult<TaskOfferRow> {
+        let req = home.requirement(queue_item.shipment_id).await.map_err(AppError::Internal)?.ok_or_else(|| {
+            AppError::BusinessRule("This home move has no crew requirement on record — it cannot be offered".into())
+        })?;
+        if home.is_reserved(queue_item.shipment_id).await.map_err(AppError::Internal)? {
+            return Err(AppError::BusinessRule("A lead has already reserved this home move".into()));
+        }
+        let mut leads = home.eligible_leads(tenant_id.inner(), &req).await.map_err(AppError::Internal)?;
+        let origin = queue_item.origin_lat.zip(queue_item.origin_lng);
+        let distance = |l: &crate::infrastructure::db::home_repo::HomeLead| match (origin, l.lat.zip(l.lng)) {
+            (Some((a_lat, a_lng)), Some((b_lat, b_lng))) => ((a_lat - b_lat).powi(2) + (a_lng - b_lng).powi(2)).sqrt(),
+            _ => f64::MAX,
+        };
+        leads.sort_by(|a, b| distance(a).partial_cmp(&distance(b)).unwrap_or(std::cmp::Ordering::Equal));
+        leads.truncate(HOME_OFFER_MAX_LEADS);
+        if leads.is_empty() {
+            return Err(AppError::BusinessRule(
+                "No home-move lead can take this move that day — it stays with ops".into(),
+            ));
+        }
+        // The lead's pay for a home move is not decided: no payout is shown.
+        let candidates: Vec<OfferCandidateRow> =
+            leads.iter().map(|l| OfferCandidateRow { driver_id: l.driver_id, payout_cents: None }).collect();
+
+        let offer = TaskOfferRow {
+            id:                Uuid::new_v4(),
+            tenant_id:         tenant_id.inner(),
+            shipment_id:       queue_item.shipment_id,
+            queue_id:          queue_item.id,
+            status:            "open".into(),
+            // The last wave: expiry returns it to ops, never to the geo pool.
+            wave:              OFFER_MAX_WAVES,
+            expires_at:        Utc::now() + Duration::seconds(HOME_OFFER_TTL_SECS),
+            claimed_by:        None,
+            merchant_name:     queue_item.merchant_name.clone(),
+            delivery_category: queue_item.delivery_category.clone(),
+            weight_grams:      queue_item.weight_grams,
+            tracking_number:   queue_item.tracking_number.clone().unwrap_or_default(),
+            customer_name:     queue_item.customer_name.clone(),
+            pickup_address:    format!("{}, {}", queue_item.origin_address_line1, queue_item.origin_city),
+            delivery_address:  format!("{}, {}", queue_item.dest_address_line1, queue_item.dest_city),
+            cod_amount_cents:  None,
+            pickup_lat:        queue_item.origin_lat,
+            pickup_lng:        queue_item.origin_lng,
+            delivery_lat:      queue_item.dest_lat,
+            delivery_lng:      queue_item.dest_lng,
+        };
+        self.offer_repo.create_offer(&offer, &candidates).await.map_err(AppError::Internal)?;
+        self.publish_offer_created(&offer, &candidates).await;
+        tracing::info!(
+            offer_id = %offer.id, shipment_id = %queue_item.shipment_id, leads = candidates.len(),
+            trucks = req.trucks, crew = req.crew_total, "Home move offered to leads"
+        );
+        Ok(offer)
+    }
+
+    /// A lead's claim on a home offer: a reservation for the day, not an
+    /// assignment — that comes twelve hours before the move.
+    async fn claim_home(
+        &self,
+        home: &crate::infrastructure::db::HomeRepo,
+        driver_id: &DriverId,
+        offer_id: Uuid,
+    ) -> AppResult<serde_json::Value> {
+        use crate::infrastructure::db::ReserveOutcome;
+        match home.reserve(offer_id, driver_id.inner()).await.map_err(AppError::Internal)? {
+            ReserveOutcome::Reserved { tenant_id, shipment_id, move_date, all_candidate_ids } => {
+                let closed = Event::new("dispatch", "offer.closed", tenant_id,
+                    logisticos_events::payloads::TaskOfferClosed {
+                        offer_id,
+                        tenant_id,
+                        shipment_id,
+                        reason: "claimed".into(),
+                        claimed_by: Some(driver_id.inner()),
+                        candidate_driver_ids: all_candidate_ids,
+                    });
+                if let Err(e) = self.kafka.publish_event(topics::TASK_OFFER_CLOSED, &closed).await {
+                    tracing::warn!(offer_id = %offer_id, err = %e, "home TaskOfferClosed publish failed (non-fatal)");
+                }
+                tracing::info!(offer_id = %offer_id, driver_id = %driver_id, %move_date, "Home move reserved");
+                Ok(serde_json::json!({
+                    "reserved":      true,
+                    "shipment_id":   shipment_id,
+                    "move_date":     move_date,
+                    "assignment_id": null,
+                }))
+            }
+            ReserveOutcome::AlreadyTaken | ReserveOutcome::Expired => Err(AppError::Conflict(ERR_OFFER_TAKEN.into())),
+            ReserveOutcome::DayFull => Err(AppError::Conflict(ERR_DRIVER_BUSY.into())),
+            ReserveOutcome::NotACandidate => Err(AppError::NotFound { resource: "Offer", id: offer_id.to_string() }),
+        }
     }
 
     /// Wave radius for a 1-based wave number (clamped to the widest ring).
@@ -85,6 +198,13 @@ impl OfferService {
         }
         if queue_item.tenant_id != tenant_id.inner() {
             return Err(AppError::Forbidden { resource: "Shipment".into() });
+        }
+
+        if queue_item.service_type == "home_move" {
+            let home = self.home.as_ref().ok_or_else(|| {
+                AppError::ServiceUnavailable("Home moves are not wired in this dispatch".into())
+            })?;
+            return self.broadcast_home(home, tenant_id, &queue_item).await;
         }
 
         let candidates = self
@@ -135,6 +255,11 @@ impl OfferService {
 
     /// The grab. Deterministic outcomes; post-commit event fan-out.
     pub async fn claim(&self, driver_id: &DriverId, offer_id: Uuid) -> AppResult<serde_json::Value> {
+        if let Some(home) = &self.home {
+            if home.offer_is_home(offer_id).await.map_err(AppError::Internal)? {
+                return self.claim_home(home, driver_id, offer_id).await;
+            }
+        }
         let outcome = self.offer_repo.claim(offer_id, driver_id.inner()).await
             .map_err(AppError::Internal)?;
 

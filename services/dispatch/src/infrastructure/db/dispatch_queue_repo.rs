@@ -397,6 +397,9 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     queued_at, dispatched_at
              FROM dispatch.dispatch_queue
              WHERE status = 'pending'
+               -- A home move goes to a lead who claims it, then is activated
+               -- for that lead; it is never handed to whoever is nearest.
+               AND service_type <> 'home_move'
              ORDER BY queued_at ASC",
         )
         .fetch_all(&self.pool)

@@ -57,6 +57,10 @@ pub struct HomeMoveRequirement {
     /// Origin and destination in different countries.
     pub international: bool,
     pub move_at:      chrono::DateTime<chrono::Utc>,
+    /// The move's date on order-intake's local calendar — the day a lead's
+    /// working days and off days are about.
+    #[serde(default)]
+    pub move_date:    Option<chrono::NaiveDate>,
     #[serde(default)]
     pub survey_at:    Option<chrono::DateTime<chrono::Utc>>,
 }

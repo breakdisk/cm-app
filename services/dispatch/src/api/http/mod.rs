@@ -16,6 +16,8 @@ pub struct AppState {
     pub jwt:              Arc<logisticos_auth::jwt::JwtService>,
     pub queue_repo:       Arc<dyn DispatchQueueRepository>,
     pub drivers_repo:     Arc<dyn DriverProfilesRepository>,
+    /// Whole-home moves: requirements and lead reservations.
+    pub home:             Option<Arc<crate::infrastructure::db::HomeRepo>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -27,6 +29,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/internal/shipments/:shipment_id/requeue", post(dispatch_ops::requeue_shipment))
         .route("/v1/internal/shipments/:shipment_id/assign",  post(dispatch_ops::internal_assign))
         .route("/v1/internal/drivers/available",              get(dispatch_ops::internal_available_drivers))
+        .route("/v1/internal/home-reservations/:shipment_id", get(dispatch_ops::internal_home_reservation))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }

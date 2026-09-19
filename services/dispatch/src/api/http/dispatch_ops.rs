@@ -83,6 +83,23 @@ pub async fn internal_assign(
     })))
 }
 
+/// Internal (no JWT): GET /v1/internal/home-reservations/:shipment_id
+///
+/// The lead who reserved a whole-home move, for order-intake to tell the
+/// customer "Team {lead}". 404 until a lead claims it.
+pub async fn internal_home_reservation(
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let home = state.home.as_ref().ok_or_else(|| AppError::ServiceUnavailable("Home moves are not wired here".into()))?;
+    let view = home
+        .reservation(shipment_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Home reservation", id: shipment_id.to_string() })?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
 /// Internal (no JWT): GET /v1/internal/drivers/available
 ///
 /// Called by the AI layer's `get_available_drivers` MCP tool.
