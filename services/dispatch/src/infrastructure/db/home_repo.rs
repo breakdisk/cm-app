@@ -29,6 +29,26 @@ pub enum ReserveOutcome {
     DayFull,
 }
 
+/// One of a lead's reserved home moves.
+#[derive(Debug, Clone, Serialize)]
+pub struct LeadMove {
+    pub shipment_id: Uuid,
+    pub tracking_number: Option<String>,
+    pub customer_name: String,
+    pub pickup: String,
+    pub dropoff: String,
+    pub move_at: DateTime<Utc>,
+    pub move_date: NaiveDate,
+    pub survey_at: Option<DateTime<Utc>>,
+    pub trucks: i32,
+    pub helpers: i32,
+    pub crew_total: i32,
+    pub large_estate: bool,
+    pub international: bool,
+    /// Turned into the day's assignment already.
+    pub activated: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReservationView {
     pub shipment_id: Uuid,
@@ -261,6 +281,54 @@ impl HomeRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// A lead's reserved home moves, soonest first: what they have to survey
+    /// and move, and where.
+    pub async fn mine(&self, tenant_id: Uuid, driver_id: Uuid) -> anyhow::Result<Vec<LeadMove>> {
+        let rows = sqlx::query(
+            "SELECT r.shipment_id, r.move_date, r.activated_at, h.move_at, h.survey_at, h.trucks, h.helpers,
+                    h.crew_total, h.large_estate, h.international,
+                    q.customer_name, q.origin_address_line1, q.origin_city, q.dest_address_line1, q.dest_city,
+                    q.tracking_number
+               FROM dispatch.home_reservations r
+               JOIN dispatch.home_requirements h ON h.shipment_id = r.shipment_id
+               LEFT JOIN dispatch.dispatch_queue q ON q.shipment_id = r.shipment_id
+              WHERE r.tenant_id = $1 AND r.driver_id = $2 AND r.released_at IS NULL
+                AND h.move_at >= NOW() - INTERVAL '1 day'
+              ORDER BY h.move_at",
+        )
+        .bind(tenant_id)
+        .bind(driver_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| LeadMove {
+                shipment_id: r.get("shipment_id"),
+                tracking_number: r.get("tracking_number"),
+                customer_name: r.get::<Option<String>, _>("customer_name").unwrap_or_default(),
+                pickup: format!(
+                    "{}, {}",
+                    r.get::<Option<String>, _>("origin_address_line1").unwrap_or_default(),
+                    r.get::<Option<String>, _>("origin_city").unwrap_or_default()
+                ),
+                dropoff: format!(
+                    "{}, {}",
+                    r.get::<Option<String>, _>("dest_address_line1").unwrap_or_default(),
+                    r.get::<Option<String>, _>("dest_city").unwrap_or_default()
+                ),
+                move_at: r.get("move_at"),
+                move_date: r.get("move_date"),
+                survey_at: r.get("survey_at"),
+                trucks: r.get("trucks"),
+                helpers: r.get("helpers"),
+                crew_total: r.get("crew_total"),
+                large_estate: r.get("large_estate"),
+                international: r.get("international"),
+                activated: r.get::<Option<DateTime<Utc>>, _>("activated_at").is_some(),
+            })
+            .collect())
     }
 
     pub async fn mark_activated(&self, shipment_id: Uuid) -> anyhow::Result<()> {

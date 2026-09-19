@@ -17,6 +17,17 @@ use crate::api::http::AppState;
 
 /// `GET /v1/offers/open` — live offers for the authenticated driver.
 /// App-restart / missed-FCM recovery path.
+/// `GET /v1/home-reservations/mine` — the lead's reserved whole-home moves:
+/// surveys to do and moves to run, soonest first.
+pub async fn my_home_moves(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let home = state.home.as_ref().ok_or_else(|| AppError::ServiceUnavailable("Home moves are not wired here".into()))?;
+    let moves = home.mine(claims.tenant_id, claims.user_id).await.map_err(AppError::Internal)?;
+    Ok(Json(serde_json::json!({ "data": moves })))
+}
+
 pub async fn list_open(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,

@@ -55,6 +55,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers", get(queue::list_drivers))
         // Gig offer broadcast ("grab") — driver-facing surface
         .route("/offers/open",      get(offers::list_open))
+        .route("/home-reservations/mine", get(offers::my_home_moves))
         .route("/offers/:id/claim", post(offers::claim))
         .route("/offers/:id/pass",  post(offers::pass))
         .route("/offers/:id/seen",  post(offers::seen))
