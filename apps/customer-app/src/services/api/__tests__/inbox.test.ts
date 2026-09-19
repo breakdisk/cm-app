@@ -46,5 +46,6 @@ test('a campaign link opens only screens the app knows', () => {
   expect(linkTarget('/payments?from=push')).toBe('MovePayments');
   expect(linkTarget('https://evil.example/offers')).toBeNull();
   expect(linkTarget('logisticos://admin')).toBeNull();
+  expect(linkTarget('logisticos://inbox')).toBe('MoveInbox');
   expect(linkTarget(null)).toBeNull();
 });

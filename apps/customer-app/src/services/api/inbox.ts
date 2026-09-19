@@ -64,6 +64,7 @@ const LINKS: Record<string, string> = {
   payments: 'MovePayments',
   support: 'Support',
   rules: 'MoveRules',
+  inbox: 'MoveInbox',
 };
 
 export function linkTarget(deepLink?: string | null): string | null {
