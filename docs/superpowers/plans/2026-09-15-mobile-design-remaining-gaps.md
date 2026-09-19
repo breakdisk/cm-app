@@ -233,27 +233,29 @@ so invoice-receipt and support-answer taps never navigated.
 **Still open:** campaign pushes address CDP profile ids, not app user ids; the admin page was
 type-checked and unit-tested but not rendered.
 
-### B — intent routing, done 2026-09-19 (, , )
-- ai-layer : stateless (no session, no tools), one structured answer
-   incl. the property fields, from
-   (default Haiku 4.5). Held to rules: closed intents, clamped numbers,
-  support only with a running job. Plan-gated like chat (); the prompt is never logged.
-- App: Home/Voice → Thinking, whose first step waits on it (5 s); unsure/refused/offline falls back to
-  the regex — and offline, the handoff's home rules run first. Support → Support screen.
-- order-intake 0014 : the parse is stored with the booking, best-effort.
+### B — intent routing, done 2026-09-19 (`32e7c569`, `f2e48607`, `65d14ecf`)
+- ai-layer `POST /v1/agents/classify`: stateless (no session, no tools), one structured answer
+  `{intent: book|home_move|support, confidence, extracted}` including the property fields, from
+  `ANTHROPIC__CLASSIFY_MODEL` (default Haiku 4.5). Held to rules: closed intents, clamped numbers,
+  support only with a running job. Plan-gated like chat (`can_use_ai`); the prompt is never logged.
+- App: Home/Voice → Thinking, whose first step waits on it (5 s); unsure, refused or offline falls
+  back to the regex — and offline, the handoff's home rules run first. Support → Support screen.
+- order-intake 0014 `shipment_intake`: the parse is stored with the booking, best-effort.
 
-### A — whole-home moves, done 2026-09-19 (, , )
-- order-intake:  (property, survey rule, the arithmetic in integers, the calendar
-  with the two-day survey gap); 0015  (55 design presets as platform defaults,
-  tenant overrides per group); 0016 . ,
-   (server catalogue + server-geocoded distance; token carries the
-  whole job, -discriminated),  (verifies, checks the schedule, mints
-  a parcel-shaped token for the shared create path), .
-   is refused on the parcel endpoint; its schedule is   (it decides the cancellation tier); no 70 kg cap; auto-dispatch off.
-- App: six screens (A1–A6) + Home tile + read-back panel from the prompt.
-**Config:**  (off at 0), , ,
-, , , truck size/payload, .
-**Not built (decisions or services missing):** crew identity (ops assign; no crew model), the survey
-correcting the inventory, promotions on home moves, scan/photo/video capture (no detection service),
-slot capacity (every window is offered), the survey fee's refund per Part C, road distance (straight
-line, as the rate card).
+### A — whole-home moves, done 2026-09-19 (`b3657524`, `a5e5b5fc`, `a02dcb32`)
+- order-intake: `domain/home_move` (property, survey rule, the arithmetic in integers, the calendar
+  with the two-day survey gap); 0015 `home_catalogue` (55 design presets as platform defaults,
+  tenant overrides per group); 0016 `home_moves`. `GET /v1/shipments/home/{catalogue,slots}`,
+  `POST /v1/shipments/home/quote` (server catalogue + server-geocoded distance; the token carries the
+  whole job, `kind`-discriminated), `POST /v1/shipments/home` (verifies, checks the schedule, mints
+  a parcel-shaped token for the shared create path), `GET /v1/shipments/:id/home`.
+  `ServiceType::HomeMove` is refused on the parcel endpoint; its schedule is `#[serde(skip)]`
+  (it decides the cancellation tier); no 70 kg cap; auto-dispatch off.
+- App: six screens (A1–A6), the Home tile, and the read-back panel from the prompt.
+**Config:** `HOME_MOVE__TRIP_CENTS` (off at 0), `HOME_MOVE__PER_KM_CENTS`,
+`HOME_MOVE__HELPER_HOUR_CENTS`, `HOME_MOVE__ASSEMBLY_CENTS`, `HOME_MOVE__PACKING_CENTS`,
+`HOME_MOVE__SURVEY_CENTS`, truck size and payload, `HOME_MOVE__UTC_OFFSET_MINUTES` (480).
+**Not built (a decision or a service is missing):** crew identity (ops assign; no crew model), the
+survey correcting the inventory, promotions on home moves, scan/photo/video capture (no detection
+service), slot capacity (every window is offered), the survey fee's refund under Part C, and road
+distance (straight line, as the rate card).
