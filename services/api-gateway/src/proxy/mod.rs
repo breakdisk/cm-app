@@ -86,6 +86,8 @@ impl ProxyClient {
             || path.starts_with("/v1/queue")
             || path.starts_with("/v1/assignments")
             || path.starts_with("/v1/offers")
+            // A lead's reserved whole-home moves.
+            || path.starts_with("/v1/home-reservations")
         {
             Some(&self.services.dispatch_url)
         // Driver Operations (includes /tasks and /location from driver app)
@@ -332,6 +334,7 @@ mod routing_tests {
             "/v1/offers",
             "/v1/routes",
             "/v1/queue",
+            "/v1/home-reservations/mine",
         ] {
             assert_eq!(
                 resolve(path).as_deref(),
