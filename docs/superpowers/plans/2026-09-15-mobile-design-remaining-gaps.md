@@ -315,3 +315,44 @@ is config, not code.
   already reserved is not re-checked against the larger job.
 - **Photo, scan or video capture in the survey.** It is a typed inventory.
 - **Distance is a straight line.** No road routing.
+
+## Whole-home round 2 — the architect's decisions (2026-09-19)
+
+Decided by the user; **(default)** marks what was filled in here — config, not code, unless noted.
+
+- **Platform commission 20%** (`HOME_MOVE__COMMISSION_BPS`, default 2000) on every lead payout
+  and on the survey fee. A surge bonus is passed to the lead whole (no commission on it).
+1. **Lead pay.** Net payout shown on the lead's offer card before accepting:
+   gross = base + m³ × volume rate + road km × per-km rate, less 20%.
+   **(default)** Rates unset → gross is the move's fare (total less the survey deposit). Gross is
+   never more than that fare, so the platform never pays out more than it charged.
+   **Survey fee** is its own micro-transaction: when the lead submits the survey (the sign-off),
+   the survey fee less 20% is credited to the lead's earnings at once, whether or not the move goes
+   ahead.
+2. **Model B — Joint Mission (2 trucks).** Broadcast as "Joint Mission (2 trucks required)".
+   **(default)** Offered only for 2-truck moves; enterprise leads (Model A) still take it whole.
+   The first single-truck lead to accept is the **Mission Captain** (does the survey, runs the
+   customer side) at 60% of the net payout; the system then broadcasts the **Support Lead** slot
+   (second truck and crew) at 40%. **(default)** The captain holds the assignment; the support
+   lead is paid their 40% as an earnings credit when the move is delivered.
+3. **Surge and waitlist.** A move window whose remaining team capacity is below 20% surges
+   1.2×–1.5× (linear to the last free team); the surge goes to the lead as a High-Demand Bonus.
+   **(default)** Capacity is per tenant and date (there are no zones for home leads yet); the
+   customer sees the multiplier on the window before booking and the server holds them to it
+   (`SURGE_CHANGED` if it rose). **Priority waitlist** when every window is full: first come,
+   first served; when a window opens (a cancellation, a lead adding days) the next customer is
+   offered it with a 5-minute hold.
+4. **An addendum that grows the job.** Hard stop: the lead may not load overflow until the
+   customer approves the addendum — in their app, or on the lead's phone with their delivery
+   PIN. **Minor overflow** (< 15% more volume): no extra truck — tight-pack or a second trip, and
+   the addendum does not charge for a truck that isn't coming. **Major overflow** (more trucks
+   than booked): once approved and paid, an **Emergency Secondary Dispatch** offers the extra
+   truck to available leads at once. **(default)** The emergency lead gets 50% of the addendum's
+   net as an earnings credit when the move is delivered.
+5. **Survey photos.** "Pre-existing condition evidence" and "access constraints" (narrow lift,
+   tight stairs, long carry), tagged to a room, captioned and time-stamped; shown to the customer.
+   The typed room list still prices the move.
+6. **Road distance.** Driving distance and time from Mapbox Directions (the geocoder's token) for
+   every quote with both ends located — home moves and freight moves. **(default)** Where no
+   driving route exists (another island, another country) the direct distance is used and the
+   quote says so; a routing outage refuses the quote rather than pricing it wrong.
