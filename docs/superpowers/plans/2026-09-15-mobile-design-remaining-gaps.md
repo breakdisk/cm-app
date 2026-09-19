@@ -222,4 +222,13 @@ credit ledger + referral, corporate rate, campaign inbox (engagement).
 the tenant's plan to include `loyalty_program`.
 **Deploy:** redeploy promotions (0002), order-intake, engagement (0010). No new Kafka topic.
 The promotions consumer starts from earliest, so retained bookings/completions seed tier counts.
-**Not built:** admin portal UI for tiers/corporate/credit grants (API only); a tier-change push.
+**Follow-up done 2026-09-19** (`06e29c21`, `2d161ebb`, `376a4662`): admin portal **Promotions** page
+(codes, ladder, company rates on/off, credit grants by customer email/phone via new identity
+`GET /v1/users/lookup`); **tier-upgrade push** (`logisticos.promotions.tier.changed`, new topic —
+**pre-create before deploy**; upgrades only; completions >24h old announce nothing, so the
+earliest-offset replay does not spam). A ladder is refused where the plan lacks `loyalty_program`.
+**Found and fixed on the way:** identity serialized `password_hash` on every user endpoint
+(`/v1/users/me`, `/v1/users/:id`, `/v1/users`); and no non-campaign push carried its deep link,
+so invoice-receipt and support-answer taps never navigated.
+**Still open:** campaign pushes address CDP profile ids, not app user ids; the admin page was
+type-checked and unit-tested but not rendered.
