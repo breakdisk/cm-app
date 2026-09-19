@@ -279,6 +279,8 @@ pub struct ShipmentService {
     pub home_rates: crate::domain::value_objects::home_move::HomeRates,
     /// The teams each date has, and a move's reserved lead.
     pub home_teams: Arc<crate::infrastructure::http::home_capacity_client::HomeTeamsClient>,
+    /// Driving distance for a quote. The straight line until one is set.
+    pub router: Arc<dyn crate::infrastructure::external::RoadRouter>,
 }
 
 /// What a verified quote was discounted by, all spent at booking.
@@ -315,7 +317,14 @@ impl ShipmentService {
             promotions: None,
             home_rates: Default::default(),
             home_teams: Arc::new(crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(None, None)),
+            router: Arc::new(crate::infrastructure::external::DirectRouter),
         }
+    }
+
+    #[must_use]
+    pub fn with_router(mut self, router: Arc<dyn crate::infrastructure::external::RoadRouter>) -> Self {
+        self.router = router;
+        self
     }
 
     #[must_use]

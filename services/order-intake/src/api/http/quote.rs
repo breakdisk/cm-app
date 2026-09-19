@@ -169,6 +169,10 @@ pub struct QuoteResponse {
     /// `"volumetric"` or `"scale"` — which one settled the billable weight.
     pub billable_basis: Option<String>,
     pub distance_km: Option<f32>,
+    /// `road`, or `direct` where no driving route exists. Absent for a parcel quote.
+    pub distance_basis: Option<crate::infrastructure::external::DistanceBasis>,
+    /// Driving time, where there is a road.
+    pub drive_minutes: Option<u32>,
     pub vehicle_label: Option<String>,
 }
 
@@ -187,6 +191,8 @@ pub async fn get_quote(
     let is_move = req.origin.is_some() && req.destination.is_some();
 
     let mut rows: Vec<PriceRow> = Vec::new();
+    let mut distance_basis = None;
+    let mut drive_minutes = None;
     let (amount_cents, currency, mode, billable, basis, distance, vehicle) = if is_move {
         let carrier = s.svc.carrier.as_ref().ok_or_else(|| {
             AppError::ServiceUnavailable(
@@ -221,9 +227,15 @@ pub async fn get_quote(
             ));
         };
 
-        // Coordinates::distance_km is already on the type normalize returns.
-        // No new dependency, no third haversine.
-        let distance_km = a.distance_km(&b) as f32;
+        // Priced on the road. Where no driving route exists the direct
+        // distance is used and said so; a routing outage refuses the quote.
+        let drive = s.svc.router.drive(a, b).await.map_err(|e| {
+            tracing::error!(err = %e, "road distance unavailable for a move quote");
+            AppError::ServiceUnavailable("Can't measure the drive right now — try again in a minute".into())
+        })?;
+        distance_basis = Some(drive.basis);
+        drive_minutes = drive.minutes;
+        let distance_km = drive.distance_km as f32;
 
         let billable_grams =
             billable_weight_grams(req.weight_grams, req.length_cm, req.width_cm, req.height_cm);
@@ -444,6 +456,8 @@ pub async fn get_quote(
             billable_grams: billable,
             billable_basis: basis,
             distance_km: distance,
+            distance_basis,
+            drive_minutes,
             vehicle_label: vehicle,
         }),
     ))

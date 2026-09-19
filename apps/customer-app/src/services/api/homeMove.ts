@@ -99,6 +99,8 @@ export interface HomeQuote {
   truck_name: string;
   currency: string;
   distance_km: number;
+  distance_basis?: import('./move').DistanceBasis;
+  drive_minutes?: number | null;
   origin_text: string;
   destination_text: string;
   plan: TruckPlan;

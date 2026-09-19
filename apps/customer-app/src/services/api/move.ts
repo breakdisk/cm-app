@@ -79,6 +79,9 @@ export interface MoveQuote {
   billable_grams?: number | null;
   billable_basis?: string | null;
   distance_km?: number | null;
+  /** 'road', or 'direct' where no driving route exists. Absent on older servers. */
+  distance_basis?: DistanceBasis | null;
+  drive_minutes?: number | null;
   vehicle_label?: string | null;
   /** Before discounts. Absent on servers without promotions. */
   gross_cents?: number;
@@ -186,3 +189,21 @@ export function linesReconcile(q: MoveQuote): boolean {
 export const COUNTRY_FOR_CURRENCY: Record<string, string> = {
   PHP: 'PH', AED: 'AE', SAR: 'SA', USD: 'US', GBP: 'GB', AUD: 'AU', CAD: 'CA', SGD: 'SG',
 };
+
+export type DistanceBasis = 'road' | 'direct';
+
+/**
+ * How a quote's distance reads: "18.4 km by road · about 41 min", or
+ * "412.0 km direct — no road route" across water or a border. An older
+ * server that sends no basis reads as the bare distance.
+ */
+export function distanceLine(km: number, basis?: DistanceBasis | null, minutes?: number | null): string {
+  const d = `${km.toFixed(1)} km`;
+  if (basis === 'direct') return `${d} direct — no road route`;
+  if (basis === 'road') {
+    if (minutes == null || minutes <= 0) return `${d} by road`;
+    const t = minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
+    return `${d} by road · about ${t}`;
+  }
+  return d;
+}

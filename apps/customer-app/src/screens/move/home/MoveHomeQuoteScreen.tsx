@@ -7,7 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COUNTRY_FOR_CURRENCY } from '../../../services/api/move';
+import { COUNTRY_FOR_CURRENCY, distanceLine } from '../../../services/api/move';
 import { crewLine, declared, quoteHome, type HomeQuote, type TruckPlan } from '../../../services/api/homeMove';
 import { getMyTenant } from '../../../services/api/tenant';
 import { formatMoney } from '../format';
@@ -75,7 +75,7 @@ export function MoveHomeQuoteScreen({ navigation }: { navigation: any }) {
                 {crewLine(quote.trucks, quote.crew_total ?? quote.trucks + quote.helpers)} · {quote.loads} load{quote.loads === 1 ? '' : 's'} · {quote.helper_hours} h
               </Text>
               <Text style={[h.note, { marginTop: 6 }]}>
-                {(quote.volume_l / 1000).toFixed(1)} m³ · {quote.weight_kg.toLocaleString()} kg · {quote.distance_km.toFixed(1)} km, {quote.origin_text} → {quote.destination_text}
+                {(quote.volume_l / 1000).toFixed(1)} m³ · {quote.weight_kg.toLocaleString()} kg · {distanceLine(quote.distance_km, quote.distance_basis, quote.drive_minutes)}, {quote.origin_text} → {quote.destination_text}
               </Text>
             </Panel>
 

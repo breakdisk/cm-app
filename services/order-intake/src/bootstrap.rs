@@ -184,6 +184,7 @@ pub async fn run() -> anyhow::Result<()> {
             cfg.cancellation_policy.clone(),
         )
         .with_promotions(promotions)
+        .with_router(road_router(cfg.geocoder.mapbox_access_token.as_deref()))
         .with_home_rates(cfg.home_move.clone())
         .with_home_teams(crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(
             cfg.services.driver_ops_url.clone().filter(|u| !u.trim().is_empty()),
@@ -312,4 +313,23 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
+/// Quotes are priced on the road where there is a Mapbox token (the geocoder's).
+fn road_router(token: Option<&str>) -> Arc<dyn crate::infrastructure::external::RoadRouter> {
+    use crate::infrastructure::external::{DirectRouter, MapboxDirections};
+    match token.filter(|t| !t.is_empty()).map(|t| MapboxDirections::new(t.to_string())) {
+        Some(Ok(router)) => {
+            tracing::info!("quote distance: Mapbox driving directions");
+            Arc::new(router)
+        }
+        Some(Err(e)) => {
+            tracing::error!(err = %e, "Mapbox directions client did not build — quotes fall back to the straight line");
+            Arc::new(DirectRouter)
+        }
+        None => {
+            tracing::warn!("GEOCODER__MAPBOX_ACCESS_TOKEN not set — quotes are priced on the straight line, not the road");
+            Arc::new(DirectRouter)
+        }
+    }
 }

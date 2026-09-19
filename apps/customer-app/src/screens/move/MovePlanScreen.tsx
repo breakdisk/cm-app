@@ -20,7 +20,7 @@ import { shipmentsActions } from '../../store';
 import * as shipmentsService from '../../services/api/shipments';
 import { getMyTenant } from '../../services/api/tenant';
 import {
-  accessorialLabel, COUNTRY_FOR_CURRENCY, discountLabel, linesReconcile, listAccessorials, quoteLines, quoteMove, quoteTotal,
+  accessorialLabel, COUNTRY_FOR_CURRENCY, discountLabel, distanceLine, linesReconcile, listAccessorials, quoteLines, quoteMove, quoteTotal,
   type AccessorialCatalog, type MoveQuote,
 } from '../../services/api/move';
 import type { ParsedItem, ParsedMove } from './parsePrompt';
@@ -308,7 +308,7 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
             <>
               <View style={s.vehicleRow}>
                 <Text style={s.vehicle}>{quote.vehicle_label || 'Your vehicle'}</Text>
-                {quote.distance_km != null && <Text style={s.vehicleMeta}>{quote.distance_km.toFixed(1)} km</Text>}
+                {quote.distance_km != null && <Text style={s.vehicleMeta}>{distanceLine(quote.distance_km, quote.distance_basis, quote.drive_minutes)}</Text>}
               </View>
               {quote.billable_grams != null && (
                 <Text style={s.note}>

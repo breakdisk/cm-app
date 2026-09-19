@@ -224,6 +224,10 @@ pub struct HomeQuoteResponse {
     pub price: HomePrice,
     pub currency: String,
     pub distance_km: f64,
+    /// `road`, or `direct` where no driving route exists (another island).
+    pub distance_basis: crate::infrastructure::external::DistanceBasis,
+    /// Driving time, where there is a road.
+    pub drive_minutes: Option<u32>,
     pub origin_text: String,
     pub destination_text: String,
     pub plan: TruckPlan,
@@ -264,8 +268,11 @@ pub async fn quote(
             "Could not locate one of the addresses — a home move is priced door to door and needs both".into(),
         ));
     };
-    let distance_km = a.distance_km(&b);
-    let distance_centikm = (distance_km * 100.0).round() as i64;
+    let drive = s.svc.router.drive(a, b).await.map_err(|e| {
+        tracing::error!(err = %e, "road distance unavailable for a home-move quote");
+        AppError::ServiceUnavailable("Can't measure the drive between the two homes right now — try again in a minute".into())
+    })?;
+    let distance_centikm = (drive.distance_km * 100.0).round() as i64;
 
     let priced = price(rates, &req.property, &items, distance_centikm, req.plan);
     let international = !req.origin.country_code.trim().eq_ignore_ascii_case(req.destination.country_code.trim());
@@ -303,6 +310,8 @@ pub async fn quote(
             price: priced,
             currency,
             distance_km: distance_centikm as f64 / 100.0,
+            distance_basis: drive.basis,
+            drive_minutes: drive.minutes,
             origin_text: payload.origin_text,
             destination_text: payload.destination_text,
             plan: req.plan,

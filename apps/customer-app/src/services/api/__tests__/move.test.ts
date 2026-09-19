@@ -5,7 +5,7 @@ jest.mock('../client', () => ({
   getOrderClient: jest.fn(() => ({ get: mockGet, post: mockPost })),
 }));
 
-import { accessorialLabel, linesReconcile, listAccessorials, quoteLines, quoteTotal, type MoveQuote } from '../move';
+import { accessorialLabel, distanceLine, linesReconcile, listAccessorials, quoteLines, quoteTotal, type MoveQuote } from '../move';
 
 const quote = (over: Partial<MoveQuote> = {}): MoveQuote => ({
   amount_cents: 20_000,
@@ -120,5 +120,20 @@ describe('discountLabel', () => {
     expect(discountLabel(line('corporate', 'Acme Corp'))).toBe('Acme Corp rate');
     expect(discountLabel(line('tier', 'Gold'))).toBe('Gold member');
     expect(discountLabel(line('credit', 'Account credit'))).toBe('Account credit');
+  });
+});
+
+describe('distanceLine', () => {
+  it('reads a road distance with the drive time', () => {
+    expect(distanceLine(18.43, 'road', 41)).toBe('18.4 km by road · about 41 min');
+    expect(distanceLine(120, 'road', 135)).toBe('120.0 km by road · about 2 h 15 min');
+    expect(distanceLine(60, 'road', 60)).toBe('60.0 km by road · about 1 h');
+    expect(distanceLine(5, 'road', null)).toBe('5.0 km by road');
+  });
+  it('says when there is no road route', () => {
+    expect(distanceLine(571.9, 'direct', null)).toBe('571.9 km direct — no road route');
+  });
+  it('reads an older server as the bare distance', () => {
+    expect(distanceLine(12, undefined, undefined)).toBe('12.0 km');
   });
 });

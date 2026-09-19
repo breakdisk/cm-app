@@ -10,6 +10,8 @@ use crate::application::{
 
 pub mod mapbox_geocoder;
 pub use mapbox_geocoder::MapboxGeocoder;
+pub mod road_router;
+pub use road_router::{DirectRouter, DistanceBasis, Drive, MapboxDirections, RoadRouter};
 
 /// Passthrough normalizer — maps the input fields directly without external geocoding.
 /// Used as a fallback when no geocoder token is configured; shipments created through
