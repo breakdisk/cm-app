@@ -290,3 +290,27 @@ is config, not code.
    A window is open while available home-move leads for that date exceed moves already booked in
    it (and multi-truck leads exceed Large Estate moves); full windows grey out, and the response
    names the next open one. **Waitlist and surge: not built.**
+
+### Decisions — built 2026-09-19
+
+| Decision | Where | Commits |
+|---|---|---|
+| Crew table, Large Estate lock, survey deposit and its refund rule | order-intake `home_move.rs`, migration `0017` | `30b95e89` |
+| Provider onboarding (service lines, coverage, trucks, helpers, jobs a day) and the lead's own working and off days | driver-ops migration `0017`, `api/http/provider.rs` | `773b6482` |
+| Offer only to eligible leads; claiming reserves the day, and the assignment is made 12 h before | dispatch migration `0015`, `home_repo.rs`, `offer_service` | `220b6353`, `cc85f701` |
+| Windows open only while a team is free; `SLOT_FULL` at booking; next open window named | order-intake `slots`, `book`, `home_capacity_client.rs` | `60941804` |
+| Survey addendum: additions only, `max(0, repriced − agreed)` + extras, the customer approves and pays | order-intake migration `0018`, `submit_survey`/`approve`/`decline`, payment consumer | `aab62fc2` |
+| Customer: "Team {lead} · N trucks & M-person crew", greyed full windows, the addendum to approve | customer-app `homeMove.ts`, `MoveHomeJobScreen` | `85d64f8d` |
+| Operations: onboard a driver for freight or home moves; the move on the shipment panel | admin-portal `ProviderProfileModal`, `HomeMoveSection` | `3674e31f`, `6dcd00ed` |
+| Gateway route for `/v1/home-reservations` | api-gateway `proxy/mod.rs` | `b76e2dde` |
+| Lead's app: a claim reads as a reservation (it used to fail to parse); reserved moves; the survey form; working and off days | driver-app `HomeMoveApiService`, `feature:profile` Home moves / Survey / Availability | `31d55373` |
+
+**Not built** — each needs a decision or a later slice:
+- **Model B (paired co-leads).** Needs multi-driver assignment in dispatch.
+- **Waitlist and surge.**
+- **Lead pay for home moves.** Offers show no payout, and a retained survey fee is recorded but not
+  paid out to the lead.
+- **Dispatch doesn't hear about a paid addendum.** When one raises the trucks or crew, the lead
+  already reserved is not re-checked against the larger job.
+- **Photo, scan or video capture in the survey.** It is a typed inventory.
+- **Distance is a straight line.** No road routing.
