@@ -154,6 +154,11 @@ impl JobDropRepository for PgJobDropRepository {
                WHERE jd.driver_id = $1
                  AND jd.fee_cents > 0
                  AND jd.dropped_at >= $2 AND jd.dropped_at < $3
+               UNION ALL
+               SELECT ec.kind, ec.reference_id, ec.tracking_number, ec.amount_cents, ec.credited_at
+               FROM driver_ops.earning_credits ec
+               WHERE ec.driver_id = $1
+                 AND ec.credited_at >= $2 AND ec.credited_at < $3
                ORDER BY at DESC
                LIMIT 200"#,
         )

@@ -139,6 +139,17 @@ class HomeMoveLogicTest {
     }
 
     @Test
+    fun `earnings lines are named by kind, and an unknown kind still reads`() {
+        assertEquals("Waiting pay", adjustmentTitle("waiting_fee"))
+        assertEquals("Dropped job fee", adjustmentTitle("drop_fee"))
+        assertEquals("Survey fee", adjustmentTitle("survey_fee"))
+        assertEquals("Support lead share", adjustmentTitle("support_share"))
+        // Before this, anything that was not waiting pay read as a dropped-job fee.
+        assertEquals("Loading bonus", adjustmentTitle("loading_bonus"))
+        assertEquals("Adjustment", adjustmentTitle(""))
+    }
+
+    @Test
     fun `server messages are read out of the error body`() {
         assertEquals(
             "An addendum is already waiting on the customer for this move",

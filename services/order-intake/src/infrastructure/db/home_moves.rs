@@ -27,6 +27,14 @@ pub struct HomeMoveRecord {
     pub international: bool,
     pub survey_cents: i64,
     pub survey_submitted_at: Option<DateTime<Utc>>,
+    /// The lead's pay, before and after the platform's commission. Never
+    /// sent with the record: the customer reads this record.
+    #[serde(skip_serializing)]
+    pub lead_gross_cents: i64,
+    #[serde(skip_serializing)]
+    pub lead_commission_cents: i64,
+    #[serde(skip_serializing)]
+    pub lead_payout_cents: i64,
 }
 
 /// Once per shipment: a retried booking (same idempotency key, same
@@ -36,8 +44,9 @@ pub async fn insert(pool: &PgPool, r: &HomeMoveRecord) -> anyhow::Result<()> {
         r#"INSERT INTO order_intake.home_moves
                (shipment_id, tenant_id, account_id, property, items, plan, distance_centikm,
                 survey_required, survey_at, move_at, total_cents, currency,
-                trucks, helpers, crew_total, large_estate, international, survey_cents)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                trucks, helpers, crew_total, large_estate, international, survey_cents,
+                lead_gross_cents, lead_commission_cents, lead_payout_cents)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
            ON CONFLICT (shipment_id) DO NOTHING"#,
     )
     .bind(r.shipment_id)
@@ -58,6 +67,9 @@ pub async fn insert(pool: &PgPool, r: &HomeMoveRecord) -> anyhow::Result<()> {
     .bind(r.large_estate)
     .bind(r.international)
     .bind(r.survey_cents)
+    .bind(r.lead_gross_cents)
+    .bind(r.lead_commission_cents)
+    .bind(r.lead_payout_cents)
     .execute(pool)
     .await?;
     Ok(())
@@ -98,7 +110,8 @@ pub async fn get(pool: &PgPool, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::R
     let row = sqlx::query(
         r#"SELECT shipment_id, tenant_id, account_id, property, items, plan, distance_centikm,
                   survey_required, survey_at, move_at, total_cents, currency,
-                  trucks, helpers, crew_total, large_estate, international, survey_cents, survey_submitted_at
+                  trucks, helpers, crew_total, large_estate, international, survey_cents, survey_submitted_at,
+                  lead_gross_cents, lead_commission_cents, lead_payout_cents
              FROM order_intake.home_moves
             WHERE tenant_id = $1 AND shipment_id = $2"#,
     )
@@ -126,5 +139,47 @@ pub async fn get(pool: &PgPool, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::R
         international: r.get("international"),
         survey_cents: r.get("survey_cents"),
         survey_submitted_at: r.get("survey_submitted_at"),
+        lead_gross_cents: r.get("lead_gross_cents"),
+        lead_commission_cents: r.get("lead_commission_cents"),
+        lead_payout_cents: r.get("lead_payout_cents"),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_leads_pay_is_never_sent_with_the_record() {
+        // The customer reads this record; what the lead is paid is not theirs.
+        let r = HomeMoveRecord {
+            shipment_id: Uuid::nil(),
+            tenant_id: Uuid::nil(),
+            account_id: Uuid::nil(),
+            property: serde_json::json!({}),
+            items: serde_json::json!([]),
+            plan: "trucks".into(),
+            distance_centikm: 1_840,
+            survey_required: true,
+            survey_at: None,
+            move_at: Utc::now(),
+            total_cents: 150_000,
+            currency: "PHP".into(),
+            trucks: 1,
+            helpers: 4,
+            crew_total: 5,
+            large_estate: false,
+            international: false,
+            survey_cents: 4_500,
+            survey_submitted_at: None,
+            lead_gross_cents: 145_500,
+            lead_commission_cents: 29_100,
+            lead_payout_cents: 116_400,
+        };
+        let json = serde_json::to_value(&r).expect("serializes");
+        for hidden in ["lead_gross_cents", "lead_commission_cents", "lead_payout_cents"] {
+            assert!(json.get(hidden).is_none(), "{hidden} leaked");
+        }
+        assert_eq!(json["total_cents"], 150_000);
+    }
 }

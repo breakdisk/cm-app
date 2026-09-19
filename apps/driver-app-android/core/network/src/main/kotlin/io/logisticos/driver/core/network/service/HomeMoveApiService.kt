@@ -39,6 +39,8 @@ data class LeadMoveItem(
     val international: Boolean = false,
     /** Already turned into the day's assignment. */
     val activated: Boolean = false,
+    /** What this lead is paid for the move, after the platform's commission. */
+    @SerialName("lead_payout_cents") val leadPayoutCents: Long? = null,
 )
 
 // ── The lead's profile and availability (driver-ops) ──────────────────────────
@@ -121,6 +123,18 @@ data class HomeCatalogueItemDto(
 data class HomeMoveDetailResponse(
     val data: HomeMoveDto,
     @SerialName("lead_name") val leadName: String? = null,
+    /** Staff and the lead only; the customer is never sent it. */
+    val pay: HomePayDto? = null,
+)
+
+/** The lead's pay, after the platform's commission. */
+@Serializable
+data class HomePayDto(
+    @SerialName("lead_payout_cents")       val leadPayoutCents: Long = 0,
+    @SerialName("commission_cents")        val commissionCents: Long = 0,
+    /** The survey fee to the lead, paid when the survey is signed off. */
+    @SerialName("survey_payout_cents")     val surveyPayoutCents: Long = 0,
+    @SerialName("survey_commission_cents") val surveyCommissionCents: Long = 0,
 )
 
 @Serializable

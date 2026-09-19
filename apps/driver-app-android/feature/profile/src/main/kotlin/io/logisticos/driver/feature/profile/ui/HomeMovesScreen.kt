@@ -98,6 +98,7 @@ private fun MoveCard(m: LeadMoveItem, onSurvey: () -> Unit) {
             MoveDetailRow("From", m.pickup)
             MoveDetailRow("To", m.dropoff)
             MoveDetailRow("Your crew", crewLine(m.trucks, m.crewTotal))
+            m.leadPayoutCents?.takeIf { it > 0 }?.let { MoveDetailRow("Your pay", "${pesos(it)} after commission", c.success) }
             MoveDetailRow("Arrive", whenLabel(m.moveAt))
             MoveDetailRow("Survey", m.surveyAt?.let(::whenLabel) ?: "Not needed for this size")
         }

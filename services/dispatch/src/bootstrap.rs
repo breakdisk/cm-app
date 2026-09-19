@@ -145,9 +145,10 @@ pub async fn run() -> anyhow::Result<()> {
                         continue;
                     }
                 };
-                for (tenant_id, shipment_id, driver_id) in due {
+                for (tenant_id, shipment_id, driver_id, payout_cents) in due {
                     let cmd = QuickDispatchCommand { shipment_id, preferred_driver_id: Some(driver_id) };
-                    match dispatch.quick_dispatch(TenantId::from_uuid(tenant_id), cmd).await {
+                    // The pay the lead accepted on the offer rides on the task.
+                    match dispatch.quick_dispatch_paying(TenantId::from_uuid(tenant_id), cmd, payout_cents).await {
                         Ok(_) => {
                             if let Err(e) = home.mark_activated(shipment_id).await {
                                 tracing::error!(%shipment_id, err = %e, "home-activation: assigned but not marked — it will not be assigned twice (queue is dispatched)");

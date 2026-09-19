@@ -109,6 +109,14 @@ private fun Form(s: SurveyUiState, vm: SurveyViewModel) {
 
     MoveSummary(move, s.leadName)
 
+    s.pay?.takeIf { it.surveyPayoutCents > 0 && move.surveySubmittedAt == null }?.let { p ->
+        MoveNotice(
+            title = "Signing off pays you ${money(p.surveyPayoutCents, move.currency)}",
+            body = "The survey fee, less the platform's commission, goes to your earnings when you send this — whether or not the move goes ahead.",
+            tone = MoveTone.Accent,
+        )
+    }
+
     s.addendum?.let { a ->
         MoveNotice(
             title = if (a.status == "pending") "Earlier survey waiting" else "Earlier survey",

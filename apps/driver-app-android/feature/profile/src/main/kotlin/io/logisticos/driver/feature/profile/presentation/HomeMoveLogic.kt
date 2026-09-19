@@ -159,3 +159,17 @@ fun serverMessage(body: String?, fallback: String): String {
     val m = body?.let { Regex(""""message"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(it) }?.groupValues?.get(1)
     return m?.replace("\\\"", "\"")?.takeIf { it.isNotBlank() } ?: fallback
 }
+
+/**
+ * An earnings adjustment's title. Credits are pay earned outside a delivered
+ * task, already net of the platform's commission; a kind this build doesn't
+ * know yet still reads sensibly rather than as someone else's line.
+ */
+fun adjustmentTitle(kind: String): String = when (kind) {
+    "waiting_fee" -> "Waiting pay"
+    "drop_fee" -> "Dropped job fee"
+    "survey_fee" -> "Survey fee"
+    "support_share" -> "Support lead share"
+    "emergency_share" -> "Extra truck share"
+    else -> kind.split('_').filter { it.isNotBlank() }.joinToString(" ").replaceFirstChar { it.uppercase() }.ifBlank { "Adjustment" }
+}

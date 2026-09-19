@@ -1,3 +1,4 @@
+pub mod credits;
 pub mod drivers;
 pub mod provider;
 pub mod tasks;
@@ -21,6 +22,8 @@ pub struct AppState {
     pub fcm: Option<Arc<FcmClient>>,
     /// Which jobs each driver is onboarded for, and when they work.
     pub providers: Arc<dyn crate::infrastructure::db::ProviderStore>,
+    /// Pay earned outside a delivered task (a survey, a support share).
+    pub credits: Arc<dyn crate::infrastructure::db::CreditStore>,
 }
 
 /// Events fanned out to WebSocket subscribers. Tenant-scoped on the server side —
@@ -74,6 +77,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // `/internal/` path; Istio mTLS gates the caller inside the mesh.
         .route("/v1/internal/shipments/:shipment_id/driver-contact", get(tasks::internal_driver_contact))
         .route("/v1/internal/home-leads/capacity", get(provider::internal_home_capacity))
+        .route("/v1/internal/earnings/credits", post(credits::internal_credit))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }

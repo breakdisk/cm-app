@@ -63,6 +63,10 @@ pub struct HomeMoveRequirement {
     pub move_date:    Option<chrono::NaiveDate>,
     #[serde(default)]
     pub survey_at:    Option<chrono::DateTime<chrono::Utc>>,
+    /// The lead's net pay for the move, after the platform's commission —
+    /// shown on the offer before a lead accepts. Absent from older events.
+    #[serde(default)]
+    pub lead_payout_cents: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

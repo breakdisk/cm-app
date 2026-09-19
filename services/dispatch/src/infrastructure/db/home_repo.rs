@@ -47,6 +47,8 @@ pub struct LeadMove {
     pub international: bool,
     /// Turned into the day's assignment already.
     pub activated: bool,
+    /// What the lead is paid for the move, after commission.
+    pub lead_payout_cents: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,8 +85,8 @@ impl HomeRepo {
         sqlx::query(
             "INSERT INTO dispatch.home_requirements
                     (shipment_id, tenant_id, trucks, helpers, crew_total, large_estate, international,
-                     move_at, move_date, survey_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     move_at, move_date, survey_at, lead_payout_cents)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (shipment_id) DO NOTHING",
         )
         .bind(shipment_id)
@@ -97,6 +99,7 @@ impl HomeRepo {
         .bind(req.move_at)
         .bind(move_date_of(req))
         .bind(req.survey_at)
+        .bind(req.lead_payout_cents)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -104,7 +107,8 @@ impl HomeRepo {
 
     pub async fn requirement(&self, shipment_id: Uuid) -> anyhow::Result<Option<HomeMoveRequirement>> {
         let row = sqlx::query(
-            "SELECT trucks, helpers, crew_total, large_estate, international, move_at, move_date, survey_at
+            "SELECT trucks, helpers, crew_total, large_estate, international, move_at, move_date, survey_at,
+                    lead_payout_cents
                FROM dispatch.home_requirements WHERE shipment_id = $1",
         )
         .bind(shipment_id)
@@ -119,6 +123,7 @@ impl HomeRepo {
             move_at: r.get("move_at"),
             move_date: Some(r.get("move_date")),
             survey_at: r.get("survey_at"),
+            lead_payout_cents: r.get("lead_payout_cents"),
         }))
     }
 
@@ -269,10 +274,10 @@ impl HomeRepo {
     }
 
     /// Reservations whose move starts before `by`, not yet activated:
-    /// (tenant, shipment, driver).
-    pub async fn due(&self, by: DateTime<Utc>) -> anyhow::Result<Vec<(Uuid, Uuid, Uuid)>> {
-        let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
-            "SELECT r.tenant_id, r.shipment_id, r.driver_id
+    /// (tenant, shipment, driver, the lead's net pay).
+    pub async fn due(&self, by: DateTime<Utc>) -> anyhow::Result<Vec<(Uuid, Uuid, Uuid, Option<i64>)>> {
+        let rows: Vec<(Uuid, Uuid, Uuid, Option<i64>)> = sqlx::query_as(
+            "SELECT r.tenant_id, r.shipment_id, r.driver_id, h.lead_payout_cents
                FROM dispatch.home_reservations r
                JOIN dispatch.home_requirements h ON h.shipment_id = r.shipment_id
               WHERE r.activated_at IS NULL AND r.released_at IS NULL AND h.move_at <= $1",
@@ -288,7 +293,7 @@ impl HomeRepo {
     pub async fn mine(&self, tenant_id: Uuid, driver_id: Uuid) -> anyhow::Result<Vec<LeadMove>> {
         let rows = sqlx::query(
             "SELECT r.shipment_id, r.move_date, r.activated_at, h.move_at, h.survey_at, h.trucks, h.helpers,
-                    h.crew_total, h.large_estate, h.international,
+                    h.crew_total, h.large_estate, h.international, h.lead_payout_cents,
                     q.customer_name, q.origin_address_line1, q.origin_city, q.dest_address_line1, q.dest_city,
                     q.tracking_number
                FROM dispatch.home_reservations r
@@ -327,6 +332,7 @@ impl HomeRepo {
                 large_estate: r.get("large_estate"),
                 international: r.get("international"),
                 activated: r.get::<Option<DateTime<Utc>>, _>("activated_at").is_some(),
+                lead_payout_cents: r.get("lead_payout_cents"),
             })
             .collect())
     }
@@ -376,6 +382,7 @@ mod tests {
             move_at: Utc.with_ymd_and_hms(2026, 9, 21, 0, 0, 0).unwrap(),
             move_date: None,
             survey_at: None,
+            lead_payout_cents: None,
         }
     }
 

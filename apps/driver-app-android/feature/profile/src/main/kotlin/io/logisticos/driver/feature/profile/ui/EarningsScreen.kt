@@ -174,7 +174,7 @@ private fun LazyListScope.earningsItems(entries: List<EarningEntryItem>, adjustm
             val c = LocalMoveColors.current
             val credit = a.amountCents >= 0
             LedgerLine(
-                title = if (a.kind == "waiting_fee") "Waiting pay" else "Dropped job fee",
+                title = io.logisticos.driver.feature.profile.presentation.adjustmentTitle(a.kind),
                 detail = a.trackingNumber,
                 monoDetail = true,
                 amount = (if (credit) "+" else "−") + pesos(kotlin.math.abs(a.amountCents)),

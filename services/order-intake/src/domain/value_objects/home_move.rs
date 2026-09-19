@@ -173,7 +173,20 @@ pub struct HomeRates {
     /// Hours before the survey inside which cancelling keeps the survey fee.
     #[serde(default = "default_survey_refund_hours")]
     pub survey_refund_until_hours: i64,
+    /// The lead's pay: base + per m³ + per road km, before commission. All
+    /// zero means the lead is paid the move's fare, less commission.
+    #[serde(default)]
+    pub payout_base_cents: i64,
+    #[serde(default)]
+    pub payout_per_m3_cents: i64,
+    #[serde(default)]
+    pub payout_per_km_cents: i64,
+    /// The platform's commission on a lead's pay and on the survey fee.
+    #[serde(default = "default_commission_bps")]
+    pub commission_bps: i64,
 }
+
+fn default_commission_bps() -> i64 { 2_000 }
 
 fn default_large_estate_l() -> i64 { 75_000 }
 fn default_survey_refund_hours() -> i64 { 12 }
@@ -204,6 +217,10 @@ impl Default for HomeRates {
             utc_offset_minutes: default_utc_offset(),
             large_estate_l: default_large_estate_l(),
             survey_refund_until_hours: default_survey_refund_hours(),
+            payout_base_cents: 0,
+            payout_per_m3_cents: 0,
+            payout_per_km_cents: 0,
+            commission_bps: default_commission_bps(),
         }
     }
 }
@@ -212,6 +229,56 @@ impl HomeRates {
     pub fn offered(&self) -> bool {
         self.trip_cents > 0
     }
+}
+
+// ── The lead's pay ───────────────────────────────────────────────────────────
+
+/// What a lead is paid for a piece of work, and what the platform keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub struct LeadPay {
+    pub gross_cents: i64,
+    pub commission_cents: i64,
+    /// What the lead is shown and credited.
+    pub net_cents: i64,
+}
+
+impl LeadPay {
+    /// `gross` less the platform's commission, rounded to the nearest unit.
+    pub fn after_commission(rates: &HomeRates, gross_cents: i64) -> Self {
+        let gross_cents = gross_cents.max(0);
+        let bps = rates.commission_bps.clamp(0, 10_000);
+        let commission_cents = (gross_cents * bps + 5_000) / 10_000;
+        Self { gross_cents, commission_cents, net_cents: gross_cents - commission_cents }
+    }
+}
+
+/// The lead's pay for the move: base + packed m³ × volume rate + road km ×
+/// per-km rate, less commission. Never more than the move's `fare_cents`
+/// (what the customer paid for the move itself), so the platform never pays
+/// out more than it took. With no pay rates set, the gross is the fare.
+pub fn lead_pay(rates: &HomeRates, volume_l: i64, distance_centikm: i64, fare_cents: i64) -> LeadPay {
+    let fare_cents = fare_cents.max(0);
+    let configured = rates.payout_base_cents > 0 || rates.payout_per_m3_cents > 0 || rates.payout_per_km_cents > 0;
+    let gross = if configured {
+        let volume = div_ceil(volume_l.max(0) * rates.payout_per_m3_cents.max(0), 1_000);
+        let distance = (distance_centikm.max(0) * rates.payout_per_km_cents.max(0) + 50) / 100;
+        (rates.payout_base_cents.max(0) + volume + distance).min(fare_cents)
+    } else {
+        fare_cents
+    };
+    LeadPay::after_commission(rates, gross)
+}
+
+/// The survey fee is its own piece of work: the lead is paid it, less
+/// commission, once the survey is signed off — whether or not the move goes
+/// ahead.
+pub fn survey_pay(rates: &HomeRates, survey_cents: i64) -> LeadPay {
+    LeadPay::after_commission(rates, survey_cents)
+}
+
+/// Packed volume of an inventory, in litres.
+pub fn volume_of(items: &[PricedItem]) -> i64 {
+    items.iter().map(|i| i64::from(i.qty) * i64::from(i.volume_l)).sum()
 }
 
 // ── The inventory ────────────────────────────────────────────────────────────
@@ -956,4 +1023,56 @@ mod tests {
         assert!(check_schedule(Some(fri_survey), mon_move, false, now(), 480).is_err(), "and a self-declared one has none");
         assert!(check_schedule(None, mon_move + Duration::minutes(30), false, now(), 480).is_err(), "only offered starts");
     }
+
+    // ── The lead's pay ──
+
+    fn pay_rates() -> HomeRates {
+        HomeRates { trip_cents: 100_000, ..HomeRates::default() }
+    }
+
+    #[test]
+    fn the_platform_keeps_twenty_percent_by_default() {
+        let p = LeadPay::after_commission(&pay_rates(), 100_000);
+        assert_eq!(p, LeadPay { gross_cents: 100_000, commission_cents: 20_000, net_cents: 80_000 });
+        // Rounded to the nearest unit, never a fraction.
+        assert_eq!(LeadPay::after_commission(&pay_rates(), 4_503).commission_cents, 901);
+    }
+
+    #[test]
+    fn with_no_pay_rates_the_lead_is_paid_the_fare_less_commission() {
+        let p = lead_pay(&pay_rates(), 30_000, 1_840, 150_000);
+        assert_eq!(p.gross_cents, 150_000);
+        assert_eq!(p.net_cents, 120_000);
+    }
+
+    #[test]
+    fn the_formula_is_base_plus_volume_plus_road_km() {
+        let r = HomeRates { payout_base_cents: 20_000, payout_per_m3_cents: 1_500, payout_per_km_cents: 2_000, ..pay_rates() };
+        // 30 m³ × 1,500 + 18.40 km × 2,000 + 20,000 = 45,000 + 36,800 + 20,000
+        let p = lead_pay(&r, 30_000, 1_840, 500_000);
+        assert_eq!(p.gross_cents, 101_800);
+        assert_eq!(p.commission_cents, 20_360);
+        assert_eq!(p.net_cents, 81_440);
+        // A part cubic metre counts as a whole one.
+        assert_eq!(lead_pay(&r, 30_001, 0, 500_000).gross_cents, 20_000 + 45_002);
+    }
+
+    #[test]
+    fn the_lead_is_never_paid_more_than_the_customer_paid() {
+        let r = HomeRates { payout_base_cents: 900_000, ..pay_rates() };
+        let p = lead_pay(&r, 10_000, 1_000, 150_000);
+        assert_eq!(p.gross_cents, 150_000);
+        assert_eq!(p.net_cents, 120_000);
+    }
+
+    #[test]
+    fn the_commission_is_config_and_bounded() {
+        let none = HomeRates { commission_bps: 0, ..pay_rates() };
+        assert_eq!(survey_pay(&none, 4_500).net_cents, 4_500);
+        let silly = HomeRates { commission_bps: 25_000, ..pay_rates() };
+        assert_eq!(survey_pay(&silly, 4_500).net_cents, 0);
+        assert_eq!(survey_pay(&pay_rates(), 4_500), LeadPay { gross_cents: 4_500, commission_cents: 900, net_cents: 3_600 });
+        assert_eq!(survey_pay(&pay_rates(), -5), LeadPay::default());
+    }
+
 }

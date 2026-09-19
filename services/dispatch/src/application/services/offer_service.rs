@@ -97,9 +97,12 @@ impl OfferService {
                 "No home-move lead can take this move that day — it stays with ops".into(),
             ));
         }
-        // The lead's pay for a home move is not decided: no payout is shown.
-        let candidates: Vec<OfferCandidateRow> =
-            leads.iter().map(|l| OfferCandidateRow { driver_id: l.driver_id, payout_cents: None }).collect();
+        // The lead's net pay, after commission, as order-intake priced it —
+        // shown on the card before anyone accepts.
+        let candidates: Vec<OfferCandidateRow> = leads
+            .iter()
+            .map(|l| OfferCandidateRow { driver_id: l.driver_id, payout_cents: req.lead_payout_cents })
+            .collect();
 
         let offer = TaskOfferRow {
             id:                Uuid::new_v4(),

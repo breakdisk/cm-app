@@ -453,6 +453,10 @@ impl TaskRepository for PgTaskRepository {
                    FROM driver_ops.job_drops jd
                    WHERE jd.driver_id = $1
                      AND jd.fee_cents > 0
+                   UNION ALL
+                   SELECT ec.credited_at, ec.amount_cents, 0
+                   FROM driver_ops.earning_credits ec
+                   WHERE ec.driver_id = $1
                )
                SELECT (at AT TIME ZONE 'UTC')::date     AS day,
                       COALESCE(SUM(cents), 0)::bigint    AS total_cents,

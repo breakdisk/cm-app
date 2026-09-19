@@ -195,7 +195,7 @@ pub struct JobDrop {
 /// drop fee (negative).
 #[derive(Debug, Clone, Serialize)]
 pub struct EarningAdjustment {
-    /// "waiting_fee" | "drop_fee"
+    /// "waiting_fee" | "drop_fee", or a credit's kind ("survey_fee", …)
     pub kind:            String,
     pub reference_id:    Uuid,
     pub tracking_number: Option<String>,

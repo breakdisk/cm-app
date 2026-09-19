@@ -9,5 +9,7 @@ pub use location_repo::PgLocationRepository;
 pub use duty_repo::PgDutySessionRepository;
 pub mod job_drop_repo;
 pub use job_drop_repo::PgJobDropRepository;
+pub mod credit_repo;
+pub use credit_repo::{CreditStore, PgCreditStore};
 pub mod provider_repo;
 pub use provider_repo::{InMemoryProviderStore, PgProviderStore, ProviderStore};

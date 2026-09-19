@@ -24,6 +24,8 @@ data class SurveyUiState(
     val error: String? = null,
     val move: HomeMoveDto? = null,
     val leadName: String? = null,
+    /** The lead's pay for the move and for this survey; null for staff builds that aren't sent it. */
+    val pay: io.logisticos.driver.core.network.service.HomePayDto? = null,
     val rooms: List<HomeRoomDto> = emptyList(),
     /** The latest addendum on this move, before this survey. */
     val addendum: AddendumDto? = null,
@@ -88,6 +90,7 @@ class SurveyViewModel @Inject constructor(
                         loading = false,
                         move = detail.data,
                         leadName = detail.leadName,
+                        pay = detail.pay,
                         rooms = catalogue.rooms,
                         addendum = addendum,
                         roomKey = it.roomKey ?: catalogue.rooms.firstOrNull()?.key,

@@ -374,6 +374,17 @@ impl DriverAssignmentService {
         tenant_id: TenantId,
         cmd: QuickDispatchCommand,
     ) -> AppResult<DriverAssignment> {
+        self.quick_dispatch_paying(tenant_id, cmd, None).await
+    }
+
+    /// quick_dispatch with the job's pay already agreed: a home move's lead
+    /// accepted a stated payout, so the task carries that, not their gig rate.
+    pub async fn quick_dispatch_paying(
+        &self,
+        tenant_id: TenantId,
+        cmd: QuickDispatchCommand,
+        agreed_payout_cents: Option<i64>,
+    ) -> AppResult<DriverAssignment> {
         // 1. Load shipment from queue
         let queue_item = self.queue_repo
             .find_by_shipment(cmd.shipment_id)
@@ -501,9 +512,10 @@ impl DriverAssignmentService {
         // contractual; later rate changes never alter accepted work. None for
         // full-time drivers (the app must never show them a price). A lookup
         // failure degrades to "no payout shown", never a dispatch failure.
-        let payout_cents = self.driver_avail_repo
-            .gig_rate_cents(&driver_id).await
-            .unwrap_or(None);
+        let payout_cents = match agreed_payout_cents {
+            Some(agreed) => Some(agreed),
+            None => self.driver_avail_repo.gig_rate_cents(&driver_id).await.unwrap_or(None),
+        };
 
         // 4. Create a minimal single-stop route (vehicle_id = nil, stop added by driver-ops)
         let route_id = RouteId::new();

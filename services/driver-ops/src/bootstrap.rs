@@ -176,6 +176,8 @@ pub async fn run() -> anyhow::Result<()> {
     // Broadcast channel for WebSocket roster streaming — location + status (capacity 512)
     let (roster_tx, _) = broadcast::channel::<RosterEvent>(512);
 
+    let credits: Arc<dyn crate::infrastructure::db::CreditStore> =
+        Arc::new(crate::infrastructure::db::PgCreditStore::new(pool.clone()));
     let state = Arc::new(AppState {
         driver_service,
         task_service,
@@ -184,6 +186,7 @@ pub async fn run() -> anyhow::Result<()> {
         roster_tx,
         fcm: fcm_for_state,
         providers: Arc::new(crate::infrastructure::db::PgProviderStore::new(pool.clone())),
+        credits,
     });
 
     use tower_http::cors::CorsLayer;

@@ -19,6 +19,20 @@ struct Envelope<T> {
     data: T,
 }
 
+/// Pay credited to a driver outside a delivered task — driver-ops'
+/// `EarningCredit`, net of commission.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LeadCredit {
+    pub tenant_id: Uuid,
+    pub driver_id: Uuid,
+    pub kind: &'static str,
+    pub reference_id: Uuid,
+    pub tracking_number: Option<String>,
+    pub gross_cents: i64,
+    pub commission_cents: i64,
+    pub amount_cents: i64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Reservation {
     pub driver_id: Uuid,
@@ -49,6 +63,18 @@ impl HomeTeamsClient {
             anyhow::bail!("driver-ops capacity returned {}", resp.status());
         }
         Ok(Some(resp.json::<Envelope<Vec<DayCapacity>>>().await?.data))
+    }
+
+    /// Credit a lead; safe to repeat (driver-ops credits each kind of work
+    /// on a shipment once). Ok(false) when driver-ops is not configured.
+    pub async fn credit(&self, credit: &LeadCredit) -> anyhow::Result<bool> {
+        let Some(base) = self.driver_ops_url.as_deref() else { return Ok(false) };
+        let url = format!("{}/v1/internal/earnings/credits", base.trim_end_matches('/'));
+        let resp = self.http.post(url).json(credit).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("driver-ops credit returned {}", resp.status());
+        }
+        Ok(true)
     }
 
     /// The lead who reserved this move; None before one has.

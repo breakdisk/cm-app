@@ -23,7 +23,7 @@ use crate::api::http::AppState;
 use crate::application::commands::{AddressInput, CreateShipmentCommand, HomeBooking, IntakeInput};
 use crate::domain::value_objects::cancel_authority::is_tenant_wide;
 use crate::domain::value_objects::home_move::{
-    addendum_amount, validate_extras, SurveyExtra, check_schedule, local_today, move_slots, move_window_open, price, resolve, survey_slots, survey_window_open,
+    addendum_amount, validate_extras, SurveyExtra, check_schedule, lead_pay, local_today, move_slots, move_window_open, price, resolve, survey_pay, survey_slots, survey_window_open, volume_of,
     CatalogueItem, DayCapacity, DeclaredItem, HomePrice, PricedItem, Property, PropertyType, TruckPlan, SURVEY_LEAD_DAYS,
 };
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
@@ -441,6 +441,8 @@ pub async fn book(
     let name = req.contact_name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or("Customer").to_owned();
     let is_customer = claims.roles.iter().any(|r| r == "customer");
     let item_count: u32 = payload.items.iter().map(|i| i.qty).sum();
+    // The lead's pay, less commission. The survey deposit is its own pay.
+    let pay = lead_pay(rates, volume_of(&payload.items), payload.distance_centikm, payload.total_cents - payload.survey_cents);
 
     let cmd = CreateShipmentCommand {
         tenant_id: claims.tenant_id,
@@ -490,6 +492,7 @@ pub async fn book(
                 move_at: req.move_at,
                 move_date: Some((req.move_at + Duration::minutes(i64::from(rates.utc_offset_minutes))).date_naive()),
                 survey_at: req.survey_at,
+                lead_payout_cents: Some(pay.net_cents).filter(|p| *p > 0),
             },
         }),
         intake: req.intake,
@@ -519,6 +522,9 @@ pub async fn book(
         international: payload.international,
         survey_cents: payload.survey_cents,
         survey_submitted_at: None,
+        lead_gross_cents: pay.gross_cents,
+        lead_commission_cents: pay.commission_cents,
+        lead_payout_cents: pay.net_cents,
     };
     home_moves::insert(&s.pool, &record).await.map_err(AppError::Internal)?;
     tracing::info!(
@@ -607,6 +613,7 @@ pub async fn submit_survey(
         &s.svc.home_rates, &property, &booked, &added, &req.extras, record.distance_centikm, plan, record.total_cents,
     );
     home_addenda::mark_survey_submitted(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?;
+    pay_survey(&s, &record).await;
     if items_cents + extras_cents == 0 {
         tracing::info!(shipment_id = %id, by = %claims.user_id, "home survey done — nothing added");
         return Ok((StatusCode::OK, Json(serde_json::json!({ "data": { "survey_submitted": true, "addendum": null } }))));
@@ -714,7 +721,7 @@ pub async fn detail(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let (record, _) = record_for(&s, &claims, id).await?;
+    let (record, party) = record_for(&s, &claims, id).await?;
     // The lead who reserved it, once one has — "Team {lead}". A failure to
     // ask leaves it unnamed rather than failing the page.
     let lead = match s.svc.home_teams.reservation(id).await {
@@ -724,7 +731,61 @@ pub async fn detail(
             None
         }
     };
-    Ok(Json(serde_json::json!({ "data": record, "lead_name": lead })))
+    // What the lead is paid is theirs and staff's to see, not the customer's.
+    let pay = (!matches!(party, Party::Customer)).then(|| {
+        let survey = survey_pay(&s.svc.home_rates, record.survey_cents);
+        serde_json::json!({
+            "lead_gross_cents": record.lead_gross_cents,
+            "commission_cents": record.lead_commission_cents,
+            "lead_payout_cents": record.lead_payout_cents,
+            "survey_payout_cents": survey.net_cents,
+            "survey_commission_cents": survey.commission_cents,
+        })
+    });
+    Ok(Json(serde_json::json!({ "data": record, "lead_name": lead, "pay": pay })))
+}
+
+/// The survey is signed off: pay the reserved lead the survey fee, less
+/// commission, whether or not the move goes ahead. Safe to repeat — a later
+/// survey retries a credit that failed, and driver-ops credits it once.
+async fn pay_survey(s: &AppState, record: &HomeMoveRecord) {
+    if record.survey_cents <= 0 {
+        return;
+    }
+    let lead = match s.svc.home_teams.reservation(record.shipment_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            tracing::warn!(shipment_id = %record.shipment_id, "survey signed off with no reserved lead — survey fee not credited");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(shipment_id = %record.shipment_id, err = %e, "survey fee not credited: reservation unreadable — the next survey retries");
+            return;
+        }
+    };
+    let pay = survey_pay(&s.svc.home_rates, record.survey_cents);
+    let tracking = s
+        .svc
+        .repo
+        .find_by_id(&logisticos_types::ShipmentId::from_uuid(record.shipment_id))
+        .await
+        .ok()
+        .flatten()
+        .map(|sh| sh.awb.to_string());
+    let credit = crate::infrastructure::http::home_capacity_client::LeadCredit {
+        tenant_id: record.tenant_id,
+        driver_id: lead.driver_id,
+        kind: "survey_fee",
+        reference_id: record.shipment_id,
+        tracking_number: tracking,
+        gross_cents: pay.gross_cents,
+        commission_cents: pay.commission_cents,
+        amount_cents: pay.net_cents,
+    };
+    match s.svc.home_teams.credit(&credit).await {
+        Ok(_) => tracing::info!(shipment_id = %record.shipment_id, lead = %lead.driver_id, amount_cents = pay.net_cents, "survey fee credited to the lead"),
+        Err(e) => tracing::error!(shipment_id = %record.shipment_id, err = %e, "survey fee not credited — the next survey retries"),
+    }
 }
 
 #[cfg(test)]
