@@ -21,6 +21,16 @@ export interface Classification {
     from: string;
     to: string;
     when: string;
+    /** What a whole-home sentence stated about the property; null fields were not stated. */
+    property?: {
+      property_type?: 'apartment' | 'villa' | 'offices' | null;
+      bedrooms?: number | null;
+      desks?: number | null;
+      pickup_floor?: number | null;
+      pickup_has_lift?: boolean | null;
+      dropoff_floor?: number | null;
+      dropoff_has_lift?: boolean | null;
+    };
   };
 }
 
@@ -65,7 +75,7 @@ export interface Routed {
 export function route(
   ai: Classification | null,
   regex: ParsedMove,
-  regexIntent: 'book' | 'support',
+  regexIntent: RoutedIntent,
   mode: 'prompt' | 'voice',
 ): Routed {
   const trusted = ai && ai.confidence >= MIN_CONFIDENCE ? ai : null;

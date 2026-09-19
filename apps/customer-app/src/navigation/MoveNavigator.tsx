@@ -20,6 +20,12 @@ import { MovePaymentsScreen } from '../screens/move/MovePaymentsScreen';
 import { MoveRulesScreen } from '../screens/move/MoveRulesScreen';
 import { MoveOffersScreen } from '../screens/move/MoveOffersScreen';
 import { MoveInboxScreen } from '../screens/move/MoveInboxScreen';
+import { MoveHomeSetScreen } from '../screens/move/home/MoveHomeSetScreen';
+import { MoveHomeRoomsScreen } from '../screens/move/home/MoveHomeRoomsScreen';
+import { MoveHomeRoomScreen } from '../screens/move/home/MoveHomeRoomScreen';
+import { MoveHomeQuoteScreen } from '../screens/move/home/MoveHomeQuoteScreen';
+import { MoveHomeScheduleScreen } from '../screens/move/home/MoveHomeScheduleScreen';
+import { MoveHomeBookedScreen } from '../screens/move/home/MoveHomeBookedScreen';
 import { M } from '../screens/move/theme';
 import { SupportScreen } from '../screens/support/SupportScreen';
 import { ProfileScreen } from '../screens/profile/ProfileScreen';
@@ -53,6 +59,13 @@ export function MoveNavigator() {
       <Stack.Screen name="MoveRules" component={MoveRulesScreen} />
       <Stack.Screen name="MoveOffers" component={MoveOffersScreen} />
       <Stack.Screen name="MoveInbox" component={MoveInboxScreen} />
+      {/* Whole-home moving: property → rooms → room → quote → dates → booked */}
+      <Stack.Screen name="MoveHomeSet" component={MoveHomeSetScreen} />
+      <Stack.Screen name="MoveHomeRooms" component={MoveHomeRoomsScreen} />
+      <Stack.Screen name="MoveHomeRoom" component={MoveHomeRoomScreen} />
+      <Stack.Screen name="MoveHomeQuote" component={MoveHomeQuoteScreen} />
+      <Stack.Screen name="MoveHomeSchedule" component={MoveHomeScheduleScreen} />
+      <Stack.Screen name="MoveHomeBooked" component={MoveHomeBookedScreen} options={{ gestureEnabled: false }} />
       <Stack.Screen name="Support" component={SupportScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen name="KYC" component={KYCScreen} />

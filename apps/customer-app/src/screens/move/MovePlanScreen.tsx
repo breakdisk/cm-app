@@ -49,7 +49,6 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
   // What the prompt box read, recorded with the booking; and whether the
   // server heard a whole-home move.
   const intake = route.params?.intake as shipmentsService.CreateShipmentRequest['intake'] | undefined;
-  const homeMove = route.params?.intent === 'home_move';
 
   const [items, setItems] = useState<ParsedItem[]>(parsed.items.length ? parsed.items : [{ name: '', qty: 1 }]);
   const [fromLine, setFromLine] = useState(parsed.from);
@@ -304,14 +303,6 @@ export function MovePlanScreen({ navigation, route }: { navigation: any; route: 
         contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 6, paddingBottom: 240 + insets.bottom }}
         keyboardShouldPersistTaps="handled"
       >
-        {homeMove && (
-          <Panel tone="amber" style={{ marginBottom: 12 }}>
-            <Text style={s.note}>
-              This sounds like a whole-home move. Planning by room, with a survey and a crew, is on its way — for now,
-              list the big items here and we'll size the vehicle for them.
-            </Text>
-          </Panel>
-        )}
         <Panel>
           {quote ? (
             <>

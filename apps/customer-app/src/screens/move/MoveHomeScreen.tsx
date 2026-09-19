@@ -14,6 +14,7 @@ import type { RootState } from '../../store';
 import { useShipments } from '../../hooks/useShipments';
 import { speechAvailable } from './voice';
 import { unreadCount } from '../../services/api/inbox';
+import { resetDraft } from './home/homeDraft';
 import { HEADING, HEADING_LIGHT, M } from './theme';
 import { Ambient, IconButton, Label, PrimaryButton } from './ui';
 
@@ -110,7 +111,7 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
         </View>
 
         <Pressable
-          onPress={() => Alert.alert('Coming soon', 'Whole-home moves — rooms, crews and a survey — are not available yet.')}
+          onPress={() => { resetDraft(); navigation.navigate('MoveHomeSet'); }}
           accessibilityRole="button"
           style={({ pressed }) => [s.homeCard, pressed && { transform: [{ scale: 0.98 }] }]}
         >
@@ -119,7 +120,7 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
             <Text style={s.homeTitle}>Moving a whole home</Text>
             <Text style={s.homeMeta}>Room-by-room inventory · trucks · helpers</Text>
           </View>
-          <Text style={s.soon}>SOON</Text>
+          <Ionicons name="chevron-forward" size={18} color={M.faint} />
         </Pressable>
 
         {active && (
