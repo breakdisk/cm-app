@@ -1,0 +1,359 @@
+package io.logisticos.driver.feature.profile.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.core.designsystem.*
+import io.logisticos.driver.core.network.service.HomeCatalogueItemDto
+import io.logisticos.driver.core.network.service.HomeMoveDto
+import io.logisticos.driver.feature.profile.presentation.ExtraDraft
+import io.logisticos.driver.feature.profile.presentation.SurveyUiState
+import io.logisticos.driver.feature.profile.presentation.SurveyViewModel
+import io.logisticos.driver.feature.profile.presentation.addendumLine
+import io.logisticos.driver.feature.profile.presentation.centsFromText
+import io.logisticos.driver.feature.profile.presentation.crewLine
+import io.logisticos.driver.feature.profile.presentation.extrasTotal
+import io.logisticos.driver.feature.profile.presentation.money
+import io.logisticos.driver.feature.profile.presentation.qtyOf
+import io.logisticos.driver.feature.profile.presentation.whenLabel
+
+/**
+ * The lead's survey of a reserved home move. What the lead records here can
+ * only add to the booking — items found beyond it, packing materials and
+ * resources — and goes to the customer to approve in their app before any
+ * more is charged. An empty survey records that the home matched.
+ */
+@Composable
+fun SurveyScreen(
+    shipmentId: String,
+    onBack: () -> Unit,
+    viewModel: SurveyViewModel = hiltViewModel(),
+) {
+    val s by viewModel.uiState.collectAsState()
+    val c = LocalMoveColors.current
+    LaunchedEffect(shipmentId) { viewModel.open(shipmentId) }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(c.ground)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        MoveScreenHeader(label = "Survey", title = "What's in the home", onBack = onBack)
+        Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            when {
+                s.loading && s.move == null -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp)
+                }
+                s.move == null -> {
+                    MoveNotice("Couldn't open the move", s.error ?: "Try again.", tone = MoveTone.Penalty)
+                    MoveBigButton("TRY AGAIN", onClick = viewModel::load, filled = false, height = 56.dp)
+                }
+                s.result != null -> Sent(s, onBack)
+                else -> Form(s, viewModel)
+            }
+        }
+        Spacer(Modifier.navigationBarsPadding().height(24.dp))
+    }
+}
+
+@Composable
+private fun Sent(s: SurveyUiState, onDone: () -> Unit) {
+    val addendum = s.result?.addendum
+    if (addendum == null) {
+        MoveNotice(
+            title = "Survey recorded",
+            body = "Nothing beyond the booking. The move stands as booked.",
+            tone = MoveTone.Accent,
+        )
+    } else {
+        MoveNotice(
+            title = "Sent to the customer",
+            body = "They see +${money(addendum.totalCents, addendum.currency)} to approve in their app. " +
+                "Nothing more is charged until they do. With it, the job is ${crewLine(addendum.trucks, addendum.crewTotal)}.",
+            tone = MoveTone.Accent,
+        )
+    }
+    MoveBigButton("DONE", onClick = onDone, height = 56.dp)
+}
+
+@Composable
+private fun Form(s: SurveyUiState, vm: SurveyViewModel) {
+    val c = LocalMoveColors.current
+    val move = s.move ?: return
+
+    MoveSummary(move, s.leadName)
+
+    s.addendum?.let { a ->
+        MoveNotice(
+            title = if (a.status == "pending") "Earlier survey waiting" else "Earlier survey",
+            body = addendumLine(a),
+            tone = if (a.status == "pending") MoveTone.Amber else MoveTone.Neutral,
+        )
+    }
+    move.surveySubmittedAt?.let {
+        Text("Surveyed ${whenLabel(it)}. A new survey adds to that one.", color = c.muted, fontSize = 13.sp)
+    }
+
+    BookedItems(move)
+
+    MoveLabel("Found beyond the booking")
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        s.rooms.forEach { r ->
+            val added = s.lines.filter { it.room == r.key }.sumOf { it.qty }
+            MoveChip(
+                label = if (added > 0) "${r.name} · $added" else r.name,
+                selected = r.key == s.room?.key,
+                onClick = { vm.selectRoom(r.key) },
+            )
+        }
+    }
+    s.room?.let { room ->
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(c.panel)
+                .border(1.dp, c.hairline, RoundedCornerShape(20.dp)),
+        ) {
+            if (room.items.isEmpty()) {
+                Text("No catalogue items for this room.", color = c.muted, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
+            }
+            room.items.forEachIndexed { i, item ->
+                ItemRow(
+                    item = item,
+                    qty = qtyOf(s.lines, room.key, item.key),
+                    line = s.lines.firstOrNull { it.room == room.key && it.itemKey == item.key },
+                    onAdd = { vm.add(room.key, item) },
+                    onRemove = { vm.remove(room.key, item.key) },
+                    onDismantle = { vm.toggleDismantle(room.key, item.key) },
+                    onPacking = { vm.togglePacking(room.key, item.key) },
+                )
+                if (i < room.items.lastIndex) MoveDivider()
+            }
+        }
+    }
+
+    MoveLabel("Materials & resources")
+    Extras(s, vm, move.currency)
+
+    MoveTextField(
+        value = s.note,
+        onValueChange = vm::setNote,
+        label = "Note for the customer (optional)",
+        singleLine = false,
+        supportingText = "${s.note.length}/500",
+    )
+
+    val count = s.lines.sumOf { it.qty }
+    val anything = count > 0 || s.extras.isNotEmpty()
+    Text(
+        if (anything) {
+            "$count item${if (count == 1) "" else "s"} and ${s.extras.size} extra${if (s.extras.size == 1) "" else "s"} to add. " +
+                "The server prices them; the agreed ${money(move.totalCents, move.currency)} never goes down."
+        } else {
+            "Nothing added. Sending records that the home matched the booking."
+        },
+        color = c.muted, fontSize = 13.sp,
+    )
+    if (s.waitingOnCustomer) {
+        MoveNotice("Wait for the customer", "Your earlier survey is still waiting on them. Survey again once they answer.", tone = MoveTone.Amber)
+    }
+    s.problem?.let { MoveNotice("Check the survey", it, tone = MoveTone.Amber) }
+    s.submitError?.let { MoveNotice("The survey didn't send", it, tone = MoveTone.Penalty) }
+    MoveBigButton(
+        label = if (anything) "SEND TO THE CUSTOMER" else "RECORD: NOTHING MORE",
+        onClick = vm::submit,
+        enabled = s.canSubmit,
+        loading = s.submitting,
+    )
+}
+
+@Composable
+private fun MoveSummary(move: HomeMoveDto, leadName: String?) {
+    val p = move.property
+    MovePanel {
+        Text(
+            "${p.type.replaceFirstChar { it.uppercase() }} · ${p.size}",
+            color = LocalMoveColors.current.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 22.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            leadName?.let { MoveDetailRow("Team", it) }
+            MoveDetailRow("Crew", crewLine(move.trucks, move.crewTotal))
+            MoveDetailRow("Pickup", floorLine(p.pickupFloor, p.pickupHasLift))
+            MoveDetailRow("Drop-off", floorLine(p.dropoffFloor, p.dropoffHasLift) + if (p.longCarry) " · long carry" else "")
+            MoveDetailRow("Move", whenLabel(move.moveAt))
+            MoveDetailRow("Agreed", money(move.totalCents, move.currency))
+        }
+    }
+}
+
+private fun floorLine(floor: Int, lift: Boolean): String =
+    (if (floor == 0) "Ground" else if (floor >= 5) "5th floor +" else "Floor $floor") + if (lift) ", lift" else ", no lift"
+
+@Composable
+private fun BookedItems(move: HomeMoveDto) {
+    val c = LocalMoveColors.current
+    var open by rememberSaveable { mutableStateOf(false) }
+    val total = move.items.sumOf { it.qty }
+    MovePanel(padding = 14.dp) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable(role = Role.Button, onClickLabel = if (open) "Hide" else "Show") { open = !open },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Booked: $total item${if (total == 1) "" else "s"}", color = c.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(if (open) "HIDE" else "SHOW", color = c.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        }
+        if (open) {
+            move.items.groupBy { it.room }.forEach { (room, items) ->
+                Text(room.uppercase(), color = c.muted, fontSize = 11.sp, letterSpacing = 1.4.sp, modifier = Modifier.padding(top = 10.dp))
+                items.forEach { i ->
+                    Text(
+                        "${i.name.ifBlank { i.itemKey }} × ${i.qty}" + listOfNotNull(if (i.dismantle) "dismantle" else null, if (i.packing) "packing" else null)
+                            .joinToString(prefix = " · ").takeIf { i.dismantle || i.packing }.orEmpty(),
+                        color = c.ink, fontSize = 14.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ItemRow(
+    item: HomeCatalogueItemDto,
+    qty: Int,
+    line: io.logisticos.driver.feature.profile.presentation.SurveyLine?,
+    onAdd: () -> Unit,
+    onRemove: () -> Unit,
+    onDismantle: () -> Unit,
+    onPacking: () -> Unit,
+) {
+    val c = LocalMoveColors.current
+    Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(item.name, color = c.ink, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text("${"%.1f".format(item.volumeL / 1000.0)} m³ · ${item.weightKg} kg", color = c.muted, fontSize = 12.sp)
+            }
+            Stepper(Icons.Filled.Remove, "One fewer ${item.name}", enabled = qty > 0, onClick = onRemove)
+            Text(
+                "$qty",
+                color = if (qty > 0) c.accent else c.muted, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 22.sp,
+                modifier = Modifier.width(40.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Stepper(Icons.Filled.Add, "One more ${item.name}", enabled = true, onClick = onAdd)
+        }
+        if (line != null && (item.assembly || item.packing)) {
+            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (item.assembly) MoveChip("Dismantle & rebuild", selected = line.dismantle, onClick = onDismantle)
+                MoveChip("Special packing", selected = line.packing, onClick = onPacking)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Stepper(icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = LocalMoveColors.current
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(shape)
+            .background(c.chip)
+            .border(1.dp, c.hairline, shape)
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = label, tint = if (enabled) c.ink else c.muted.copy(alpha = 0.4f))
+    }
+}
+
+@Composable
+private fun Extras(s: SurveyUiState, vm: SurveyViewModel, currency: String) {
+    val c = LocalMoveColors.current
+    s.extras.forEachIndexed { i, e ->
+        MovePanel(padding = 14.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(e.name, color = c.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "${if (e.kind == "material") "Material" else "Resource"} · ${e.qty} × ${money(e.unitCents, currency)} = ${money(e.qty * e.unitCents, currency)}",
+                        color = c.muted, fontSize = 13.sp,
+                    )
+                }
+                Stepper(Icons.Filled.Close, "Remove ${e.name}", enabled = true, onClick = { vm.removeExtra(i) })
+            }
+        }
+    }
+    if (s.extras.isNotEmpty()) {
+        Text("Extras: ${money(extrasTotal(s.extras), currency)}", color = c.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    }
+
+    var kind by rememberSaveable { mutableIntStateOf(0) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var qty by rememberSaveable { mutableStateOf("1") }
+    var price by rememberSaveable { mutableStateOf("") }
+    var problem by remember { mutableStateOf<String?>(null) }
+    MovePanel {
+        MoveSegmented(listOf("Material", "Resource"), selected = kind, onSelect = { kind = it })
+        Spacer(Modifier.height(10.dp))
+        MoveTextField(
+            value = name, onValueChange = { name = it.take(80) },
+            label = if (kind == 0) "Material (e.g. wardrobe boxes)" else "Resource (e.g. extra helper, hoist)",
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            MoveTextField(
+                value = qty, onValueChange = { qty = it.filter(Char::isDigit).take(3) },
+                label = "Qty", keyboardType = KeyboardType.Number, modifier = Modifier.weight(1f),
+            )
+            MoveTextField(
+                value = price, onValueChange = { price = it.take(12) },
+                label = "Each ($currency)", keyboardType = KeyboardType.Decimal, modifier = Modifier.weight(2f),
+            )
+        }
+        problem?.let { Text(it, color = c.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) }
+        Spacer(Modifier.height(10.dp))
+        MoveBigButton(
+            label = "ADD EXTRA",
+            filled = false,
+            height = 56.dp,
+            onClick = {
+                val cents = centsFromText(price)
+                problem = if (cents == null) {
+                    "Enter the price for one, like 250 or 250.50."
+                } else {
+                    vm.addExtra(ExtraDraft(if (kind == 0) "material" else "resource", name, qty.toIntOrNull() ?: 0, cents))
+                }
+                if (problem == null) { name = ""; qty = "1"; price = "" }
+            },
+        )
+    }
+}

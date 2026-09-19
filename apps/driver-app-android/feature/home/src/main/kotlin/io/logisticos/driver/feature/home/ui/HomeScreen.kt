@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -503,6 +504,24 @@ fun HomeScreen(
                     Text(
                         "Offline Mode Active — reconnect to sync",
                         color = Amber, fontSize = 13.sp, fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+
+        state.reservedMoveDate?.let { day ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClickLabel = "Dismiss") { viewModel.dismissReservation() },
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF00E5FF).copy(alpha = 0.10f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.4f))
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Home move reserved", color = Color(0xFF00E5FF), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        io.logisticos.driver.feature.home.presentation.reservationLine(day),
+                        color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp,
                     )
                 }
             }

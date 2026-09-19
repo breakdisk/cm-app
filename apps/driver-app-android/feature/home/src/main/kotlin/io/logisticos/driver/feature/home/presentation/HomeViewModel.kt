@@ -85,6 +85,12 @@ data class HomeUiState(
     /** True while the on-screen grab offer was just lost to another driver —
      *  the card renders a brief "Taken" state, then auto-dismisses. */
     val offerTaken: Boolean = false,
+    /**
+     * A whole-home move this driver just reserved — its day (YYYY-MM-DD) —
+     * until dismissed. A reservation is not an assignment: nothing is added to
+     * today's stops, so the board says where the move went instead.
+     */
+    val reservedMoveDate: String? = null,
     /** Seconds remaining on the grab offer's TTL (countdown ring). Null when
      *  the pending offer is a 1:1 assignment (no deadline). */
     val offerSecondsLeft: Int? = null,
@@ -360,10 +366,16 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isActingOnOffer = true, error = null) }
             runCatching { api.claimOffer(offer.offerId) }
-                .onSuccess {
+                .onSuccess { won ->
                     PendingAssignmentBus.clear()
-                    syncShift()
-                    loadTasks()
+                    if (won.data.reserved) {
+                        // A home move: the day is held, the assignment comes
+                        // twelve hours before it. Today's stops are unchanged.
+                        _uiState.update { it.copy(reservedMoveDate = won.data.moveDate.orEmpty()) }
+                    } else {
+                        syncShift()
+                        loadTasks()
+                    }
                 }
                 .onFailure { e ->
                     if ((e as? retrofit2.HttpException)?.code() == 409) {
@@ -375,6 +387,10 @@ class HomeViewModel @Inject constructor(
                 }
             _uiState.update { it.copy(isActingOnOffer = false) }
         }
+    }
+
+    fun dismissReservation() {
+        _uiState.update { it.copy(reservedMoveDate = null) }
     }
 
     /** Penalty-free pass: never re-offered this task; decline_count untouched. */
@@ -775,4 +791,18 @@ class HomeViewModel @Inject constructor(
         SyncAction.SHIFT_END          -> "Shift end"
         SyncAction.HUB_SCAN           -> "Hub scan"
     }
+}
+
+/**
+ * The board's line for a home move just reserved. "2026-09-26" → "Sat 26 Sep";
+ * a date that will not parse is shown as sent, and none at all reads generic.
+ */
+fun reservationLine(moveDate: String?): String {
+    val day = moveDate?.takeIf { it.isNotBlank() }?.let { d ->
+        runCatching {
+            java.time.LocalDate.parse(d).format(DateTimeFormatter.ofPattern("EEE d MMM", java.util.Locale.US))
+        }.getOrDefault(d)
+    }
+    val lead = if (day != null) "The move on $day is yours." else "The move is yours."
+    return "$lead It's under Profile › Home moves — survey it there. The day's job appears here twelve hours before."
 }

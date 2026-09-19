@@ -190,11 +190,19 @@ data class OpenOfferItem(
 @Serializable
 data class ClaimOfferResponse(val data: ClaimOfferData)
 
+/**
+ * A won claim. A whole-home move is reserved for its day instead of assigned:
+ * [reserved] is true, [assignmentId] is null until the assignment is made
+ * twelve hours before the move, and [moveDate] names the day.
+ */
 @Serializable
 data class ClaimOfferData(
-    @SerialName("assignment_id") val assignmentId: String,
+    @SerialName("assignment_id") val assignmentId: String? = null,
     @SerialName("shipment_id")   val shipmentId: String,
     @SerialName("payout_cents")  val payoutCents: Long? = null,
+    val reserved: Boolean = false,
+    /** YYYY-MM-DD; present on a reservation. */
+    @SerialName("move_date")     val moveDate: String? = null,
 )
 
 // ─── Earnings models ─────────────────────────────────────────────────────────

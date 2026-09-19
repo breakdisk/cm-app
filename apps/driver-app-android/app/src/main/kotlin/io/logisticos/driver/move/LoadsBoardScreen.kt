@@ -59,6 +59,7 @@ import io.logisticos.driver.core.designsystem.MoveTheme
 import io.logisticos.driver.core.network.service.TaskItem
 import io.logisticos.driver.feature.home.presentation.HomeUiState
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
+import io.logisticos.driver.feature.home.presentation.reservationLine
 import io.logisticos.driver.feature.profile.presentation.EarningsViewModel
 import io.logisticos.driver.feature.profile.presentation.HosUiState
 import io.logisticos.driver.feature.profile.presentation.HosViewModel
@@ -131,6 +132,7 @@ fun LoadsBoardScreen(
                     onOpenOffer = { reviewing = true },
                     onNavigateToTask = onNavigateToTask,
                     hos = hos,
+                    onDismissReservation = viewModel::dismissReservation,
                 )
             }
         }
@@ -150,11 +152,18 @@ private fun Board(
     onOpenOffer: () -> Unit,
     onNavigateToTask: (String) -> Unit,
     hos: HosUiState,
+    onDismissReservation: () -> Unit,
 ) {
     val c = LocalMoveColors.current
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 26.dp),
     ) {
+        state.reservedMoveDate?.let { day ->
+            Box(Modifier.clickable(onClickLabel = "Dismiss", onClick = onDismissReservation)) {
+                Notice("Home move reserved", reservationLine(day), amber = false)
+            }
+            Spacer(Modifier.height(12.dp))
+        }
         if (state.locationDenied) {
             Notice("Location is off", "Dispatch can't find you without it. Allow location for this app in Settings.", amber = true)
             Spacer(Modifier.height(12.dp))

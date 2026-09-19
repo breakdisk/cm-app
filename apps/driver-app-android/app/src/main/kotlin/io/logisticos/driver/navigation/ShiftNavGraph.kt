@@ -34,9 +34,12 @@ import io.logisticos.driver.feature.pickup.presentation.BoxAuditDims
 import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
+import io.logisticos.driver.feature.profile.ui.AvailabilityScreen
 import io.logisticos.driver.feature.profile.ui.ComplianceScreen
 import io.logisticos.driver.feature.profile.ui.EarningsScreen
+import io.logisticos.driver.feature.profile.ui.HomeMovesScreen
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
+import io.logisticos.driver.feature.profile.ui.SurveyScreen
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.core.location.LocationForegroundService
@@ -58,6 +61,10 @@ private const val NOTIFICATIONS_ROUTE    = "notifications"
 private const val PROFILE_ROUTE          = "profile"
 private const val COMPLIANCE_ROUTE       = "compliance"
 private const val EARNINGS_ROUTE         = "earnings"
+// Whole-home moves — the lead's reservations, the survey, working days.
+private const val HOME_MOVES_ROUTE       = "home_moves"
+private const val HOME_SURVEY_ROUTE      = "home_survey/{shipmentId}"
+private const val AVAILABILITY_ROUTE     = "availability"
 private const val NAVIGATE_TO_STOP_ROUTE = "navigate/{taskId}"
 private const val ARRIVAL_ROUTE          = "arrival/{taskId}"
 /** Drop or release — the server decides which. */
@@ -214,6 +221,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToEarnings = {
                         shiftNavController.navigate(EARNINGS_ROUTE)
                     },
+                    onNavigateToHomeMoves = {
+                        shiftNavController.navigate(HOME_MOVES_ROUTE)
+                    },
                     onLogout = {
                         // 1. Cancel all in-flight OkHttp calls + clear session tokens.
                         //    This unblocks any TokenAuthenticator.runBlocking threads that
@@ -251,6 +261,24 @@ fun ShiftScaffold(rootNavController: NavHostController) {
             // ── Earnings & COD cash history (Profile → Earnings) ──────────
             composable(EARNINGS_ROUTE) {
                 EarningsScreen(onBack = if (BuildConfig.MOVE_UI) null else ({ shiftNavController.popBackStack() }))
+            }
+
+            // ── Whole-home moves (Profile → Whole-home moves) ─────────────
+            composable(HOME_MOVES_ROUTE) {
+                HomeMovesScreen(
+                    onBack = { shiftNavController.popBackStack() },
+                    onOpenSurvey = { id -> shiftNavController.navigate(HOME_SURVEY_ROUTE.replace("{shipmentId}", id)) },
+                    onOpenAvailability = { shiftNavController.navigate(AVAILABILITY_ROUTE) },
+                )
+            }
+            composable(HOME_SURVEY_ROUTE) { backStack ->
+                SurveyScreen(
+                    shipmentId = backStack.arguments?.getString("shipmentId") ?: "",
+                    onBack = { shiftNavController.popBackStack() },
+                )
+            }
+            composable(AVAILABILITY_ROUTE) {
+                AvailabilityScreen(onBack = { shiftNavController.popBackStack() })
             }
 
             // ── Assignment accept/reject ──────────────────────────────────
