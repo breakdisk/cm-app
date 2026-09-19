@@ -208,10 +208,13 @@ impl PgDispatchQueueRepository {
     /// The shipment was cancelled upstream: take it out of dispatch, in one
     /// transaction. The queue row is cancelled, its open offers closed, a
     /// home move's reservation released, and it comes off any route carrying
-    /// it — a planned route's stop, or a gig claim's stopless route (made in
-    /// the claim's transaction, so its `created_at` is the claim's
-    /// `claimed_at`). An assignment and its route end only when nothing else
-    /// is on them, as with a drop.
+    /// it. quick_dispatch and gig-claim routes carry no stops here — their
+    /// legs live in `driver_ops.tasks` (same database, as the lead
+    /// eligibility query already relies on) — so a route is found by a stop,
+    /// by a task, or, before driver-ops has written the task, by being the
+    /// claim's own route (made in the claim's transaction, so its
+    /// `created_at` is the claim's `claimed_at`). An assignment and its
+    /// route end only when nothing else is on them, as with a drop.
     ///
     /// Replay-safe: every statement is guarded by the state it changes.
     pub async fn cancel_for_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<ShipmentCancellation> {
@@ -271,6 +274,8 @@ impl PgDispatchQueueRepository {
                 WHERE r.tenant_id = $2 AND r.status IN ('planned', 'in_progress')
                   AND (EXISTS (SELECT 1 FROM dispatch.route_stops s
                                 WHERE s.route_id = r.id AND s.shipment_id = $1)
+                       OR EXISTS (SELECT 1 FROM driver_ops.tasks t
+                                   WHERE t.route_id = r.id AND t.shipment_id = $1)
                        OR EXISTS (SELECT 1 FROM dispatch.task_offers o
                                    WHERE o.shipment_id = $1 AND o.status = 'claimed'
                                      AND o.claimed_by = r.driver_id AND o.claimed_at = r.created_at))"#,
@@ -293,9 +298,13 @@ impl PgDispatchQueueRepository {
                     WHERE a.route_id = ANY($1)
                       AND a.status IN ('pending', 'accepted')
                       AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = a.route_id)
+                      AND NOT EXISTS (SELECT 1 FROM driver_ops.tasks t
+                                       WHERE t.route_id = a.route_id AND t.shipment_id <> $2
+                                         AND t.status IN ('pending', 'in_progress'))
                     RETURNING a.driver_id"#,
             )
             .bind(&routes)
+            .bind(shipment_id)
             .fetch_all(&mut *tx)
             .await?;
             sqlx::query(
@@ -303,9 +312,13 @@ impl PgDispatchQueueRepository {
                       SET status = 'cancelled'
                     WHERE r.id = ANY($1)
                       AND r.status IN ('planned', 'in_progress')
-                      AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = r.id)"#,
+                      AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = r.id)
+                      AND NOT EXISTS (SELECT 1 FROM driver_ops.tasks t
+                                       WHERE t.route_id = r.id AND t.shipment_id <> $2
+                                         AND t.status IN ('pending', 'in_progress'))"#,
             )
             .bind(&routes)
+            .bind(shipment_id)
             .execute(&mut *tx)
             .await?;
         }
