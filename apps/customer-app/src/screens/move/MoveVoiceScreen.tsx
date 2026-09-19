@@ -11,7 +11,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useShipments } from '../../hooks/useShipments';
 import { ACTIVE_STATUSES } from './MoveHomeScreen';
-import { classifyIntent } from './parsePrompt';
 import { HEADING_LIGHT, M } from './theme';
 import { Ambient, PrimaryButton } from './ui';
 import {
@@ -91,8 +90,7 @@ export function MoveVoiceScreen({ navigation }: { navigation: any }) {
     const text = heard.trim();
     if (!text) return;
     stopListening();
-    if (classifyIntent(text, !!active) === 'support') navigation.replace('Support', { initialMessage: text });
-    else navigation.replace('MoveThinking', { prompt: text });
+    navigation.replace('MoveThinking', { prompt: text, mode: 'voice', hasActiveJob: !!active });
   }, [heard, active, navigation]);
 
   return (

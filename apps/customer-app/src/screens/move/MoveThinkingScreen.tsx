@@ -1,6 +1,10 @@
 /**
  * Move app — Thinking. The agent's steps, revealed in sequence, then the plan.
  *
+ * The first step waits on the server's reading of the prompt (a booking, a
+ * whole-home move, or a question about the running job), with the on-device
+ * parse as the fallback. A question goes to Support instead of a plan.
+ *
  * Step four is "priced it off the rate card". The handoff is explicit: do not
  * reintroduce the spot-market auction copy — there is no auction.
  */
@@ -8,7 +12,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { describeParse, parsePrompt } from './parsePrompt';
+import { classifyIntent, describeParse, parsePrompt } from './parsePrompt';
+import { classifyPrompt, route as routePrompt, type Routed } from '../../services/api/classify';
 import { HEADING, M } from './theme';
 import { Ambient } from './ui';
 
@@ -50,7 +55,25 @@ function StepRow({ title, meta, done, active, visible }: { title: string; meta: 
 export function MoveThinkingScreen({ navigation, route }: { navigation: any; route: any }) {
   const insets = useSafeAreaInsets();
   const prompt: string = route.params?.prompt ?? '';
-  const parsed = useMemo(() => parsePrompt(prompt), [prompt]);
+  const mode: 'prompt' | 'voice' = route.params?.mode === 'voice' ? 'voice' : 'prompt';
+  const hasActiveJob = !!route.params?.hasActiveJob;
+  const regex = useMemo(() => parsePrompt(prompt), [prompt]);
+
+  const [routed, setRouted] = useState<Routed | null>(null);
+  useEffect(() => {
+    let live = true;
+    classifyPrompt(prompt, hasActiveJob).then((ai) => {
+      if (live) setRouted(routePrompt(ai, regex, classifyIntent(prompt, hasActiveJob), mode));
+    });
+    return () => { live = false; };
+  }, [prompt, hasActiveJob, regex, mode]);
+
+  // A question about the running job: the answer is in Support, not a plan.
+  useEffect(() => {
+    if (routed?.intent === 'support') navigation.replace('Support', { initialMessage: prompt });
+  }, [routed, navigation, prompt]);
+
+  const parsed = routed?.parsed ?? regex;
 
   const steps = useMemo(() => [
     { title: 'Parsed your request', meta: describeParse(parsed) },
@@ -65,13 +88,20 @@ export function MoveThinkingScreen({ navigation, route }: { navigation: any; rou
 
   const [step, setStep] = useState(0);
   useEffect(() => {
+    // The first step is the reading itself: it holds until the server has
+    // answered or the fallback has taken over.
+    if (step === 0 && !routed) return;
+    if (routed?.intent === 'support') return;
     if (step < steps.length) {
       const t = setTimeout(() => setStep((n) => n + 1), STEP_MS);
       return () => clearTimeout(t);
     }
-    const t = setTimeout(() => navigation.replace('MovePlan', { parsed }), LAND_MS);
+    const t = setTimeout(
+      () => navigation.replace('MovePlan', { parsed, intake: routed?.intake, intent: routed?.intent }),
+      LAND_MS,
+    );
     return () => clearTimeout(t);
-  }, [step, steps.length, navigation, parsed]);
+  }, [step, steps.length, navigation, parsed, routed]);
 
   return (
     <View style={[s.root, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 40 }]}>

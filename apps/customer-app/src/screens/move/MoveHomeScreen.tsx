@@ -12,7 +12,6 @@ import { useSelector } from 'react-redux';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootState } from '../../store';
 import { useShipments } from '../../hooks/useShipments';
-import { classifyIntent } from './parsePrompt';
 import { speechAvailable } from './voice';
 import { unreadCount } from '../../services/api/inbox';
 import { HEADING, HEADING_LIGHT, M } from './theme';
@@ -58,11 +57,10 @@ export function MoveHomeScreen({ navigation }: { navigation: any }) {
   function send() {
     const text = prompt.trim();
     if (!text) return;
-    if (classifyIntent(text, !!active) === 'support') {
-      navigation.navigate('Support', { initialMessage: text });
-    } else {
-      navigation.navigate('MoveThinking', { prompt: text });
-    }
+    // Thinking asks the server where this goes (a booking, a whole-home
+    // move, or a question about the running job) and falls back to the
+    // on-device reading. With no job running, a question is still a booking.
+    navigation.navigate('MoveThinking', { prompt: text, mode: 'prompt', hasActiveJob: !!active });
     setPrompt('');
   }
 

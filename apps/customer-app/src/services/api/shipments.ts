@@ -44,6 +44,13 @@ export interface CreateShipmentRequest {
   pieces?: PieceInput[];
   quote_token?: string;
   idempotency_key?: string;
+  /** How the booking was described in the prompt box, for measuring the reader. */
+  intake?: {
+    source: string;
+    intent?: string;
+    confidence?: number;
+    extracted: unknown;
+  };
 }
 
 // ── Response types ─────────────────────────────────────────────────────────────

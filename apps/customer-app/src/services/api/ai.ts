@@ -17,7 +17,7 @@ import { createApiClient, ApiError } from './client';
 
 let cachedAiClient: AxiosInstance | null = null;
 
-function getAiClient(): AxiosInstance {
+export function getAiClient(): AxiosInstance {
   if (!cachedAiClient) {
     cachedAiClient = createApiClient(
       process.env.EXPO_PUBLIC_AI_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8016'
