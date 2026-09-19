@@ -577,7 +577,7 @@ impl ShipmentRepository for PgShipmentRepository {
         &'a self,
         addendum_id: uuid::Uuid,
         captured: bool,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<crate::application::services::shipment_service::SettledAddendum>>> + Send + 'a>> {
         Box::pin(async move {
             let mut tx = self.pool.begin().await?;
             if !captured {
@@ -590,19 +590,32 @@ impl ShipmentRepository for PgShipmentRepository {
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
-                return Ok(());
+                return Ok(None);
             }
+            // The trucks before, recorded on the addendum: more after it is a
+            // major overflow, and an extra truck.
             let paid = sqlx::query(
-                "UPDATE order_intake.home_addenda SET status = 'paid', paid_at = NOW()
-                  WHERE id = $1 AND status = 'approved'
-                  RETURNING shipment_id, items, total_cents, trucks, helpers, crew_total, large_estate",
+                "UPDATE order_intake.home_addenda a SET status = 'paid', paid_at = NOW(),
+                        trucks_before = (SELECT m.trucks FROM order_intake.home_moves m WHERE m.shipment_id = a.shipment_id)
+                  WHERE a.id = $1 AND a.status = 'approved'
+                  RETURNING a.shipment_id, a.tenant_id, a.items, a.total_cents, a.trucks, a.helpers, a.crew_total,
+                            a.large_estate, a.trucks_before",
             )
             .bind(addendum_id)
             .fetch_optional(&mut *tx)
             .await?;
+            let mut settled = None;
             // Already paid (a redelivery), or never approved: nothing to apply.
             if let Some(r) = paid {
                 let shipment_id: uuid::Uuid = r.get("shipment_id");
+                settled = Some(crate::application::services::shipment_service::SettledAddendum {
+                    tenant_id: r.get("tenant_id"),
+                    shipment_id,
+                    addendum_id,
+                    total_cents: r.get("total_cents"),
+                    trucks_before: r.get::<Option<i32>, _>("trucks_before").unwrap_or(0),
+                    trucks_after: r.get("trucks"),
+                });
                 sqlx::query(
                     "UPDATE order_intake.home_moves
                         SET items = items || $2, total_cents = total_cents + $3,
@@ -620,7 +633,7 @@ impl ShipmentRepository for PgShipmentRepository {
                 .await?;
             }
             tx.commit().await?;
-            Ok(())
+            Ok(settled)
         })
     }
 

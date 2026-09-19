@@ -77,7 +77,15 @@ pub async fn run() -> anyhow::Result<()> {
             Arc::new(PostgresAwbGenerator::new(pool.clone())),
         ));
 
-    // Spawn Kafka status consumer in background
+    // Spawn Kafka status consumer in background. On a home move's delivery it
+    // also credits the shares that are not the primary lead's task payout.
+    let home_delivery = cfg.home_move.offered().then(|| crate::infrastructure::messaging::status_consumer::HomeDelivery {
+        teams: crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(
+            cfg.services.driver_ops_url.clone().filter(|u| !u.trim().is_empty()),
+            cfg.services.dispatch_url.clone().filter(|u| !u.trim().is_empty()),
+        ),
+        rates: cfg.home_move.clone(),
+    });
     let pool_for_consumer = pool.clone();
     let brokers_for_consumer = cfg.kafka.brokers.clone();
     let group_for_consumer = cfg.kafka.group_id.clone();
@@ -86,6 +94,7 @@ pub async fn run() -> anyhow::Result<()> {
             &brokers_for_consumer,
             &group_for_consumer,
             pool_for_consumer,
+            home_delivery,
         )
         .await
         {

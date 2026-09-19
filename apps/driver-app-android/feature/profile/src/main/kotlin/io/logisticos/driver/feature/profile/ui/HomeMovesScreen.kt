@@ -87,6 +87,7 @@ private fun MoveCard(m: LeadMoveItem, onSurvey: () -> Unit) {
                 color = c.ink, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 24.sp,
                 modifier = Modifier.weight(1f),
             )
+            if (m.role != "sole") MoveStatePill(io.logisticos.driver.core.common.JobKind.roleLabel(m.role).uppercase(), c.accent)
             if (m.activated) MoveStatePill("ON THE BOARD", c.accent)
             if (m.largeEstate) MoveStatePill("LARGE ESTATE", c.amber)
             if (m.international) MoveStatePill("INTERNATIONAL", c.amber)
@@ -103,11 +104,20 @@ private fun MoveCard(m: LeadMoveItem, onSurvey: () -> Unit) {
             MoveDetailRow("Survey", m.surveyAt?.let(::whenLabel) ?: "Not needed for this size")
         }
         Spacer(Modifier.height(14.dp))
-        MoveBigButton(
-            label = if (m.surveyAt != null) "SURVEY THE HOME" else "ADD ITEMS FOUND",
-            onClick = onSurvey,
-            filled = m.surveyAt != null && !m.activated,
-            height = 56.dp,
-        )
+        // The survey is the primary lead's; a support or extra truck's lead
+        // just turns up with their truck.
+        if (m.role == "sole" || m.role == "captain") {
+            MoveBigButton(
+                label = if (m.surveyAt != null) "SURVEY THE HOME" else "ADD ITEMS FOUND",
+                onClick = onSurvey,
+                filled = m.surveyAt != null && !m.activated,
+                height = 56.dp,
+            )
+        } else {
+            Text(
+                "Bring your truck and crew for the crew arrival time. You're paid your share when the move is delivered.",
+                color = c.muted, fontSize = 13.sp,
+            )
+        }
     }
 }

@@ -100,6 +100,44 @@ pub async fn internal_home_reservation(
     Ok(Json(serde_json::json!({ "data": view })))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SideSlotsRequest {
+    pub tenant_id: Uuid,
+    /// support | emergency
+    pub slot: String,
+    #[serde(default = "one")]
+    pub count: usize,
+    /// Each lead's net pay for their truck, after commission.
+    pub payout_cents: Option<i64>,
+    /// How long the offer stands. An emergency truck is needed now.
+    #[serde(default = "default_side_ttl_minutes")]
+    pub ttl_minutes: i64,
+}
+
+fn one() -> usize { 1 }
+fn default_side_ttl_minutes() -> i64 { 15 }
+
+/// Internal (no JWT): POST /v1/internal/home-moves/:shipment_id/slots
+///
+/// order-intake asks for more trucks on a home move: an Emergency Secondary
+/// Dispatch when a paid addendum outgrows the trucks booked, or a support
+/// slot offered again. 201 with the offers made; 422 when no lead can fill it.
+pub async fn internal_side_slots(
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SideSlotsRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    if !(1..=4).contains(&req.count) {
+        return Err(AppError::Validation("One to four trucks at a time".into()));
+    }
+    let ttl = req.ttl_minutes.clamp(5, 24 * 60) * 60;
+    let offers = state
+        .offer_service
+        .broadcast_side_slots(TenantId::from_uuid(req.tenant_id), shipment_id, &req.slot, req.count, req.payout_cents, ttl)
+        .await?;
+    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "data": { "offers": offers } }))))
+}
+
 /// Internal (no JWT): GET /v1/internal/drivers/available
 ///
 /// Called by the AI layer's `get_available_drivers` MCP tool.

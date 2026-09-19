@@ -39,8 +39,10 @@ data class LeadMoveItem(
     val international: Boolean = false,
     /** Already turned into the day's assignment. */
     val activated: Boolean = false,
-    /** What this lead is paid for the move, after the platform's commission. */
+    /** What this lead is paid for their part, after the platform's commission. */
     @SerialName("lead_payout_cents") val leadPayoutCents: Long? = null,
+    /** sole | captain | support | emergency */
+    val role: String = "sole",
 )
 
 // ── The lead's profile and availability (driver-ops) ──────────────────────────

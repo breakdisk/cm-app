@@ -85,6 +85,17 @@ impl OfferService {
             return Err(AppError::BusinessRule("A lead has already reserved this home move".into()));
         }
         let mut leads = home.eligible_leads(tenant_id.inner(), &req).await.map_err(AppError::Internal)?;
+        // Model B: a two-truck move is also offered to single-truck leads, as
+        // the captain of a joint mission; the enterprise leads above take it whole.
+        let whole: std::collections::HashSet<Uuid> = leads.iter().map(|l| l.driver_id).collect();
+        if crate::infrastructure::db::home_repo::joint_allowed(&req) {
+            let date = crate::infrastructure::db::home_repo::move_date_of(&req);
+            let captains = home
+                .eligible_for(tenant_id.inner(), req.international, date, &crate::infrastructure::db::home_repo::SlotNeed::captain(&req))
+                .await
+                .map_err(AppError::Internal)?;
+            leads.extend(captains.into_iter().filter(|c| !whole.contains(&c.driver_id)));
+        }
         let origin = queue_item.origin_lat.zip(queue_item.origin_lng);
         let distance = |l: &crate::infrastructure::db::home_repo::HomeLead| match (origin, l.lat.zip(l.lng)) {
             (Some((a_lat, a_lng)), Some((b_lat, b_lng))) => ((a_lat - b_lat).powi(2) + (a_lng - b_lng).powi(2)).sqrt(),
@@ -98,10 +109,14 @@ impl OfferService {
             ));
         }
         // The lead's net pay, after commission, as order-intake priced it —
-        // shown on the card before anyone accepts.
+        // shown on the card before anyone accepts. A would-be captain sees
+        // the captain's part.
         let candidates: Vec<OfferCandidateRow> = leads
             .iter()
-            .map(|l| OfferCandidateRow { driver_id: l.driver_id, payout_cents: req.lead_payout_cents })
+            .map(|l| OfferCandidateRow {
+                driver_id: l.driver_id,
+                payout_cents: if whole.contains(&l.driver_id) { req.lead_payout_cents } else { req.captain_payout_cents },
+            })
             .collect();
 
         let offer = TaskOfferRow {
@@ -115,7 +130,8 @@ impl OfferService {
             expires_at:        Utc::now() + Duration::seconds(HOME_OFFER_TTL_SECS),
             claimed_by:        None,
             merchant_name:     queue_item.merchant_name.clone(),
-            delivery_category: queue_item.delivery_category.clone(),
+            // The card names the job: a whole move, or a joint mission.
+            delivery_category: if crate::infrastructure::db::home_repo::joint_allowed(&req) { "home_move_joint" } else { "home_move" }.into(),
             weight_grams:      queue_item.weight_grams,
             tracking_number:   queue_item.tracking_number.clone().unwrap_or_default(),
             customer_name:     queue_item.customer_name.clone(),
@@ -128,12 +144,86 @@ impl OfferService {
             delivery_lng:      queue_item.dest_lng,
         };
         self.offer_repo.create_offer(&offer, &candidates).await.map_err(AppError::Internal)?;
+        home.mark_offer_slot(offer.id, offer.shipment_id, crate::infrastructure::db::home_repo::SLOT_PRIMARY)
+            .await
+            .map_err(AppError::Internal)?;
         self.publish_offer_created(&offer, &candidates).await;
         tracing::info!(
             offer_id = %offer.id, shipment_id = %queue_item.shipment_id, leads = candidates.len(),
             trucks = req.trucks, crew = req.crew_total, "Home move offered to leads"
         );
         Ok(offer)
+    }
+
+    /// Offer a side slot on a home move — a joint mission's Support Lead, or
+    /// an addendum's extra truck — to the leads who can fill it: `count`
+    /// offers, each for one truck and its crew, at `payout_cents` each. The
+    /// move's queue row is left to its primary lead.
+    pub async fn broadcast_side_slots(
+        &self,
+        tenant_id: TenantId,
+        shipment_id: Uuid,
+        slot: &str,
+        count: usize,
+        payout_cents: Option<i64>,
+        ttl_secs: i64,
+    ) -> AppResult<Vec<Uuid>> {
+        use crate::infrastructure::db::home_repo::{move_date_of, SlotNeed, ROLE_EMERGENCY, ROLE_SUPPORT};
+        let home = self.home.as_ref().ok_or_else(|| AppError::ServiceUnavailable("Home moves are not wired here".into()))?;
+        let queue_item = self.queue_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)?
+            .filter(|q| q.tenant_id == tenant_id.inner())
+            .ok_or_else(|| AppError::NotFound { resource: "Shipment in dispatch queue", id: shipment_id.to_string() })?;
+        let req = home.requirement(shipment_id).await.map_err(AppError::Internal)?.ok_or_else(|| {
+            AppError::BusinessRule("This home move has no crew requirement on record".into())
+        })?;
+        let on_it = home.reserved_drivers(shipment_id).await.map_err(AppError::Internal)?;
+        let need = match slot {
+            ROLE_SUPPORT => SlotNeed::support(&req, on_it),
+            ROLE_EMERGENCY => SlotNeed::emergency(on_it),
+            other => return Err(AppError::Validation(format!("\"{other}\" is not a side slot"))),
+        };
+        let leads = home
+            .eligible_for(tenant_id.inner(), req.international, move_date_of(&req), &need)
+            .await
+            .map_err(AppError::Internal)?;
+        if leads.is_empty() {
+            tracing::warn!(%shipment_id, slot, "No lead can fill this home-move slot — it stays with ops");
+            return Err(AppError::BusinessRule(format!("No lead can take the {slot} slot on this move — it stays with ops")));
+        }
+        let candidates: Vec<OfferCandidateRow> =
+            leads.iter().map(|l| OfferCandidateRow { driver_id: l.driver_id, payout_cents }).collect();
+        let mut offered = Vec::with_capacity(count);
+        for _ in 0..count.max(1) {
+            let offer = TaskOfferRow {
+                id:                Uuid::new_v4(),
+                tenant_id:         tenant_id.inner(),
+                shipment_id,
+                queue_id:          queue_item.id,
+                status:            "open".into(),
+                wave:              OFFER_MAX_WAVES,
+                expires_at:        Utc::now() + Duration::seconds(ttl_secs),
+                claimed_by:        None,
+                merchant_name:     queue_item.merchant_name.clone(),
+                // The card names the slot.
+                delivery_category: format!("home_move_{slot}"),
+                weight_grams:      queue_item.weight_grams,
+                tracking_number:   queue_item.tracking_number.clone().unwrap_or_default(),
+                customer_name:     queue_item.customer_name.clone(),
+                pickup_address:    format!("{}, {}", queue_item.origin_address_line1, queue_item.origin_city),
+                delivery_address:  format!("{}, {}", queue_item.dest_address_line1, queue_item.dest_city),
+                cod_amount_cents:  None,
+                pickup_lat:        queue_item.origin_lat,
+                pickup_lng:        queue_item.origin_lng,
+                delivery_lat:      queue_item.dest_lat,
+                delivery_lng:      queue_item.dest_lng,
+            };
+            self.offer_repo.create_side_offer(&offer, &candidates).await.map_err(AppError::Internal)?;
+            home.mark_offer_slot(offer.id, shipment_id, slot).await.map_err(AppError::Internal)?;
+            self.publish_offer_created(&offer, &candidates).await;
+            offered.push(offer.id);
+        }
+        tracing::info!(%shipment_id, slot, offers = offered.len(), leads = candidates.len(), "Home-move side slot offered");
+        Ok(offered)
     }
 
     /// A lead's claim on a home offer: a reservation for the day, not an
@@ -146,7 +236,7 @@ impl OfferService {
     ) -> AppResult<serde_json::Value> {
         use crate::infrastructure::db::ReserveOutcome;
         match home.reserve(offer_id, driver_id.inner()).await.map_err(AppError::Internal)? {
-            ReserveOutcome::Reserved { tenant_id, shipment_id, move_date, all_candidate_ids } => {
+            ReserveOutcome::Reserved { tenant_id, shipment_id, move_date, all_candidate_ids, role } => {
                 let closed = Event::new("dispatch", "offer.closed", tenant_id,
                     logisticos_events::payloads::TaskOfferClosed {
                         offer_id,
@@ -159,11 +249,22 @@ impl OfferService {
                 if let Err(e) = self.kafka.publish_event(topics::TASK_OFFER_CLOSED, &closed).await {
                     tracing::warn!(offer_id = %offer_id, err = %e, "home TaskOfferClosed publish failed (non-fatal)");
                 }
-                tracing::info!(offer_id = %offer_id, driver_id = %driver_id, %move_date, "Home move reserved");
+                tracing::info!(offer_id = %offer_id, driver_id = %driver_id, %move_date, role = %role, "Home move reserved");
+                // A Mission Captain's truck is one of two: offer the second.
+                if role == crate::infrastructure::db::home_repo::ROLE_CAPTAIN {
+                    let support_pay = home.requirement(shipment_id).await.ok().flatten().and_then(|r| r.support_payout_cents);
+                    if let Err(e) = self
+                        .broadcast_side_slots(TenantId::from_uuid(tenant_id), shipment_id, crate::infrastructure::db::home_repo::ROLE_SUPPORT, 1, support_pay, HOME_OFFER_TTL_SECS)
+                        .await
+                    {
+                        tracing::warn!(%shipment_id, err = %e, "Joint mission: support slot not offered — ops must find the second truck");
+                    }
+                }
                 Ok(serde_json::json!({
                     "reserved":      true,
                     "shipment_id":   shipment_id,
                     "move_date":     move_date,
+                    "role":          role,
                     "assignment_id": null,
                 }))
             }
@@ -399,7 +500,21 @@ impl OfferService {
             // picks it up and 1:1-assigns it (the fallback for unclaimed gig
             // work — full-time drivers, manual ops, etc). create_offer parked
             // it as 'dispatched' to dodge the sweep race; expiry undoes that.
-            let _ = self.queue_repo.reset_to_pending(offer.shipment_id).await;
+            // A home move's side slot never parked it, so leaves it alone.
+            let side_slot = match &self.home {
+                Some(home) => home
+                    .offer_slot(offer.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| s != crate::infrastructure::db::home_repo::SLOT_PRIMARY),
+                None => false,
+            };
+            if side_slot {
+                tracing::warn!(offer_id = %offer.id, shipment_id = %offer.shipment_id, "Home-move side slot expired unfilled — ops must find the truck");
+            } else {
+                let _ = self.queue_repo.reset_to_pending(offer.shipment_id).await;
+            }
 
             let closed = Event::new("dispatch", "offer.closed", offer.tenant_id,
                 logisticos_events::payloads::TaskOfferClosed {

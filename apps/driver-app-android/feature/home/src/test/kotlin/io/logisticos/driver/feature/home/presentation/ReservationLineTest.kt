@@ -11,6 +11,12 @@ class ReservationLineTest {
     }
 
     @Test
+    fun `a captain is told a second truck is being found`() {
+        assertTrue(reservationLine("2026-09-26", "captain").contains("Mission Captain"))
+        assertTrue(reservationLine("2026-09-26", "support").contains("paid your share on delivery"))
+    }
+
+    @Test
     fun `reads generic without a day, and as sent when unparseable`() {
         assertTrue(reservationLine(null).startsWith("The move is yours."))
         assertTrue(reservationLine("").startsWith("The move is yours."))

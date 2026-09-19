@@ -67,6 +67,13 @@ pub struct HomeMoveRequirement {
     /// shown on the offer before a lead accepts. Absent from older events.
     #[serde(default)]
     pub lead_payout_cents: Option<i64>,
+    /// A two-truck move taken by two single-truck leads (a Joint Mission):
+    /// the Mission Captain's part of the pay and the Support Lead's. The
+    /// same split order-intake credits on delivery.
+    #[serde(default)]
+    pub captain_payout_cents: Option<i64>,
+    #[serde(default)]
+    pub support_payout_cents: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -292,6 +292,54 @@ pub fn survey_pay(rates: &HomeRates, survey_cents: i64) -> LeadPay {
     LeadPay::after_commission(rates, survey_cents)
 }
 
+/// A survey that finds under this much more volume (bps of what was booked)
+/// is a minor overflow: tight-pack or a quick second trip, not another truck.
+pub const MINOR_OVERFLOW_BPS: i64 = 1_500;
+
+pub fn minor_overflow(booked_l: i64, added_l: i64) -> bool {
+    added_l.max(0) * 10_000 < booked_l.max(0) * MINOR_OVERFLOW_BPS
+}
+
+/// A Joint Mission's split of the lead's pay: the Mission Captain (survey,
+/// customer, first truck) 60%, the Support Lead (second truck) 40%.
+pub const CAPTAIN_SHARE_BPS: i64 = 6_000;
+
+/// (captain, support), whole units that add back up to `payout`.
+pub fn joint_split(payout_cents: i64) -> (i64, i64) {
+    let payout = payout_cents.max(0);
+    let support = payout * (10_000 - CAPTAIN_SHARE_BPS) / 10_000;
+    (payout - support, support)
+}
+
+/// A part of a `LeadPay`, in proportion, that still adds up: net = gross − commission.
+pub fn share_of(pay: LeadPay, net_cents: i64) -> LeadPay {
+    if pay.net_cents <= 0 {
+        return LeadPay::default();
+    }
+    let net_cents = net_cents.clamp(0, pay.net_cents);
+    let commission_cents = pay.commission_cents * net_cents / pay.net_cents;
+    LeadPay { gross_cents: net_cents + commission_cents, commission_cents, net_cents }
+}
+
+/// The share of an addendum's pay an emergency truck's lead is given when a
+/// major overflow brought them.
+pub const EMERGENCY_SHARE_BPS: i64 = 5_000;
+
+/// Who is paid what of a paid addendum: its fare less commission, split with
+/// the leads whose trucks it needed — `per_truck` to each of them, the rest
+/// to the move's own lead. `trucks_needed` is 0 for a minor overflow.
+pub fn addendum_split(rates: &HomeRates, addendum_cents: i64, trucks_needed: i64, trucks_came: i64) -> (LeadPay, LeadPay) {
+    let pay = LeadPay::after_commission(rates, addendum_cents);
+    if trucks_needed <= 0 {
+        return (pay, LeadPay::default());
+    }
+    let pool = pay.net_cents * EMERGENCY_SHARE_BPS / 10_000;
+    let per_truck = pool / trucks_needed;
+    let came = trucks_came.clamp(0, trucks_needed);
+    let primary = share_of(pay, pay.net_cents - per_truck * came);
+    (primary, share_of(pay, per_truck))
+}
+
 /// Packed volume of an inventory, in litres.
 pub fn volume_of(items: &[PricedItem]) -> i64 {
     items.iter().map(|i| i64::from(i.qty) * i64::from(i.volume_l)).sum()
@@ -419,14 +467,34 @@ fn div_ceil(a: i64, b: i64) -> i64 {
 /// The whole quote, lines first. `distance_centikm` is the one-way distance
 /// in hundredths of a km, so the arithmetic stays in integers.
 pub fn price(rates: &HomeRates, property: &Property, items: &[PricedItem], distance_centikm: i64, plan: TruckPlan) -> HomePrice {
+    price_capped(rates, property, items, distance_centikm, plan, None)
+}
+
+/// The booked job's loads and trucks, held for a minor overflow: the crew
+/// tight-packs or makes a quick second trip, and no extra truck or trip is
+/// charged for what isn't coming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TruckCap {
+    pub loads: i64,
+    pub trucks: i64,
+}
+
+pub fn price_capped(
+    rates: &HomeRates,
+    property: &Property,
+    items: &[PricedItem],
+    distance_centikm: i64,
+    plan: TruckPlan,
+    cap: Option<TruckCap>,
+) -> HomePrice {
     let volume_l: i64 = items.iter().map(|i| i64::from(i.qty) * i64::from(i.volume_l)).sum();
     let weight_kg: i64 = items.iter().map(|i| i64::from(i.qty) * i64::from(i.weight_kg)).sum();
     let item_count: i64 = items.iter().map(|i| i64::from(i.qty)).sum();
 
     // A load is limited by space or by payload, whichever runs out first.
     let usable_l = rates.truck_volume_l * rates.truck_usable_pct.clamp(1, 100) / 100;
-    let loads = div_ceil(volume_l, usable_l).max(div_ceil(weight_kg, rates.truck_payload_kg)).max(1);
-    let large_estate = volume_l > rates.large_estate_l;
+    let mut loads = div_ceil(volume_l, usable_l).max(div_ceil(weight_kg, rates.truck_payload_kg)).max(1);
+    let mut large_estate = volume_l > rates.large_estate_l;
     let mut trucks = match plan {
         TruckPlan::Trips => div_ceil(loads, 2).max(1),
         TruckPlan::Trucks => loads,
@@ -434,6 +502,12 @@ pub fn price(rates: &HomeRates, property: &Property, items: &[PricedItem], dista
     // A Large Estate is never a one-truck job, whichever plan was asked for.
     if large_estate {
         trucks = trucks.max(2);
+    }
+    if let Some(c) = cap {
+        loads = loads.min(c.loads.max(1));
+        trucks = trucks.min(c.trucks.max(1));
+        // Held to the trucks booked, it is the job it was booked as.
+        large_estate = large_estate && trucks >= 2;
     }
     let trips_per_truck = div_ceil(loads, trucks);
 
@@ -578,7 +652,9 @@ pub fn addendum_amount(
     agreed_cents: i64,
 ) -> (HomePrice, i64, i64) {
     let all: Vec<PricedItem> = booked.iter().chain(added).cloned().collect();
-    let repriced = price(rates, property, &all, distance_centikm, plan);
+    let was = price(rates, property, booked, distance_centikm, plan);
+    let cap = minor_overflow(was.volume_l, volume_of(added)).then_some(TruckCap { loads: was.loads, trucks: was.trucks });
+    let repriced = price_capped(rates, property, &all, distance_centikm, plan, cap);
     let items_cents = (repriced.total_cents - agreed_cents).max(0);
     let extras_cents = extras.iter().map(|e| i64::from(e.qty) * e.unit_cents).sum();
     (repriced, items_cents, extras_cents)
@@ -1171,6 +1247,75 @@ mod tests {
         assert_eq!(surge_cents(150_000, NO_SURGE_BPS), 0);
         assert_eq!(surge_cents(150_000, 9_000), 0);
         assert_eq!(surge_cents(333, 13_333), 111);
+    }
+
+
+    // ── Joint missions, overflow ──
+
+    #[test]
+    fn a_joint_mission_pays_the_captain_sixty_and_support_forty() {
+        assert_eq!(joint_split(100_000), (60_000, 40_000));
+        // Whole units that add back up.
+        let (c, sp) = joint_split(99_999);
+        assert_eq!(c + sp, 99_999);
+        assert_eq!(sp, 39_999);
+        assert_eq!(joint_split(-5), (0, 0));
+    }
+
+    #[test]
+    fn a_share_keeps_net_equal_to_gross_less_commission() {
+        let pay = LeadPay { gross_cents: 125_000, commission_cents: 25_000, net_cents: 100_000 };
+        let part = share_of(pay, 40_000);
+        assert_eq!(part, LeadPay { gross_cents: 50_000, commission_cents: 10_000, net_cents: 40_000 });
+        assert_eq!(share_of(pay, 500_000).net_cents, 100_000, "never more than the whole");
+        assert_eq!(share_of(LeadPay::default(), 10), LeadPay::default());
+    }
+
+    #[test]
+    fn under_fifteen_percent_more_is_a_minor_overflow() {
+        assert!(minor_overflow(30_000, 4_499));
+        assert!(!minor_overflow(30_000, 4_500));
+        assert!(!minor_overflow(0, 10), "nothing booked: anything is more");
+    }
+
+    #[test]
+    fn a_minor_overflow_is_not_charged_a_truck_that_is_not_coming() {
+        let r = HomeRates { trip_cents: 100_000, per_km_cents: 1_000, helper_hour_cents: 20_000, ..HomeRates::default() };
+        let p = Property {
+            kind: PropertyType::Apartment, size: "2 bedroom".into(),
+            pickup_floor: 0, pickup_has_lift: true, dropoff_floor: 0, dropoff_has_lift: true, long_carry: false,
+        };
+        let item = |qty: u32| PricedItem {
+            room: "living".into(), item_key: "box".into(), name: "Box".into(), qty, volume_l: 100, weight_kg: 1, dismantle: false, packing: false,
+        };
+        // 150 boxes = 15 m³: one load in a 15.3 m³ usable truck.
+        let booked = [item(150)];
+        let agreed = price(&r, &p, &booked, 1_000, TruckPlan::Trucks);
+        assert_eq!(agreed.trucks, 1);
+        // Ten more boxes (under 15%): a second load on paper, but held to one truck.
+        let (minor, items_cents, _) = addendum_amount(&r, &p, &booked, &[item(10)], &[], 1_000, TruckPlan::Trucks, agreed.total_cents);
+        assert_eq!(minor.trucks, 1);
+        assert_eq!(minor.loads, 1);
+        assert!(items_cents < r.trip_cents, "no extra trip charged");
+        // Fifty more (a third again): a real second truck, and charged.
+        let (major, major_cents, _) = addendum_amount(&r, &p, &booked, &[item(50)], &[], 1_000, TruckPlan::Trucks, agreed.total_cents);
+        assert_eq!(major.trucks, 2);
+        assert!(major_cents >= r.trip_cents);
+    }
+
+    #[test]
+    fn a_major_overflow_shares_the_addendum_with_the_extra_truck() {
+        let r = HomeRates::default();
+        // ₱10,000 addendum: ₱8,000 after commission; half to the extra truck.
+        let (primary, extra) = addendum_split(&r, 1_000_000, 1, 1);
+        assert_eq!(extra.net_cents, 400_000);
+        assert_eq!(primary.net_cents, 400_000);
+        assert_eq!(primary.net_cents + extra.net_cents, 800_000);
+        // Nobody came: the lead who handled it keeps it all.
+        assert_eq!(addendum_split(&r, 1_000_000, 1, 0).0.net_cents, 800_000);
+        // A minor overflow: all to the lead.
+        let (all, none) = addendum_split(&r, 1_000_000, 0, 0);
+        assert_eq!((all.net_cents, none.net_cents), (800_000, 0));
     }
 
 }

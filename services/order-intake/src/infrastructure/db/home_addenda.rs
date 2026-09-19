@@ -28,6 +28,9 @@ pub struct AddendumRecord {
     pub created_at: DateTime<Utc>,
     pub decided_at: Option<DateTime<Utc>>,
     pub paid_at: Option<DateTime<Utc>>,
+    /// The move's trucks when this was paid: more after it means a major
+    /// overflow, and an extra truck.
+    pub trucks_before: Option<i32>,
 }
 
 pub struct NewAddendum {
@@ -47,7 +50,8 @@ pub struct NewAddendum {
 }
 
 const COLUMNS: &str = "id, shipment_id, tenant_id, submitted_by, items, extras, note, items_cents, extras_cents,
-    total_cents, currency, trucks, helpers, crew_total, large_estate, status, checkout_url, created_at, decided_at, paid_at";
+    total_cents, currency, trucks, helpers, crew_total, large_estate, status, checkout_url, created_at, decided_at, paid_at,
+    trucks_before";
 
 fn to_record(r: &sqlx::postgres::PgRow) -> AddendumRecord {
     AddendumRecord {
@@ -71,7 +75,20 @@ fn to_record(r: &sqlx::postgres::PgRow) -> AddendumRecord {
         created_at: r.get("created_at"),
         decided_at: r.get("decided_at"),
         paid_at: r.get("paid_at"),
+        trucks_before: r.get("trucks_before"),
     }
+}
+
+/// A move's paid addenda, in the order they were paid.
+pub async fn paid_for(pool: &PgPool, shipment_id: Uuid) -> anyhow::Result<Vec<AddendumRecord>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM order_intake.home_addenda
+          WHERE shipment_id = $1 AND status = 'paid' ORDER BY paid_at"
+    ))
+    .bind(shipment_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(to_record).collect())
 }
 
 /// None when one is already open for this move.

@@ -160,7 +160,7 @@ private fun Board(
     ) {
         state.reservedMoveDate?.let { day ->
             Box(Modifier.clickable(onClickLabel = "Dismiss", onClick = onDismissReservation)) {
-                Notice("Home move reserved", reservationLine(day), amber = false)
+                Notice("Home move reserved", reservationLine(day, state.reservedRole), amber = false)
             }
             Spacer(Modifier.height(12.dp))
         }
@@ -294,7 +294,10 @@ private fun LoadCard(offer: AssignmentPayload, secondsLeft: Int?, taken: Boolean
                 fontSize = if (offer.payoutCents != null) 46.sp else 28.sp,
             )
             Column(horizontalAlignment = Alignment.End) {
-                Text(offer.deliveryCategory.uppercase(Locale.US), color = c.accent, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                Text(
+                    io.logisticos.driver.core.common.JobKind.homeHeadline(offer.deliveryCategory) ?: offer.deliveryCategory.uppercase(Locale.US),
+                    color = c.accent, fontFamily = Condensed, fontWeight = FontWeight.Bold, fontSize = 22.sp,
+                )
                 if (offer.weightGrams > 0) Text(kg(offer.weightGrams), color = c.muted, fontSize = 12.sp)
             }
         }
@@ -371,6 +374,10 @@ private fun OfferDetail(
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             StatTile("WEIGHT", if (offer.weightGrams > 0) kg(offer.weightGrams) else "—", "declared", Modifier.weight(1f))
             StatTile("LOAD", offer.deliveryCategory.replaceFirstChar { it.titlecase(Locale.US) }, "type", Modifier.weight(1f))
+        }
+        io.logisticos.driver.core.common.JobKind.homeDetail(offer.deliveryCategory)?.let { detail ->
+            Spacer(Modifier.height(12.dp))
+            Text(detail, color = c.muted, fontSize = 14.sp)
         }
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {

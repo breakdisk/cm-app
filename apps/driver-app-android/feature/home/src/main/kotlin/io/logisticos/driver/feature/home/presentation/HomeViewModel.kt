@@ -91,6 +91,8 @@ data class HomeUiState(
      * today's stops, so the board says where the move went instead.
      */
     val reservedMoveDate: String? = null,
+    /** The part of it this driver took: sole | captain | support | emergency. */
+    val reservedRole: String? = null,
     /** Seconds remaining on the grab offer's TTL (countdown ring). Null when
      *  the pending offer is a 1:1 assignment (no deadline). */
     val offerSecondsLeft: Int? = null,
@@ -371,7 +373,7 @@ class HomeViewModel @Inject constructor(
                     if (won.data.reserved) {
                         // A home move: the day is held, the assignment comes
                         // twelve hours before it. Today's stops are unchanged.
-                        _uiState.update { it.copy(reservedMoveDate = won.data.moveDate.orEmpty()) }
+                        _uiState.update { it.copy(reservedMoveDate = won.data.moveDate.orEmpty(), reservedRole = won.data.role) }
                     } else {
                         syncShift()
                         loadTasks()
@@ -390,7 +392,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun dismissReservation() {
-        _uiState.update { it.copy(reservedMoveDate = null) }
+        _uiState.update { it.copy(reservedMoveDate = null, reservedRole = null) }
     }
 
     /** Penalty-free pass: never re-offered this task; decline_count untouched. */
@@ -797,12 +799,16 @@ class HomeViewModel @Inject constructor(
  * The board's line for a home move just reserved. "2026-09-26" → "Sat 26 Sep";
  * a date that will not parse is shown as sent, and none at all reads generic.
  */
-fun reservationLine(moveDate: String?): String {
+fun reservationLine(moveDate: String?, role: String? = null): String {
     val day = moveDate?.takeIf { it.isNotBlank() }?.let { d ->
         runCatching {
             java.time.LocalDate.parse(d).format(DateTimeFormatter.ofPattern("EEE d MMM", java.util.Locale.US))
         }.getOrDefault(d)
     }
     val lead = if (day != null) "The move on $day is yours." else "The move is yours."
-    return "$lead It's under Profile › Home moves — survey it there. The day's job appears here twelve hours before."
+    return when (role) {
+        "captain" -> "$lead You're the Mission Captain: you survey and run it, and a second lead is being found for the other truck. It's under Profile › Home moves."
+        "support", "emergency" -> "$lead Bring your truck and crew; it's under Profile › Home moves, and you're paid your share on delivery."
+        else -> "$lead It's under Profile › Home moves — survey it there. The day's job appears here twelve hours before."
+    }
 }

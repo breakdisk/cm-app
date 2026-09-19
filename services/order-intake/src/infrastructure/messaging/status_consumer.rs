@@ -111,10 +111,17 @@ fn hub_status_mapping(topic: &str) -> Option<(&'static str, MatchKey)> {
     })
 }
 
+/// What crediting a home move's shares on delivery needs.
+pub struct HomeDelivery {
+    pub teams: crate::infrastructure::http::home_capacity_client::HomeTeamsClient,
+    pub rates: crate::domain::value_objects::home_move::HomeRates,
+}
+
 pub async fn start_status_consumer(
     brokers: &str,
     group_id: &str,
     pool: PgPool,
+    home: Option<HomeDelivery>,
 ) -> anyhow::Result<()> {
     use rdkafka::config::ClientConfig;
     let consumer: StreamConsumer = ClientConfig::new()
@@ -156,6 +163,17 @@ pub async fn start_status_consumer(
                 let topic = msg.topic();
                 if let Err(e) = handle(&pool, topic, payload).await {
                     tracing::warn!(topic, err = %e, "status consumer: handler error (skipping)");
+                }
+                // A delivered home move: the support lead's and the addenda's
+                // shares. Idempotent downstream; a failure waits for ops.
+                if topic == topics::DELIVERY_COMPLETED {
+                    if let Some(h) = &home {
+                        if let Ok(evt) = serde_json::from_slice::<Event<DeliveryCompletedEvt>>(payload) {
+                            if let Err(e) = crate::application::services::home_settlement::credit_on_delivery(&pool, &h.teams, &h.rates, evt.data.shipment_id).await {
+                                tracing::error!(shipment_id = %evt.data.shipment_id, err = %e, "home move delivered but its shares were not credited");
+                            }
+                        }
+                    }
                 }
                 consumer.commit_message(&msg, CommitMode::Async).ok();
             }

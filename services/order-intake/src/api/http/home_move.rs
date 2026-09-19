@@ -25,7 +25,7 @@ use crate::domain::value_objects::cancel_authority::is_tenant_wide;
 use crate::domain::value_objects::home_move::{
     addendum_amount, validate_extras, SurveyExtra, check_schedule, lead_pay, local_today, move_slots, price, resolve, survey_pay, survey_slots, survey_window_open, volume_of,
     CatalogueItem, DayCapacity, DeclaredItem, HomePrice, PricedItem, Property, PropertyType, TruckPlan, SURVEY_LEAD_DAYS,
-    surge_bps, surge_cents, window_free_bps, NO_SURGE_BPS,
+    surge_bps, surge_cents, window_free_bps, NO_SURGE_BPS, joint_split,
 };
 use crate::domain::value_objects::quote_token::{self, QuoteTokenPayload};
 use crate::infrastructure::db::home_catalogue::catalogue_for;
@@ -568,6 +568,10 @@ pub async fn book(
                 move_date: Some((req.move_at + Duration::minutes(i64::from(rates.utc_offset_minutes))).date_naive()),
                 survey_at: req.survey_at,
                 lead_payout_cents: Some(lead_payout).filter(|p| *p > 0),
+                // Two trucks may be two single-truck leads: the captain's part
+                // and the support lead's, priced here, once.
+                captain_payout_cents: (payload.trucks == 2).then(|| joint_split(lead_payout).0).filter(|p| *p > 0),
+                support_payout_cents: (payload.trucks == 2).then(|| joint_split(lead_payout).1).filter(|p| *p > 0),
             },
         }),
         intake: req.intake,

@@ -116,6 +116,18 @@ pub async fn booked_between(
         .collect())
 }
 
+/// The move by its shipment alone — for a consumer that has no tenant in hand.
+pub async fn by_shipment(pool: &PgPool, shipment_id: Uuid) -> anyhow::Result<Option<HomeMoveRecord>> {
+    let tenant: Option<Uuid> = sqlx::query_scalar("SELECT tenant_id FROM order_intake.home_moves WHERE shipment_id = $1")
+        .bind(shipment_id)
+        .fetch_optional(pool)
+        .await?;
+    match tenant {
+        Some(t) => get(pool, t, shipment_id).await,
+        None => Ok(None),
+    }
+}
+
 pub async fn get(pool: &PgPool, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<HomeMoveRecord>> {
     let row = sqlx::query(
         r#"SELECT shipment_id, tenant_id, account_id, property, items, plan, distance_centikm,

@@ -203,6 +203,8 @@ data class ClaimOfferData(
     val reserved: Boolean = false,
     /** YYYY-MM-DD; present on a reservation. */
     @SerialName("move_date")     val moveDate: String? = null,
+    /** sole | captain | support | emergency; present on a reservation. */
+    val role: String? = null,
 )
 
 // ─── Earnings models ─────────────────────────────────────────────────────────

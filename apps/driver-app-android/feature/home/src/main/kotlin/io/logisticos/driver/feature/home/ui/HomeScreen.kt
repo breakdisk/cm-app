@@ -520,7 +520,7 @@ fun HomeScreen(
                 Column(Modifier.padding(12.dp)) {
                     Text("Home move reserved", color = Color(0xFF00E5FF), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        io.logisticos.driver.feature.home.presentation.reservationLine(day),
+                        io.logisticos.driver.feature.home.presentation.reservationLine(day, state.reservedRole),
                         color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp,
                     )
                 }

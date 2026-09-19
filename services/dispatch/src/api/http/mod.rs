@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/internal/shipments/:shipment_id/assign",  post(dispatch_ops::internal_assign))
         .route("/v1/internal/drivers/available",              get(dispatch_ops::internal_available_drivers))
         .route("/v1/internal/home-reservations/:shipment_id", get(dispatch_ops::internal_home_reservation))
+        .route("/v1/internal/home-moves/:shipment_id/slots", post(dispatch_ops::internal_side_slots))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }

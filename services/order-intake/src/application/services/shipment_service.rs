@@ -84,6 +84,17 @@ fn cmd_tenant_of(s: &Shipment) -> uuid::Uuid {
     s.tenant_id.inner()
 }
 
+/// A survey addendum just paid: what it did to the move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettledAddendum {
+    pub tenant_id: uuid::Uuid,
+    pub shipment_id: uuid::Uuid,
+    pub addendum_id: uuid::Uuid,
+    pub total_cents: i64,
+    pub trucks_before: i32,
+    pub trucks_after: i32,
+}
+
 pub trait ShipmentRepository: Send + Sync {
     fn find_by_id<'a>(
         &'a self,
@@ -142,8 +153,8 @@ pub trait ShipmentRepository: Send + Sync {
         &'a self,
         _addendum_id: uuid::Uuid,
         _captured: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<SettledAddendum>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
     }
 
     /// A whole-home move's survey (time, deposit, whether it was done).
