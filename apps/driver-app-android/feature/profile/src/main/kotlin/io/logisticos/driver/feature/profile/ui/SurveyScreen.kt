@@ -74,11 +74,71 @@ fun SurveyScreen(
                     MoveNotice("Couldn't open the move", s.error ?: "Try again.", tone = MoveTone.Penalty)
                     MoveBigButton("TRY AGAIN", onClick = viewModel::load, filled = false, height = 56.dp)
                 }
-                s.result != null -> Sent(s, onBack)
-                else -> Form(s, viewModel)
+                s.result != null -> {
+                    Sent(s, onBack)
+                    HardStop(s, viewModel::approveOnSite)
+                }
+                else -> {
+                    HardStop(s, viewModel::approveOnSite)
+                    Form(s, viewModel)
+                }
             }
         }
         Spacer(Modifier.navigationBarsPadding().height(24.dp))
+    }
+}
+
+/**
+ * The hard stop: nothing the survey added is loaded until the customer
+ * approves its price — in their app, or here with the code they were sent.
+ * Once approved, the customer pays the addition on this phone or their own.
+ */
+@Composable
+private fun HardStop(s: SurveyUiState, onApprove: (String) -> Unit) {
+    val c = LocalMoveColors.current
+    val uri = androidx.compose.ui.platform.LocalUriHandler.current
+    s.checkoutUrl?.let { url ->
+        MoveNotice(
+            title = "Approved — load the extra items",
+            body = "The customer agreed the addition. They pay it here or in their app.",
+            tone = MoveTone.Accent,
+        )
+        if (url.isNotBlank()) {
+            MoveBigButton("CUSTOMER PAYS HERE", onClick = { runCatching { uri.openUri(url) } }, filled = false, height = 56.dp)
+        }
+        return
+    }
+    val a = s.pendingAddendum ?: return
+    var code by rememberSaveable(a.id) { mutableStateOf("") }
+    MovePanel(tone = MoveTone.Amber) {
+        Text("HARD STOP", color = c.amber, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp)
+        Text(
+            "Don't load what the survey added (+${money(a.totalCents, a.currency)}) until the customer approves it.",
+            color = c.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            "They can approve in their app — or here, with the code they were sent.",
+            color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp),
+        )
+        Spacer(Modifier.height(10.dp))
+        MoveTextField(
+            value = code,
+            onValueChange = { code = it.filter(Char::isDigit).take(6) },
+            label = "Customer's approval code",
+            keyboardType = KeyboardType.NumberPassword,
+            mono = true,
+            large = true,
+            isError = s.approveError != null,
+            supportingText = s.approveError,
+        )
+        Spacer(Modifier.height(10.dp))
+        MoveBigButton(
+            label = "CUSTOMER APPROVES",
+            onClick = { onApprove(code) },
+            enabled = code.length == 6 && !s.approving,
+            loading = s.approving,
+            height = 56.dp,
+        )
     }
 }
 
@@ -190,7 +250,7 @@ private fun Form(s: SurveyUiState, vm: SurveyViewModel) {
         color = c.muted, fontSize = 13.sp,
     )
     if (s.waitingOnCustomer) {
-        MoveNotice("Wait for the customer", "Your earlier survey is still waiting on them. Survey again once they answer.", tone = MoveTone.Amber)
+        Text("Survey again once the customer has answered the earlier addition.", color = c.muted, fontSize = 13.sp)
     }
     s.problem?.let { MoveNotice("Check the survey", it, tone = MoveTone.Amber) }
     s.submitError?.let { MoveNotice("The survey didn't send", it, tone = MoveTone.Penalty) }

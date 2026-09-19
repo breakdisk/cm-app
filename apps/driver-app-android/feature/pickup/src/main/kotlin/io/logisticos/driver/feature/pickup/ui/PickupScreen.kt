@@ -605,6 +605,37 @@ fun PickupScreen(
 
         Spacer(Modifier.height(12.dp))
 
+        // The hard stop: a whole-home move's survey addition still waiting on
+        // the customer. Nothing it added is loaded, and pickup is not closed,
+        // until they approve (in their app, or on the lead's survey screen with
+        // their code) or decline it.
+        state.addendumHold?.let { hold ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Amber.copy(alpha = 0.12f))
+                    .border(1.dp, Amber.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("HARD STOP", color = Amber, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.6.sp)
+                Text(
+                    "The survey added items (${hold.currency} ${"%,.2f".format(hold.totalCents / 100.0)}). Don't load them until the customer approves.",
+                    color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "They approve in their app, or on your phone: Profile › Whole-home moves › Survey, with their code. Declined, the move goes as booked.",
+                    color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp,
+                )
+                OutlinedButton(onClick = { viewModel.checkAddendum() }, shape = RoundedCornerShape(10.dp)) {
+                    Text("Check again", color = Color.White)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
         // Confirm button
         Button(
             onClick = { viewModel.confirmPickup(taskId, auditDims) },

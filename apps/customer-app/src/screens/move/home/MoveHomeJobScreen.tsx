@@ -145,6 +145,15 @@ export function MoveHomeJobScreen({ navigation, route }: { navigation: any; rout
                   </Text>
                   {addendum.status === 'declined' && <Text style={[h.note, { marginTop: 8 }]}>You declined this. The move goes ahead as booked.</Text>}
                   {addendum.status === 'paid' && <Text style={[h.note, { marginTop: 8, color: M.accent }]}>Approved and paid — it's part of your move.</Text>}
+                  {addendum.status === 'pending' && !!addendum.approval_code && (
+                    <View style={{ marginTop: 12, gap: 4 }}>
+                      <Text style={[h.note, { letterSpacing: 1.4 }]}>ON SITE? GIVE YOUR CREW LEAD THIS CODE</Text>
+                      <Text style={{ fontSize: 28, fontWeight: '700', letterSpacing: 6, color: M.ink }} accessibilityLabel={`Approval code ${addendum.approval_code.split('').join(' ')}`}>
+                        {addendum.approval_code.slice(0, 3)} {addendum.approval_code.slice(3)}
+                      </Text>
+                      <Text style={h.note}>They approve it on their phone and you pay there. Nothing extra is loaded until it's approved.</Text>
+                    </View>
+                  )}
                 </Panel>
                 {waiting && (
                   <View style={{ gap: 10 }}>

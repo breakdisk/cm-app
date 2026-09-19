@@ -237,6 +237,20 @@ data class AddendumDto(
     @SerialName("decided_at")   val decidedAt: String? = null,
 )
 
+/** The customer's approval, given on the lead's phone with the code they were sent. */
+@Serializable
+data class OnSiteApprovalRequest(val code: String)
+
+@Serializable
+data class ApprovalResponse(val data: ApprovalData)
+
+@Serializable
+data class ApprovalData(
+    val status: String = "approved",
+    /** Where the customer pays the addition — on this phone or their own. */
+    @SerialName("checkout_url") val checkoutUrl: String? = null,
+)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface HomeMoveApiService {
@@ -270,4 +284,15 @@ interface HomeMoveApiService {
      */
     @POST("v1/shipments/{id}/home/survey")
     suspend fun submitSurvey(@Path("id") shipmentId: String, @Body body: SurveyRequest): SurveyResponse
+
+    /**
+     * The customer approves the addendum on this phone with their code. 422 a
+     * wrong code (tries left in the message); 409 CODE_LOCKED after five.
+     */
+    @POST("v1/shipments/{id}/home/addendum/{addendumId}/approve-on-site")
+    suspend fun approveOnSite(
+        @Path("id") shipmentId: String,
+        @Path("addendumId") addendumId: String,
+        @Body body: OnSiteApprovalRequest,
+    ): ApprovalResponse
 }

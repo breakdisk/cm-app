@@ -343,8 +343,10 @@ Decided by the user; **(default)** marks what was filled in here — config, not
    first served; when a window opens (a cancellation, a lead adding days) the next customer is
    offered it with a 5-minute hold.
 4. **An addendum that grows the job.** Hard stop: the lead may not load overflow until the
-   customer approves the addendum — in their app, or on the lead's phone with their delivery
-   PIN. **Minor overflow** (< 15% more volume): no extra truck — tight-pack or a second trip, and
+   customer approves the addendum — in their app, or on the lead's phone with a one-time
+   approval code sent with the addendum. **(default)** Not the delivery PIN: typing that into
+   the lead's phone would hand the lead the code that proves the delivery. Pickup can't be
+   confirmed while an addendum waits on the customer. **Minor overflow** (< 15% more volume): no extra truck — tight-pack or a second trip, and
    the addendum does not charge for a truck that isn't coming. **Major overflow** (more trucks
    than booked): once approved and paid, an **Emergency Secondary Dispatch** offers the extra
    truck to available leads at once. **(default)** The emergency lead gets 50% of the addendum's

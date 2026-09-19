@@ -717,11 +717,13 @@ pub async fn submit_survey(
         helpers: i32::try_from(repriced.helpers).unwrap_or(i32::MAX),
         crew_total: i32::try_from(repriced.crew_total).unwrap_or(i32::MAX),
         large_estate: repriced.large_estate,
+        approval_code: home_addenda::new_approval_code(),
     })
     .await
     .map_err(AppError::Internal)?
     .ok_or_else(|| AppError::Conflict("An addendum is already waiting on the customer for this move".into()))?;
     tracing::info!(shipment_id = %id, addendum_id = %addendum.id, total = addendum.total_cents, "home survey addendum opened");
+    notify_addendum(&s, &record, &addendum).await;
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "data": { "survey_submitted": true, "addendum": addendum } }))))
 }
 
@@ -731,9 +733,16 @@ pub async fn get_addendum(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    record_for(&s, &claims, id).await?;
+    let (_, party) = record_for(&s, &claims, id).await?;
     let latest = home_addenda::latest(&s.pool, claims.tenant_id, id).await.map_err(AppError::Internal)?;
-    Ok(Json(serde_json::json!({ "data": latest })))
+    let mut body = serde_json::json!({ "data": latest });
+    // The on-site code is the customer's to give; only they are sent it.
+    if let (Party::Customer, Some(a)) = (party, latest.as_ref()) {
+        if a.status == "pending" && a.approval_attempts < home_addenda::APPROVAL_CODE_TRIES {
+            body["data"]["approval_code"] = serde_json::json!(a.approval_code);
+        }
+    }
+    Ok(Json(body))
 }
 
 async fn customer_addendum(
@@ -763,6 +772,13 @@ pub async fn approve_addendum(
     Path((id, addendum_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let (_, addendum) = customer_addendum(&s, &claims, id, addendum_id).await?;
+    let checkout_url = approve_and_charge(&s, claims.tenant_id, id, &addendum).await?;
+    Ok(Json(serde_json::json!({ "data": { "status": "approved", "checkout_url": checkout_url } })))
+}
+
+/// Approve a pending addendum: the payment the difference is charged by, and
+/// its checkout. The one path for the customer's app and the lead's phone.
+async fn approve_and_charge(s: &AppState, tenant_id: Uuid, id: Uuid, addendum: &home_addenda::AddendumRecord) -> Result<String, AppError> {
     if addendum.status != "pending" {
         return Err(AppError::Conflict(format!("This addendum is already {}", addendum.status)));
     }
@@ -770,18 +786,92 @@ pub async fn approve_addendum(
         AppError::ServiceUnavailable("Online payment is not configured for this deployment".into())
     })?;
     let return_url = format!(
-        "{}/payment/return?shipment_id={id}&addendum_id={addendum_id}",
+        "{}/payment/return?shipment_id={id}&addendum_id={}",
         payment.shipment_return_url_base.trim_end_matches('/'),
+        addendum.id,
     );
     let intent = payment
         .client
-        .create_home_addendum_intent(claims.tenant_id, addendum_id, addendum.total_cents, &addendum.currency, &return_url)
+        .create_home_addendum_intent(tenant_id, addendum.id, addendum.total_cents, &addendum.currency, &return_url)
         .await
         .map_err(AppError::Internal)?;
-    if !home_addenda::approve(&s.pool, addendum_id, intent.intent_id, &intent.checkout_url).await.map_err(AppError::Internal)? {
+    if !home_addenda::approve(&s.pool, addendum.id, intent.intent_id, &intent.checkout_url).await.map_err(AppError::Internal)? {
         return Err(AppError::Conflict("This addendum was answered meanwhile".into()));
     }
-    Ok(Json(serde_json::json!({ "data": { "status": "approved", "checkout_url": intent.checkout_url } })))
+    Ok(intent.checkout_url)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OnSiteApproval {
+    /// The six-digit code the customer was sent with the addendum.
+    pub code: String,
+}
+
+/// `POST /v1/shipments/:id/home/addendum/:addendum_id/approve-on-site` —
+/// the customer approves on the lead's phone with the code they were sent.
+/// The lead (or staff) submits it; the checkout comes back for the customer
+/// to pay there or on their own phone. Five wrong codes lock it.
+pub async fn approve_on_site(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path((id, addendum_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<OnSiteApproval>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (_, party) = record_for(&s, &claims, id).await?;
+    if matches!(party, Party::Customer) {
+        return Err(AppError::Forbidden { resource: "on-site approval — approve in your app".into() });
+    }
+    let addendum = home_addenda::get(&s.pool, claims.tenant_id, addendum_id)
+        .await
+        .map_err(AppError::Internal)?
+        .filter(|a| a.shipment_id == id)
+        .ok_or_else(|| AppError::NotFound { resource: "Addendum", id: addendum_id.to_string() })?;
+    if addendum.status != "pending" {
+        return Err(AppError::Conflict(format!("This addendum is already {}", addendum.status)));
+    }
+    let Some(expected) = addendum.approval_code.as_deref() else {
+        return Err(AppError::Conflict("This addendum has no on-site code — the customer approves it in their app".into()));
+    };
+    let used = home_addenda::claim_code_try(&s.pool, addendum_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or_else(|| AppError::Conflict("CODE_LOCKED: too many wrong codes — the customer approves it in their app".into()))?;
+    if !home_addenda::code_matches(expected, &req.code) {
+        tracing::warn!(shipment_id = %id, addendum_id = %addendum_id, tries = used, by = %claims.user_id, "wrong on-site addendum code");
+        return Err(AppError::Validation(format!(
+            "That code doesn't match — {} tr{} left",
+            home_addenda::APPROVAL_CODE_TRIES - used,
+            if home_addenda::APPROVAL_CODE_TRIES - used == 1 { "y" } else { "ies" }
+        )));
+    }
+    let checkout_url = approve_and_charge(&s, claims.tenant_id, id, &addendum).await?;
+    tracing::info!(shipment_id = %id, addendum_id = %addendum_id, by = %claims.user_id, "addendum approved on site");
+    Ok(Json(serde_json::json!({ "data": { "status": "approved", "checkout_url": checkout_url } })))
+}
+
+/// Tell the customer the survey found more: the amount, and the code to
+/// approve on the crew lead's phone. Best-effort: the app shows it too.
+async fn notify_addendum(s: &AppState, record: &HomeMoveRecord, addendum: &home_addenda::AddendumRecord) {
+    let amount = format!("{} {:.2}", addendum.currency, addendum.total_cents as f64 / 100.0);
+    let notice = logisticos_events::envelope::Event::new("logisticos/order-intake", "home.notice", record.tenant_id, logisticos_events::payloads::HomeNotice {
+        tenant_id: record.tenant_id,
+        account_id: record.account_id,
+        kind: "addendum_pending".into(),
+        reference_id: record.shipment_id,
+        vars: serde_json::json!({
+            "amount": amount,
+            "code": addendum.approval_code,
+            "deep_link": format!("logisticos://move/home/job/{}", record.shipment_id),
+        }),
+    });
+    match serde_json::to_string(&notice) {
+        Ok(payload) => {
+            if let Err(e) = s.svc.publisher.publish(logisticos_events::topics::HOME_NOTICE, &record.shipment_id.to_string(), &payload).await {
+                tracing::warn!(shipment_id = %record.shipment_id, err = %e, "addendum notice not published");
+            }
+        }
+        Err(e) => tracing::warn!(err = %e, "addendum notice not serialised"),
+    }
 }
 
 /// `POST /v1/shipments/:id/home/addendum/:addendum_id/decline` — the

@@ -566,7 +566,7 @@ pub async fn process_event(
             ),
             "home_addendum_pending" => (
                 Some("Your survey found more to move".to_owned()),
-                "Your crew lead added {{amount}} to your move. Approve it in the app — nothing extra is loaded until you do.".to_owned(),
+                "Your crew lead's survey adds {{amount}} to your move. Approve it in the app, or give your crew lead the code {{code}} to approve on their phone. Nothing extra is loaded until you do.".to_owned(),
             ),
             "support_resolution" => (
                 Some("Your support request has an answer".to_owned()),

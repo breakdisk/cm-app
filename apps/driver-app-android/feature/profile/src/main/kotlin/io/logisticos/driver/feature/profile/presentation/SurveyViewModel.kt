@@ -37,7 +37,15 @@ data class SurveyUiState(
     val submitError: String? = null,
     /** Set once the survey is in. */
     val result: SurveyResult? = null,
+    val approving: Boolean = false,
+    val approveError: String? = null,
+    /** Approved on this phone: where the customer pays. */
+    val checkoutUrl: String? = null,
 ) {
+    /** The addendum still waiting on the customer — this survey's or an earlier one's. */
+    val pendingAddendum: AddendumDto?
+        get() = (result?.addendum ?: addendum)?.takeIf { it.status == "pending" && checkoutUrl == null }
+
     val problem: String? get() = surveyProblem(lines, extras)
 
     /** An earlier addendum still waits on the customer; the server refuses another. */
@@ -127,6 +135,27 @@ class SurveyViewModel @Inject constructor(
     fun removeExtra(index: Int) = _uiState.update { s -> s.copy(extras = s.extras.filterIndexed { i, _ -> i != index }) }
 
     fun setNote(note: String) = _uiState.update { it.copy(note = note.take(500)) }
+
+    /** The customer approves on this phone with the code they were sent. */
+    fun approveOnSite(code: String) {
+        val id = shipmentId ?: return
+        val a = _uiState.value.pendingAddendum ?: return
+        if (_uiState.value.approving) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(approving = true, approveError = null) }
+            runCatching { api.approveOnSite(id, a.id, io.logisticos.driver.core.network.service.OnSiteApprovalRequest(code.trim())) }
+                .onSuccess { res -> _uiState.update { it.copy(approving = false, checkoutUrl = res.data.checkoutUrl ?: "") } }
+                .onFailure { e ->
+                    val msg = e.readable("Couldn't approve")
+                    _uiState.update {
+                        it.copy(
+                            approving = false,
+                            approveError = if (msg.contains("CODE_LOCKED")) "Too many wrong codes. The customer approves it in their own app now." else msg,
+                        )
+                    }
+                }
+        }
+    }
 
     fun submit() {
         val s = _uiState.value

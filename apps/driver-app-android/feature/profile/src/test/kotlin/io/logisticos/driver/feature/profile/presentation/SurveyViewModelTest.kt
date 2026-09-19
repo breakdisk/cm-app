@@ -131,4 +131,29 @@ class SurveyViewModelTest {
         assertTrue(vm.uiState.value.submitError!!.contains("waiting on the customer"))
         assertNull(vm.uiState.value.result)
     }
+
+    @Test
+    fun `the customer approves on this phone with their code`() = runTest {
+        booked(AddendumDto(id = "a0", totalCents = 90_000, status = "pending"))
+        coEvery { api.approveOnSite("s1", "a0", io.logisticos.driver.core.network.service.OnSiteApprovalRequest("123456")) } returns
+            io.logisticos.driver.core.network.service.ApprovalResponse(io.logisticos.driver.core.network.service.ApprovalData("approved", "https://pay.example/c/1"))
+        val vm = vm()
+        assertNotNull(vm.uiState.value.pendingAddendum)
+        vm.approveOnSite(" 123456 ")
+        assertEquals("https://pay.example/c/1", vm.uiState.value.checkoutUrl)
+        assertNull(vm.uiState.value.pendingAddendum, "the hard stop lifts")
+    }
+
+    @Test
+    fun `a locked code sends the customer to their own app`() = runTest {
+        booked(AddendumDto(id = "a0", totalCents = 90_000, status = "pending"))
+        coEvery { api.approveOnSite("s1", "a0", any()) } throws HttpException(
+            Response.error<Any>(409, """{"error":{"code":"CONFLICT","message":"CODE_LOCKED: too many wrong codes"}}""".toResponseBody()),
+        )
+        val vm = vm()
+        vm.approveOnSite("000000")
+        assertTrue(vm.uiState.value.approveError!!.contains("their own app"))
+        assertNotNull(vm.uiState.value.pendingAddendum, "still held")
+    }
+
 }

@@ -235,6 +235,9 @@ export interface Addendum {
   status: 'pending' | 'approved' | 'declined' | 'paid';
   checkout_url?: string | null;
   created_at: string;
+  /** The code to give the crew lead to approve on their phone. Sent to the
+   *  customer only, while it is pending and not locked. */
+  approval_code?: string | null;
 }
 
 /** Null when this shipment is not a whole-home move (or not yours). */
