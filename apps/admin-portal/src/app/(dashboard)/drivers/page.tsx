@@ -16,7 +16,8 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardDriverModal } from "@/components/drivers/OnboardDriverModal";
-import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus, Trash2, ShieldCheck, ShieldAlert, ShieldX, AlertCircle, Zap } from "lucide-react";
+import { ProviderProfileModal } from "@/components/drivers/ProviderProfileModal";
+import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus, Trash2, ShieldCheck, ShieldAlert, ShieldX, AlertCircle, Zap, SlidersHorizontal } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
@@ -118,6 +119,9 @@ export default function DriversPage() {
   const { hasPermission } = usePermissions();
   const canCreateDriver = hasPermission("drivers:create");
   const canManageDrivers = hasPermission("drivers:manage");
+  // Onboarding filter — which jobs each driver is offered (fleet:manage).
+  const canOnboardJobs = hasPermission("fleet:manage");
+  const [jobTypesFor, setJobTypesFor] = useState<{ id: string; name: string } | null>(null);
 
   const handleDeleteDriver = async (driverId: string) => {
     setDeletingId(driverId);
@@ -506,6 +510,17 @@ export default function DriversPage() {
                   Manage in Partner Portal
                 </a>
 
+                {canOnboardJobs && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setJobTypesFor({ id: driver.id, name: driver.name }); }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-2 py-1 text-2xs text-white/50 transition-all hover:border-cyan-neon/40 hover:text-cyan-neon"
+                  >
+                    <SlidersHorizontal size={10} />
+                    Job types
+                  </button>
+                )}
+
                 {/* Delete — only shown for offline drivers with manage permission */}
                 {canManageDrivers && driver.status === "offline" && (
                   confirmDeleteId === driver.id ? (
@@ -540,6 +555,9 @@ export default function DriversPage() {
           );
         })}
       </motion.div>
+      {jobTypesFor && (
+        <ProviderProfileModal driverId={jobTypesFor.id} driverName={jobTypesFor.name} onClose={() => setJobTypesFor(null)} />
+      )}
     </motion.div>
   );
 }
