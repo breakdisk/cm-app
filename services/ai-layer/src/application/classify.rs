@@ -43,6 +43,24 @@ pub struct Extracted {
     pub to: String,
     /// As they said it ("tomorrow at 9am"); the plan screen schedules it.
     pub when: String,
+    /// For a whole-home move: only what was said, never a guess.
+    pub property: HomeProperty,
+}
+
+/// What a whole-home sentence says about the property. Every field is None
+/// unless the sentence states it — the app renders a chip per stated field
+/// and never invents one.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct HomeProperty {
+    /// "apartment" | "villa" | "offices"
+    pub property_type: Option<String>,
+    pub bedrooms: Option<u8>,
+    pub desks: Option<u16>,
+    /// 0 = ground; 5 = fifth and above.
+    pub pickup_floor: Option<u8>,
+    pub pickup_has_lift: Option<bool>,
+    pub dropoff_floor: Option<u8>,
+    pub dropoff_has_lift: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -58,7 +76,11 @@ Call route_prompt exactly once. intent is book (moving some items), home_move (m
 home, flat or office — rooms, a household, 'everything'), or support (a question or problem about \
 a move already booked: where is my driver, change the time, cancel, a complaint). \
 Extract only what the message says: never invent an address, a time or an item. \
-Quantities are whole numbers; 'a couch' is 1. Leave a field empty when it is not stated.";
+Quantities are whole numbers; 'a couch' is 1. Leave a field empty when it is not stated. \
+For home_move, property_type is apartment (flat, studio, condo, penthouse), villa (house, \
+townhouse, duplex, bungalow) or offices; a bedroom count alone implies apartment and a desk count \
+alone implies offices. Floors are numbers, ground = 0. A lift is true for 'lift' or 'elevator', \
+false for 'no lift' or 'walk-up'.";
 
 pub fn tool() -> ToolDefinition {
     ToolDefinition {
@@ -79,7 +101,14 @@ pub fn tool() -> ToolDefinition {
                 },
                 "from": { "type": "string" },
                 "to": { "type": "string" },
-                "when": { "type": "string" }
+                "when": { "type": "string" },
+                "property_type": { "type": "string", "enum": ["apartment", "villa", "offices"] },
+                "bedrooms": { "type": "integer", "minimum": 0 },
+                "desks": { "type": "integer", "minimum": 1 },
+                "pickup_floor": { "type": "integer", "minimum": 0 },
+                "pickup_has_lift": { "type": "boolean" },
+                "dropoff_floor": { "type": "integer", "minimum": 0 },
+                "dropoff_has_lift": { "type": "boolean" }
             },
             "required": ["intent", "confidence"]
         }),
@@ -129,10 +158,31 @@ pub fn normalise(input: &Value, has_active_job: bool) -> Classification {
         })
         .unwrap_or_default();
 
+    let property = HomeProperty {
+        property_type: input
+            .get("property_type")
+            .and_then(Value::as_str)
+            .filter(|t| matches!(*t, "apartment" | "villa" | "offices"))
+            .map(str::to_owned),
+        // Seven bedrooms is past the top of every size list; the app clamps.
+        bedrooms: input.get("bedrooms").and_then(Value::as_u64).map(|b| u8::try_from(b.min(7)).unwrap_or(7)),
+        desks: input.get("desks").and_then(Value::as_u64).filter(|d| *d > 0).map(|d| u16::try_from(d.min(999)).unwrap_or(999)),
+        pickup_floor: input.get("pickup_floor").and_then(Value::as_u64).map(|f| u8::try_from(f.min(5)).unwrap_or(5)),
+        pickup_has_lift: input.get("pickup_has_lift").and_then(Value::as_bool),
+        dropoff_floor: input.get("dropoff_floor").and_then(Value::as_u64).map(|f| u8::try_from(f.min(5)).unwrap_or(5)),
+        dropoff_has_lift: input.get("dropoff_has_lift").and_then(Value::as_bool),
+    };
+
     Classification {
         intent,
         confidence,
-        extracted: Extracted { items, from: text_field(input, "from"), to: text_field(input, "to"), when: text_field(input, "when") },
+        extracted: Extracted {
+            items,
+            from: text_field(input, "from"),
+            to: text_field(input, "to"),
+            when: text_field(input, "when"),
+            property,
+        },
     }
 }
 
@@ -183,6 +233,21 @@ mod tests {
         assert_eq!(c.intent, Intent::Book);
         assert!(c.confidence.abs() < f64::EPSILON);
         assert_eq!(c.extracted, Extracted::default());
+    }
+
+    #[test]
+    fn a_home_sentence_carries_only_what_it_states_clamped() {
+        let c = normalise(
+            &json!({
+                "intent": "home_move", "confidence": 0.9,
+                "property_type": "castle", "bedrooms": 12, "pickup_floor": 30, "pickup_has_lift": false
+            }),
+            false,
+        );
+        let p = c.extracted.property;
+        assert_eq!(p.property_type, None, "not one of the three types");
+        assert_eq!((p.bedrooms, p.pickup_floor, p.pickup_has_lift), (Some(7), Some(5), Some(false)));
+        assert_eq!((p.desks, p.dropoff_floor, p.dropoff_has_lift), (None, None, None));
     }
 
     #[test]
