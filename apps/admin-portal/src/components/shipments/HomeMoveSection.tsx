@@ -197,7 +197,7 @@ export function HomeMoveSection({ shipmentId }: { shipmentId: string }) {
       <div className="rounded-lg border border-white/5 p-2">
         <p className="text-[11px] uppercase tracking-wide text-white/35">Another truck</p>
         <p className="mt-1 text-xs text-white/45">
-          A joint move's second truck, or an extra one an addendum needs. Offered to leads free that day; the automatic paths do this themselves.
+          A joint move&rsquo;s second truck, or an extra one an addendum needs. Offered to leads free that day; the automatic paths do this themselves.
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <select
