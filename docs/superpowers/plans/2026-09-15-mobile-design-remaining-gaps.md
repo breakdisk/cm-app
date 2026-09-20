@@ -358,3 +358,21 @@ Decided by the user; **(default)** marks what was filled in here — config, not
    every quote with both ends located — home moves and freight moves. **(default)** Where no
    driving route exists (another island, another country) the direct distance is used and the
    quote says so; a routing outage refuses the quote rather than pricing it wrong.
+
+### Round 2 — built 2026-09-19/20
+
+| Decision | Where | Commit |
+|---|---|---|
+| **6. Road distance.** Mapbox Directions for both move quotes; no driving route → the direct distance, said so; a routing outage refuses the quote | order-intake `road_router.rs`, `home_move.rs`, `quote.rs` | `d78a16ee` |
+| **1. Lead pay + 20% commission.** Priced at booking (base + m³ + road km, capped at the fare), shown on the offer, carried onto the task; the survey fee credited at sign-off. driver-ops `earning_credits` (kind is free text) | order-intake `0019`, dispatch `0017`, driver-ops `0019` | `d96784f7` |
+| **3. Surge + priority waitlist.** Window surge 1.2×–1.5× under 20% free capacity, passed whole to the lead; waitlist with a 5-minute hold that counts against capacity; new topic `logisticos.order.home.notice` | order-intake `0020`, engagement, both apps | `a5b10b8f` |
+| **2. Model B + emergency dispatch.** Joint Mission (captain 60 / support 40), roles on reservations, side-slot offers that leave the queue alone; a paid addendum that outgrows its trucks calls for extra ones; shares credited on delivery | dispatch `0018`, order-intake `0021`, `home_settlement.rs` | `142a8943` |
+| **4. Hard stop + on-site approval.** A one-time code per addendum (not the delivery PIN), five tries; pickup can't be confirmed while one waits | order-intake `0022`, driver app pickup + survey | `c213ad53` |
+| **5. Survey photos.** Condition evidence and access constraints, keyed under `survey/{tenant}/{shipment}` in pod's store, shown to the customer | pod, order-intake `0023`, both apps | `72352fdc` |
+| Ops sees the team and the money on the shipment panel | admin-portal `HomeMoveSection` | `86806ac0` |
+
+**Deploy** — migrations: order-intake 0019–0023, dispatch 0017–0018, driver-ops 0019; redeploy pod, engagement, api-gateway too.
+**Pre-create the topic `logisticos.order.home.notice`** (`scripts/create-kafka-topics.sh`) or every waitlist offer and addendum notice is silently dropped.
+**Config:** `SERVICES__POD_URL` on order-intake (else photos list without pictures); `HOME_MOVE__COMMISSION_BPS` (default 2000), `HOME_MOVE__PAYOUT_*` (unset → the lead is paid the fare less commission), `HOME_MOVE__SURGE_*` (defaults 2000/12000/15000; threshold 0 turns surge off), `GEOCODER__MAPBOX_ACCESS_TOKEN` (already needed) now also prices distance.
+
+**Still not built:** lead pay for freight moves is untouched (this is home moves only); no waitlist for surveys, only move windows; an unfilled support or emergency slot is logged for ops, with no console button to re-offer it (the internal endpoint exists); survey photos upload online only, with no offline queue; dispatch ETAs still ignore road time.
