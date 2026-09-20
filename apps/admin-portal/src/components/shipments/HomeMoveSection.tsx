@@ -37,6 +37,41 @@ interface HomeMove {
   survey_required: boolean;
   survey_at: string | null;
   move_at: string;
+  total_cents?: number;
+  currency?: string;
+  trucks?: number;
+  crew_total?: number;
+  survey_cents?: number;
+  /** 10000 is none. */
+  surge_bps?: number;
+  surge_cents?: number;
+}
+
+/** The lead's pay — sent to staff and the lead, never the customer. */
+export interface HomePay {
+  lead_gross_cents: number;
+  commission_cents: number;
+  lead_payout_cents: number;
+  survey_payout_cents: number;
+  survey_commission_cents: number;
+}
+
+function money(cents: number, currency = "PHP"): string {
+  return `${currency} ${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** What ops read off the move's money: the fare, any surge, and what the lead and platform take. */
+export function payLines(home: Pick<HomeMove, "total_cents" | "currency" | "surge_bps" | "surge_cents">, pay: HomePay | null): [string, string][] {
+  const c = home.currency ?? "PHP";
+  const out: [string, string][] = [];
+  if (home.total_cents != null) out.push(["Customer paid", money(home.total_cents, c)]);
+  if ((home.surge_bps ?? 10000) > 10000) out.push(["High-demand surge", `×${((home.surge_bps ?? 10000) / 10000).toFixed(2)} · ${money(home.surge_cents ?? 0, c)} (to the lead)`]);
+  if (pay) {
+    out.push(["Lead's pay", money(pay.lead_payout_cents, c)]);
+    out.push(["Platform commission", money(pay.commission_cents, c)]);
+    if (pay.survey_payout_cents > 0) out.push(["Survey fee to lead", `${money(pay.survey_payout_cents, c)} (commission ${money(pay.survey_commission_cents, c)})`]);
+  }
+  return out;
 }
 
 function when(iso: string): string {
@@ -49,6 +84,8 @@ function floorLine(floor: number, lift: boolean): string {
 
 export function HomeMoveSection({ shipmentId }: { shipmentId: string }) {
   const [home, setHome] = useState<HomeMove | null>(null);
+  const [lead, setLead] = useState<string | null>(null);
+  const [pay, setPay] = useState<HomePay | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -59,7 +96,11 @@ export function HomeMoveSection({ shipmentId }: { shipmentId: string }) {
       .then(async (r) => {
         if (!r.ok) throw new Error(r.status === 404 ? "No home-move detail recorded" : `${r.status} ${r.statusText}`);
         const j = await r.json();
-        if (!cancelled) setHome(j.data);
+        if (!cancelled) {
+          setHome(j.data);
+          setLead(j.lead_name ?? null);
+          setPay(j.pay ?? null);
+        }
       })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Could not load the home move"); });
     return () => { cancelled = true; };
@@ -106,6 +147,22 @@ export function HomeMoveSection({ shipmentId }: { shipmentId: string }) {
           <p className="text-white/35">Move</p>
           <p className="font-mono text-cyan-300">{when(home.move_at)}</p>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-white/5 p-2 text-xs">
+        <p className="text-white/35">Team</p>
+        <p className="text-white/85">
+          {lead ? `Team ${lead}` : "No lead yet"}
+          {home.trucks ? ` · ${home.trucks} truck${home.trucks === 1 ? "" : "s"} & ${home.crew_total ?? "?"}-person crew` : ""}
+        </p>
+        <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+          {payLines(home, pay).map(([k, v]) => (
+            <div key={k} className="flex justify-between gap-2">
+              <dt className="text-white/40">{k}</dt>
+              <dd className="font-mono text-white/80">{v}</dd>
+            </div>
+          ))}
+        </dl>
       </div>
 
       <p className="text-xs text-white/55">
