@@ -8,7 +8,8 @@ use crate::api::http::{router, AppState};
 use crate::application::services::{CompliancePolicy, DispatchService, PayBounds};
 use crate::config::Config;
 use crate::infrastructure::db::{
-    PgAssignmentRepository, PgCourierLedgerRepository, PgCourierRepository, PgLocationRepository,
+    PgAssignmentRepository, PgCourierLedgerRepository, PgCourierRepository, PgExceptionRepository,
+    PgLocationRepository,
 };
 use crate::infrastructure::messaging::{
     compliance_consumer, CourierEvents, KafkaCourierEvents, NoopCourierEvents,
@@ -85,6 +86,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(PgLocationRepository::new(pool.clone())),
         Arc::new(PgCourierLedgerRepository::new(pool.clone())),
         events,
+        Arc::new(PgExceptionRepository::new(pool.clone())),
         PayBounds {
             min_trip_cents: cfg.min_trip_cents,
             max_trip_cents: cfg.max_trip_cents,

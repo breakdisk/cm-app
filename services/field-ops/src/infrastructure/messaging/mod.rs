@@ -65,6 +65,18 @@ pub enum CourierEvent {
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Delivered { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
+    /// A courier reported that a delivery could not be completed.
+    ///
+    /// Unlike the other four this one is persisted as well as published - see
+    /// migration 0010. The event exists so the offering product can flag its
+    /// own order: OmniDeliv needs to know an order needs a human, and D1 says
+    /// the refund decision is made out of band rather than here.
+    ///
+    /// Carries no money and implies no state change. A consumer that treats
+    /// this as a terminal status is wrong: the assignment is still `claimed`.
+    ExceptionRaised { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
+                      exception_id: Uuid, reason: String,
+                      device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
 }
 
 impl CourierEvent {
@@ -82,7 +94,8 @@ impl CourierEvent {
             CourierEvent::Assigned { external_ref, .. }
             | CourierEvent::Arrived { external_ref, .. }
             | CourierEvent::Collected { external_ref, .. }
-            | CourierEvent::Delivered { external_ref, .. } => *external_ref,
+            | CourierEvent::Delivered { external_ref, .. }
+            | CourierEvent::ExceptionRaised { external_ref, .. } => *external_ref,
         }
     }
 }

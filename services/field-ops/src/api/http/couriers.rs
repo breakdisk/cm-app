@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::api::http::AppState;
 use crate::application::services::dispatch_service::RemitOutcome;
-use crate::domain::entities::ProductKey;
+use crate::domain::entities::{ExceptionReason, ProductKey};
 
 #[derive(Debug, Deserialize)]
 pub struct OfferRequest {
@@ -123,6 +123,47 @@ pub struct ArrivedRequest {
     pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// A courier reporting that this job cannot be completed.
+#[derive(Debug, Deserialize)]
+pub struct ExceptionRequest {
+    /// One of `ExceptionReason`'s wire strings. An unknown value is a 400 and
+    /// not a stored row: the set is closed so ops triage can rely on it.
+    pub reason: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// D4: where the goods ended up, in the courier's own words, until a return
+    /// leg exists to model it properly.
+    #[serde(default)]
+    pub goods_disposition: Option<String>,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lng: Option<f64>,
+    /// Generated once by the app at the moment of the tap and reused for every
+    /// offline replay of it. Required: without it a retry is a second exception
+    /// in the ops queue for one real failure.
+    pub client_ref: Uuid,
+    #[serde(default)]
+    pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// One open exception, as the ops console reads it.
+#[derive(Debug, Serialize)]
+pub struct OpenExceptionRow {
+    pub id: Uuid,
+    pub assignment_id: Uuid,
+    pub courier_id: Uuid,
+    pub reason: String,
+    pub note: Option<String>,
+    pub goods_disposition: Option<String>,
+    pub capture_lat: Option<f64>,
+    pub capture_lng: Option<f64>,
+    /// The courier's clock at the tap. Null when the report did not come from a
+    /// device, and the value to measure response time from when it is present.
+    pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub server_timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DeliveredRequest {
     pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
@@ -152,6 +193,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/arrived", post(arrived))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
+        .route("/v1/field-ops/assignments/:id/exception", post(raise_exception))
+        .route("/v1/field-ops/admin/exceptions", get(list_open_exceptions))
         .route("/v1/field-ops/assignments/:id/position", get(assignment_position))
         .route("/v1/field-ops/couriers/register", post(register))
         .route("/v1/field-ops/couriers/me/status", post(set_status))
@@ -848,6 +891,93 @@ async fn arrived(
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(StatusCode::ACCEPTED)
+}
+
+/// A courier could not complete this job.
+///
+/// 202 like the other milestones: the report is accepted, and what happens
+/// next is an ops decision rather than anything this call performs. Nothing
+/// here changes the assignment or touches money.
+async fn raise_exception(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ExceptionRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let Some(reason) = ExceptionReason::parse(&req.reason) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
+    // Both or neither. Half a fix is a point on the equator, and an ops screen
+    // cannot tell that from a real one.
+    let capture = match (req.lat, req.lng) {
+        (Some(lat), Some(lng)) => Some((lat, lng)),
+        (None, None) => None,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let found = st
+        .dispatch
+        .raise_exception(
+            claims.tenant_id,
+            claims.user_id,
+            id,
+            reason,
+            req.note,
+            req.goods_disposition,
+            capture,
+            req.client_ref,
+            req.device_timestamp,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "raise exception failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if !found {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// The ops queue: exceptions nobody has resolved yet, oldest first.
+async fn list_open_exceptions(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+) -> Result<Json<Vec<OpenExceptionRow>>, StatusCode> {
+    // The same permission the courier roster checks. This is ops-facing data
+    // about couriers and the jobs they hold, and inventing a second permission
+    // for it would produce a clean 403 that reads as "you lack access".
+    if !claims.has_permission(logisticos_auth::rbac::permissions::DRIVER_READ) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let rows = st
+        .dispatch
+        .open_exceptions(claims.tenant_id, 200)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "listing open exceptions failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|e| OpenExceptionRow {
+                id: e.id,
+                assignment_id: e.assignment_id,
+                courier_id: e.courier_id,
+                reason: e.reason.as_str().to_string(),
+                note: e.note,
+                goods_disposition: e.goods_disposition,
+                capture_lat: e.capture_lat,
+                capture_lng: e.capture_lng,
+                device_timestamp: e.device_timestamp,
+                server_timestamp: e.server_timestamp,
+            })
+            .collect(),
+    ))
 }
 
 async fn collected(
