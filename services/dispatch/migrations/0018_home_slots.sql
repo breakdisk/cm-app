@@ -15,8 +15,18 @@ ALTER TABLE dispatch.home_reservations
     ADD COLUMN IF NOT EXISTS role         TEXT   NOT NULL DEFAULT 'sole',
     ADD COLUMN IF NOT EXISTS payout_cents BIGINT;
 
+-- The key moves from the shipment to the row: a move can have more than one
+-- lead. Guarded so a re-run is a no-op rather than "multiple primary keys".
 ALTER TABLE dispatch.home_reservations DROP CONSTRAINT IF EXISTS home_reservations_pkey;
-ALTER TABLE dispatch.home_reservations ADD PRIMARY KEY (id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'dispatch.home_reservations'::regclass AND contype = 'p'
+    ) THEN
+        ALTER TABLE dispatch.home_reservations ADD PRIMARY KEY (id);
+    END IF;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS home_reservations_one_primary
     ON dispatch.home_reservations (shipment_id)
