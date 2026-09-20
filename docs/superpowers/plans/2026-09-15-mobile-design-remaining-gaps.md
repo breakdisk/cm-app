@@ -376,3 +376,62 @@ Decided by the user; **(default)** marks what was filled in here — config, not
 **Config:** `SERVICES__POD_URL` on order-intake (else photos list without pictures); `HOME_MOVE__COMMISSION_BPS` (default 2000), `HOME_MOVE__PAYOUT_*` (unset → the lead is paid the fare less commission), `HOME_MOVE__SURGE_*` (defaults 2000/12000/15000; threshold 0 turns surge off), `GEOCODER__MAPBOX_ACCESS_TOKEN` (already needed) now also prices distance.
 
 **Still not built:** lead pay for freight moves is untouched (this is home moves only); no waitlist for surveys, only move windows; an unfilled support or emergency slot is logged for ops, with no console button to re-offer it (the internal endpoint exists); survey photos upload online only, with no offline queue; dispatch ETAs still ignore road time.
+
+---
+
+## Deployed 2026-09-20 — and dormant until it is priced
+
+Merged to `master` (`f6bf385a`) and deployed: 12 services, 30 migrations, all green. Migration
+maxima reached with zero failures (order_intake 23, dispatch 18, driver_ops 19, engagement 10,
+pod 8, payments 21, carrier 7, delivery_experience 9, promotions 2).
+
+Order-intake's startup confirms two of the three round-2 prerequisites are live:
+
+```
+address normalizer: Mapbox geocoder
+quote distance: Mapbox driving directions      ← decision 6, straight-line is gone
+whole-home moves disabled — HOME_MOVE__TRIP_CENTS unset
+```
+
+The third line is the gate. **Everything above is deployed but cannot be reached**: no home move
+can be quoted, so none is booked, so none is ever broadcast. Nothing here is a code change — the
+rates are deliberately zero-by-default, because a home move priced at nothing is worse than none.
+
+### What has to be decided (env on order-intake, `HOME_MOVE__*`)
+
+These are **prices, not defaults** — they are all `0` and the platform will not guess them:
+
+| Key | Controls | At 0 |
+|---|---|---|
+| `HOME_MOVE__TRIP_CENTS` | the base fare per trip | **home moves stay off entirely** |
+| `HOME_MOVE__PER_KM_CENTS` | road distance (now real driving km) | distance is free |
+| `HOME_MOVE__HELPER_HOUR_CENTS` | crew time; min 4 h, 6 m³/helper-hour | crew is free |
+| `HOME_MOVE__ASSEMBLY_CENTS` | dismantle + rebuild, per ticked item | free |
+| `HOME_MOVE__PACKING_CENTS` | special packing, per ticked item | free |
+| `HOME_MOVE__SURVEY_CENTS` | the survey fee | the lead is paid nothing at sign-off |
+| `HOME_MOVE__PAYOUT_BASE_CENTS` / `_PER_M3_CENTS` / `_PER_KM_CENTS` | the lead's pay formula | **all three 0 → the lead is paid the fare, less commission** (a deliberate fallback, not a bug) |
+
+These already have working defaults and only need setting to override:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `HOME_MOVE__COMMISSION_BPS` | `2000` | the platform's 20%, on lead pay **and** the survey fee |
+| `HOME_MOVE__SURGE_THRESHOLD_BPS` | `2000` | surge below 20% free capacity; **`0` turns surge off** |
+| `HOME_MOVE__SURGE_MIN_BPS` / `_MAX_BPS` | `12000` / `15000` | 1.2× at the threshold → 1.5× for the last free team |
+| `HOME_MOVE__UTC_OFFSET_MINUTES` | `480` | **UTC+8** — the slot calendar's local day. Wrong for a UAE tenant (240); there is no per-tenant time zone anywhere. |
+| `HOME_MOVE__TRUCK_VOLUME_L` / `_USABLE_PCT` / `_PAYLOAD_KG` / `_TRUCK_NAME` | `18000` / `85` / `3000` / `3-ton box truck` | one truck's capacity — drives overflow and Large Estate |
+| `HOME_MOVE__LARGE_ESTATE_L` | `75000` | above this, never one truck |
+| `HOME_MOVE__SURVEY_REFUND_UNTIL_HOURS` | `12` | inside this, cancelling keeps the survey fee |
+
+Separately: `SERVICES__POD_URL` on order-intake (else survey photos list without pictures), and
+**leads must be onboarded** in admin → Drivers → "Job types" or no home move is offered to anyone
+however it is priced.
+
+### Blocked on something that is not code
+
+`cargomarket.net` is on **`clientHold` at Amazon Registrar** (applied 2026-09-07; the domain is
+paid through 2027 and the Cloudflare records are correct — `os-api.cargomarket.net` still
+resolves to `75.119.138.135` when the authoritative servers are queried directly). The hold
+removes the delegation from the `.net` zone, so every resolver returns NXDOMAIN. Both apps bake
+`https://os-api.cargomarket.net` at build time, so until the hold is lifted the deploy is healthy
+and unreachable, and none of the above can be exercised end to end.
