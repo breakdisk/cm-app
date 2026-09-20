@@ -117,6 +117,44 @@ pub struct SideSlotsRequest {
 fn one() -> usize { 1 }
 fn default_side_ttl_minutes() -> i64 { 15 }
 
+#[derive(Debug, Deserialize)]
+pub struct OpsSlotsRequest {
+    /// support | emergency
+    pub slot: String,
+    #[serde(default = "one")]
+    pub count: usize,
+    /// Each lead's net pay for their truck. Left out, the offer shows none.
+    #[serde(default)]
+    pub payout_cents: Option<i64>,
+    #[serde(default = "default_side_ttl_minutes")]
+    pub ttl_minutes: i64,
+}
+
+/// Ops console: POST /v1/home-moves/:shipment_id/slots
+///
+/// Offer a home move's second truck again - a joint mission whose support
+/// slot nobody took, or an extra truck an addendum needs. The automatic
+/// paths (a captain's claim, a paid addendum) do this by themselves; this is
+/// how ops does it when one went unfilled.
+pub async fn ops_side_slots(
+    AuthClaims(claims): AuthClaims,
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<OpsSlotsRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_ASSIGN);
+    if !(1..=4).contains(&req.count) {
+        return Err(AppError::Validation("One to four trucks at a time".into()));
+    }
+    let ttl = req.ttl_minutes.clamp(5, 24 * 60) * 60;
+    let offers = state
+        .offer_service
+        .broadcast_side_slots(TenantId::from_uuid(claims.tenant_id), shipment_id, &req.slot, req.count, req.payout_cents, ttl)
+        .await?;
+    tracing::info!(%shipment_id, slot = %req.slot, by = %claims.user_id, offers = offers.len(), "ops offered a home-move slot");
+    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "data": { "offers": offers } }))))
+}
+
 /// Internal (no JWT): POST /v1/internal/home-moves/:shipment_id/slots
 ///
 /// order-intake asks for more trucks on a home move: an Emergency Secondary

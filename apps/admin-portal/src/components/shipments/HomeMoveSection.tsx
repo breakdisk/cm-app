@@ -5,6 +5,7 @@
  * crew. Read from `GET /v1/shipments/:id/home`, which admits tenant-wide staff.
  */
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { GlassCard } from "@/components/ui/glass-card";
 
@@ -86,6 +87,9 @@ export function HomeMoveSection({ shipmentId }: { shipmentId: string }) {
   const [home, setHome] = useState<HomeMove | null>(null);
   const [lead, setLead] = useState<string | null>(null);
   const [pay, setPay] = useState<HomePay | null>(null);
+  const [slot, setSlot] = useState<"support" | "emergency">("emergency");
+  const [slotPay, setSlotPay] = useState("");
+  const [offering, setOffering] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -105,6 +109,31 @@ export function HomeMoveSection({ shipmentId }: { shipmentId: string }) {
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Could not load the home move"); });
     return () => { cancelled = true; };
   }, [shipmentId]);
+
+  /**
+   * Offer the move another truck. A captain's claim and a paid addendum do
+   * this by themselves; this is for the slot nobody took.
+   */
+  async function offerTruck() {
+    setOffering(true);
+    try {
+      const cents = slotPay.trim() ? Math.round(Number(slotPay) * 100) : null;
+      if (cents != null && !Number.isFinite(cents)) throw new Error("That pay is not a number");
+      const r = await authFetch(`${API_BASE}/v1/home-moves/${shipmentId}/slots`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slot, count: 1, payout_cents: cents }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error?.message ?? `${r.status} ${r.statusText}`);
+      toast.success(slot === "support" ? "Support truck offered" : "Extra truck offered");
+      setSlotPay("");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not offer the truck");
+    } finally {
+      setOffering(false);
+    }
+  }
 
   if (error) return <GlassCard size="sm" className="mt-2"><p className="text-xs text-amber-300">{error}</p></GlassCard>;
   if (!home) return <GlassCard size="sm" className="mt-2"><p className="text-xs text-white/40">Loading…</p></GlassCard>;
@@ -163,6 +192,38 @@ export function HomeMoveSection({ shipmentId }: { shipmentId: string }) {
             </div>
           ))}
         </dl>
+      </div>
+
+      <div className="rounded-lg border border-white/5 p-2">
+        <p className="text-[11px] uppercase tracking-wide text-white/35">Another truck</p>
+        <p className="mt-1 text-xs text-white/45">
+          A joint move's second truck, or an extra one an addendum needs. Offered to leads free that day; the automatic paths do this themselves.
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <select
+            value={slot}
+            onChange={(e) => setSlot(e.target.value === "support" ? "support" : "emergency")}
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-xs text-white"
+          >
+            <option value="emergency">Extra truck (today)</option>
+            <option value="support">Support lead (2nd truck)</option>
+          </select>
+          <input
+            value={slotPay}
+            onChange={(e) => setSlotPay(e.target.value)}
+            inputMode="decimal"
+            placeholder={`Pay per truck (${home.currency ?? "PHP"})`}
+            className="w-44 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-xs text-white placeholder:text-white/30"
+          />
+          <button
+            type="button"
+            disabled={offering}
+            onClick={() => void offerTruck()}
+            className="rounded-lg bg-cyan-400/90 px-3 py-1.5 text-xs font-medium text-[#041a1f] hover:bg-cyan-300 disabled:opacity-40"
+          >
+            {offering ? "Offering…" : "Offer it"}
+          </button>
+        </div>
       </div>
 
       <p className="text-xs text-white/55">

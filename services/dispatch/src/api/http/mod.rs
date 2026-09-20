@@ -64,6 +64,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/queue/:shipment_id/dispatch",        post(dispatch_ops::quick_dispatch))
         // Ops-console action: broadcast to the gig pool instead of 1:1 dispatch
         .route("/queue/:shipment_id/broadcast",       post(offers::broadcast))
+        // Ops: offer a home move's support or extra truck again
+        .route("/home-moves/:shipment_id/slots",      post(dispatch_ops::ops_side_slots))
         // Admin: cancel a dispatched shipment — returns it to pending for reassignment
         .route("/queue/:shipment_id/cancel-dispatch", post(dispatch_ops::cancel_queue_dispatch))
         // Admin: cancel a driver's stale active assignment (re-enters them into auto-dispatch pool)
