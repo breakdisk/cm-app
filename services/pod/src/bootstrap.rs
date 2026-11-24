@@ -166,10 +166,10 @@ pub async fn run() -> anyhow::Result<()> {
                 ))
             }
             _ => {
-                tracing::warn!(
-                    "SERVICES__ORDER_INTAKE_URL not set — POP will trust the driver device \
-                     for service_code and declared_value_cents. Track A (Balikbayan) driver \
-                     ledger debits will not fire reliably. Set it in production."
+                tracing::error!(
+                    "SERVICES__ORDER_INTAKE_URL not set — shipment ownership cannot be verified, so \
+                     POD/POP initiate and delivery PINs are REFUSED (503) until it is set. \
+                     Set it in production."
                 );
                 None
             }

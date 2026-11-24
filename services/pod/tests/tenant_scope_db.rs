@@ -282,7 +282,7 @@ async fn a_foreign_row_on_the_shipment_does_not_block_the_owner() {
     PgPickupRepository::new(pool.clone()).save(&squat_pop).await.expect("squat pop");
 
     // Who wrote first decides nothing: the owner opens its own evidence on S.
-    let svc = service(&pool);
+    let svc = service_with(&pool, Some(Arc::new(Booking { owner, phone: None })));
     let me = TenantId::from_uuid(owner);
     let pod = svc.initiate(&driver(), &me, initiate_pod_cmd(shipment), 14.5995, 120.9842).await
         .expect("owner's POD initiate is not blocked by the squatter's draft");
@@ -327,16 +327,63 @@ async fn a_foreign_tenant_is_refused_when_the_booking_belongs_to_someone_else() 
     svc.initiate_pickup(&driver(), &TenantId::from_uuid(owner), initiate_pop_cmd(shipment)).await.expect("owner POP");
 }
 
-#[tokio::test]
-async fn an_order_intake_outage_never_blocks_capture() {
-    let Some(pool) = pool().await else { return };
-    let tenant = TenantId::from_uuid(Uuid::new_v4());
-    let svc = service_with(&pool, Some(Arc::new(Down)));
+fn is_unavailable(e: &AppError) -> bool {
+    matches!(e, AppError::ServiceUnavailable(_))
+}
 
-    svc.initiate(&driver(), &tenant, initiate_pod_cmd(Uuid::new_v4()), 14.5995, 120.9842).await
-        .expect("POD capture proceeds when order-intake is down");
-    svc.initiate_pickup(&driver(), &tenant, initiate_pop_cmd(Uuid::new_v4())).await
-        .expect("POP capture proceeds when order-intake is down");
+/// Nothing was written for this shipment under this tenant.
+async fn nothing_written(pool: &PgPool, tenant: Uuid, shipment: Uuid) {
+    assert!(PgPodRepository::new(pool.clone()).find_by_shipment(tenant, shipment).await.unwrap().is_none());
+    assert!(PgPickupRepository::new(pool.clone()).find_by_shipment(tenant, shipment).await.unwrap().is_none());
+}
+
+/// order-intake answered, but unusably: what `context_from_response` produces for
+/// a body with no `tenant_id` (an order-intake that predates it).
+struct NoTenantId;
+
+#[async_trait]
+impl logisticos_pod::domain::repositories::ShipmentBillingContextSource for NoTenantId {
+    async fn fetch(
+        &self,
+        _t: Uuid,
+        s: Uuid,
+    ) -> anyhow::Result<logisticos_pod::domain::repositories::ShipmentBillingContext> {
+        anyhow::bail!("order-intake returned no tenant_id for shipment {s} (deployed version predates tenant_id)")
+    }
+}
+
+#[tokio::test]
+async fn an_unverifiable_shipment_is_refused_with_503_and_nothing_is_written() {
+    let Some(pool) = pool().await else { return };
+    let tenant = Uuid::new_v4();
+    let me = TenantId::from_uuid(tenant);
+
+    let sources: Vec<(&str, Option<Arc<dyn logisticos_pod::domain::repositories::ShipmentBillingContextSource>>)> = vec![
+        ("outage", Some(Arc::new(Down))),
+        ("no tenant_id", Some(Arc::new(NoTenantId))),
+        ("no order-intake configured", None),
+    ];
+    for (why, source) in sources {
+        let svc = service_with(&pool, source);
+        let shipment = Uuid::new_v4();
+        let err = svc.initiate(&driver(), &me, initiate_pod_cmd(shipment), 14.5995, 120.9842).await
+            .expect_err(why);
+        assert!(is_unavailable(&err), "POD, {why}: {err:?}");
+        let err = svc.initiate_pickup(&driver(), &me, initiate_pop_cmd(shipment)).await.expect_err(why);
+        assert!(is_unavailable(&err), "POP, {why}: {err:?}");
+        nothing_written(&pool, tenant, shipment).await;
+    }
+}
+
+#[tokio::test]
+async fn the_booking_wins_over_the_device_service_code() {
+    let Some(pool) = pool().await else { return };
+    let owner = Uuid::new_v4();
+    let svc = service_with(&pool, Some(Arc::new(Booking { owner, phone: None })));
+    let mut cmd = initiate_pop_cmd(Uuid::new_v4());
+    cmd.service_code = "balikbayan".into(); // the device claims Track A; the booking says standard
+    let pop = svc.initiate_pickup(&driver(), &TenantId::from_uuid(owner), cmd).await.expect("owner");
+    assert_eq!(pop.service_code, "standard");
 }
 
 #[tokio::test]
@@ -359,7 +406,8 @@ async fn the_delivery_pin_recipient_comes_from_the_callers_own_booking() {
 
     // Unlike capture, this stays blocking: no verified ownership, no PIN.
     let down = service_with(&pool, Some(Arc::new(Down)));
-    assert!(down.recipient_phone_for_shipment(&TenantId::from_uuid(owner), shipment).await.is_err());
+    let err = down.recipient_phone_for_shipment(&TenantId::from_uuid(owner), shipment).await.unwrap_err();
+    assert!(is_unavailable(&err), "{err:?}");
 }
 
 mod http {

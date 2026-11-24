@@ -12,9 +12,9 @@ use uuid::Uuid;
 
 use crate::domain::repositories::{ShipmentBillingContext, ShipmentBillingContextSource};
 
-/// Wall-clock ceiling for the lookup. A driver standing at the merchant's
-/// counter must not wait on a slow internal hop — `initiate_pickup` falls back
-/// to the client-supplied values when this budget is exceeded.
+/// Wall-clock ceiling for the lookup. A hung order-intake becomes a fast error,
+/// which initiate turns into a 503 (the driver app retries), rather than a hung
+/// request.
 const LOOKUP_TIMEOUT_SECS: u64 = 5;
 
 pub struct OrderIntakeClient {

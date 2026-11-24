@@ -15,7 +15,7 @@ use crate::{
         events::{PodCaptured, PickupCaptured},
         repositories::{
             PodRepository, OtpRepository, PickupRepository, TelemetryRepository, TelemetryEntry,
-            ShipmentBillingContextSource,
+            ShipmentBillingContext, ShipmentBillingContextSource,
         },
         value_objects::{
             POD_GEOFENCE_METERS, OUT_OF_BOUNDS_HANDOVER_METERS,
@@ -90,7 +90,7 @@ impl PodService {
         // Instead we error out and let an operator delete the stale draft —
         // surfacing the inconsistency rather than silently overwriting it.
         // The booking decides whose shipment this is, never who wrote a row first.
-        self.ensure_shipment_is_callers(tenant_id.inner(), cmd.shipment_id).await?;
+        self.verified_booking(tenant_id.inner(), cmd.shipment_id).await?;
 
         if let Some(existing) = self.pod_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
@@ -398,6 +398,10 @@ impl PodService {
         tenant_id: &TenantId,
         cmd: InitiatePickupCommand,
     ) -> AppResult<ProofOfPickup> {
+        // Ownership first, and it is verified or refused: a POP written under the
+        // wrong tenant would publish PICKUP_CAPTURED and move that shipment.
+        let booking = self.verified_booking(tenant_id.inner(), cmd.shipment_id).await?;
+
         // Idempotency: return existing draft if this driver already started one.
         if let Some(existing) = self.pickup_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
@@ -435,16 +439,10 @@ impl PodService {
         }
 
         // The handset is not authoritative for the billing track, nor for the
-        // amount that debits that same driver's ledger. Resolve both from the
-        // booking record before the POP is written.
-        let (service_code, declared_value_cents) = self
-            .resolve_billing_context(
-                tenant_id.inner(),
-                cmd.shipment_id,
-                &cmd.service_code,
-                cmd.declared_value_cents,
-            )
-            .await?;
+        // amount that debits that same driver's ledger: both come from the booking
+        // that just proved this shipment is the caller's.
+        let (service_code, declared_value_cents) =
+            billing_from_booking(&booking, cmd.shipment_id, &cmd.service_code);
 
         let pop = ProofOfPickup::new(
             tenant_id.inner(),
@@ -475,26 +473,12 @@ impl PodService {
     /// degraded path logs loudly rather than returning an error.
     /// The recipient's phone for a shipment, from the booking record.
     ///
-    /// Unlike `resolve_billing_context` below, this is **blocking on failure and
-    /// deliberately so**. That one degrades to the driver's device values because
-    /// a courier at a merchant's counter must not be stopped by a transient
-    /// internal hop. This one cannot degrade to a caller-supplied phone without
-    /// restoring the exact hole it closes: a driver pointing the delivery PIN at
-    /// their own handset. An unreachable order-intake means no PIN is issued.
+    /// Resolved through the same verified lookup as POD/POP initiate
+    /// (`verified_booking`): a foreign or missing shipment is NotFound, and an
+    /// unverifiable one is a 503. There is no caller-supplied fallback: that is
+    /// the hole this closes (a driver pointing the PIN at their own handset).
     pub async fn recipient_phone_for_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<String> {
-        let source = self.shipment_ctx.as_ref().ok_or_else(|| {
-            AppError::ServiceUnavailable(
-                "SERVICES__ORDER_INTAKE_URL is not set — the delivery PIN recipient \
-                 cannot be resolved from the booking, so no PIN can be issued"
-                    .into(),
-            )
-        })?;
-
-        // Blocking, unlike capture: a foreign or missing shipment is NotFound, and
-        // an unreachable order-intake (or one that cannot show ownership) issues no PIN.
-        let ctx = source.fetch(tenant_id.inner(), shipment_id).await.map_err(|e| {
-            ownership_refusal(&e, shipment_id).unwrap_or_else(|| AppError::internal(e))
-        })?;
+        let ctx = self.verified_booking(tenant_id.inner(), shipment_id).await?;
 
         ctx.customer_phone
             .filter(|p| !p.trim().is_empty())
@@ -506,85 +490,39 @@ impl PodService {
             })
     }
 
-    /// Ownership check for opening delivery evidence: the booking's tenant must be
-    /// the caller's. Only an explicit refusal (missing or foreign) blocks; an
-    /// order-intake outage must never stop a delivery from being completed, so any
-    /// other failure is logged loudly and the request proceeds.
-    async fn ensure_shipment_is_callers(&self, tenant_id: Uuid, shipment_id: Uuid) -> AppResult<()> {
+    /// The booking of a shipment, for the caller's tenant, or a refusal. Ownership is
+    /// verified or refused, never assumed:
+    ///
+    /// - order-intake answers and the booking's tenant is the caller's: proceed;
+    /// - the shipment is missing or another tenant's (`ShipmentNotFound`): 404;
+    /// - anything else (outage, timeout, 5xx, malformed body, no `tenant_id`, or no
+    ///   order-intake configured): 503, retry later.
+    ///
+    /// A POD/POP written for another tenant's shipment is not inert: it publishes
+    /// events that move that shipment. The courier loses nothing by the 503: the
+    /// driver app queues POD/POP and retries with backoff, with `device_timestamp`
+    /// taken at capture.
+    async fn verified_booking(&self, tenant_id: Uuid, shipment_id: Uuid) -> AppResult<ShipmentBillingContext> {
         let Some(source) = self.shipment_ctx.as_ref() else {
-            tracing::warn!(
-                shipment_id = %shipment_id,
-                "ORDER_INTAKE_URL not configured — shipment ownership was not verified"
-            );
-            return Ok(());
+            tracing::error!(shipment_id = %shipment_id, "SERVICES__ORDER_INTAKE_URL is not set — shipment ownership cannot be verified");
+            return Err(AppError::ServiceUnavailable(
+                "SERVICES__ORDER_INTAKE_URL is not set — shipment ownership cannot be verified, \
+                 so evidence cannot be opened. Retry later."
+                    .into(),
+            ));
         };
         match source.fetch(tenant_id, shipment_id).await {
-            Ok(_) => Ok(()),
-            Err(e) => match ownership_refusal(&e, shipment_id) {
-                Some(refusal) => Err(refusal),
-                None => {
-                    tracing::error!(
-                        error = %e, shipment_id = %shipment_id,
-                        "could not verify shipment ownership with order-intake; proceeding"
-                    );
-                    Ok(())
-                }
-            },
-        }
-    }
-
-    async fn resolve_billing_context(
-        &self,
-        tenant_id:                   Uuid,
-        shipment_id:                 Uuid,
-        client_service_code:         &str,
-        client_declared_value_cents: Option<i64>,
-    ) -> AppResult<(String, Option<i64>)> {
-        let Some(source) = self.shipment_ctx.as_ref() else {
-            tracing::warn!(
-                shipment_id = %shipment_id,
-                "ORDER_INTAKE_URL not configured — POP billing track taken from the \
-                 driver device. Track A ledger debits may be missed or misvalued."
-            );
-            return Ok((client_service_code.to_string(), client_declared_value_cents));
-        };
-
-        match source.fetch(tenant_id, shipment_id).await {
-            Ok(ctx) => {
-                if !ctx.service_code.eq_ignore_ascii_case(client_service_code) {
-                    tracing::warn!(
-                        shipment_id  = %shipment_id,
-                        device_value = %client_service_code,
-                        booking_value = %ctx.service_code,
-                        "POP service_code from device disagrees with the booking — \
-                         using the booking value"
-                    );
-                }
-                if ctx.service_code.eq_ignore_ascii_case("balikbayan")
-                    && ctx.declared_value_cents.unwrap_or(0) <= 0
-                {
-                    tracing::warn!(
-                        shipment_id = %shipment_id,
-                        "Track A (Balikbayan) shipment carries no declared value on the \
-                         booking — the driver ledger debit will not fire for this pickup"
-                    );
-                }
-                Ok((ctx.service_code, ctx.declared_value_cents))
-            }
-            // An explicit "no such shipment" refuses; anything else is an outage,
-            // and an order-intake outage must never block capture.
+            Ok(ctx) => Ok(ctx),
             Err(e) => {
                 if let Some(refusal) = ownership_refusal(&e, shipment_id) {
                     return Err(refusal);
                 }
-                tracing::error!(
-                    error       = %e,
-                    shipment_id = %shipment_id,
-                    "Failed to resolve shipment billing context from order-intake — \
-                     falling back to device-supplied values. A Balikbayan pickup may \
-                     not debit the driver ledger."
-                );
-                Ok((client_service_code.to_string(), client_declared_value_cents))
+                tracing::warn!(error = %e, shipment_id = %shipment_id, "shipment ownership could not be verified with order-intake; refusing (503)");
+                Err(AppError::ServiceUnavailable(
+                    "Shipment ownership could not be verified (order-intake did not answer \
+                     usably). Nothing was recorded; retry the request."
+                        .into(),
+                ))
             }
         }
     }
@@ -1061,6 +999,33 @@ impl PodService {
 }
 
 /// `survey/{tenant}/{shipment}/{uuid}.{ext}`
+/// POP billing classification from the verified booking. The device's value
+/// disagreeing is logged and the booking wins.
+fn billing_from_booking(
+    booking:             &ShipmentBillingContext,
+    shipment_id:         Uuid,
+    client_service_code: &str,
+) -> (String, Option<i64>) {
+    if !booking.service_code.eq_ignore_ascii_case(client_service_code) {
+        tracing::warn!(
+            shipment_id   = %shipment_id,
+            device_value  = %client_service_code,
+            booking_value = %booking.service_code,
+            "POP service_code from device disagrees with the booking — using the booking value"
+        );
+    }
+    if booking.service_code.eq_ignore_ascii_case("balikbayan")
+        && booking.declared_value_cents.unwrap_or(0) <= 0
+    {
+        tracing::warn!(
+            shipment_id = %shipment_id,
+            "Track A (Balikbayan) shipment carries no declared value on the booking — \
+             the driver ledger debit will not fire for this pickup"
+        );
+    }
+    (booking.service_code.clone(), booking.declared_value_cents)
+}
+
 /// The one rule for turning a failed ownership lookup into a refusal: an explicit
 /// `ShipmentNotFound` (missing or another tenant's, indistinguishable by design)
 /// is `NotFound("Shipment")`; anything else is an outage and is not a refusal.

@@ -19,13 +19,33 @@ Every step needs the owner's go-ahead. Do them in order and do not skip ahead.
 
 1. **Deploy all images with all three flags `false`.** Nothing changes for users.
 
-   **Deploy order-intake before, or together with, pod.** pod now asks order-intake
-   who owns a shipment (the billing response carries `tenant_id`). Until
-   order-intake is up with that field, a pod that sees no `tenant_id` treats it as an
-   outage: delivery PINs are refused (no PIN without verified ownership) and POP
-   billing degrades to the device's values. POD and POP capture themselves are not
-   blocked. pod's migration `0009` (per-tenant shipment uniqueness) is safe in any
-   order: the new indexes are weaker than the old ones, and both upserts conflict on
+   **Roll order-intake first, then pod.** pod verifies shipment ownership against
+   order-intake (the internal billing response carries `tenant_id`) and refuses
+   what it cannot verify: POD initiate, POP initiate and delivery PINs return
+   503 when order-intake is down, times out (5 s), returns 5xx or a malformed
+   body, returns no `tenant_id`, or when `SERVICES__ORDER_INTAKE_URL` is unset.
+   A shipment that is missing or another tenant's is a 404. Nothing is recorded on
+   a refusal.
+
+   Before rolling pod, confirm from inside the network that the new order-intake
+   returns the tenant (any real shipment id):
+
+   ```
+   docker exec logisticos-pod wget -qO- http://order-intake:8004/v1/internal/shipments/<SHIPMENT_ID>/billing
+   ```
+
+   The JSON must contain `"tenant_id":"<uuid>"`. If it does not, order-intake is
+   still the old image: do not roll pod yet.
+
+   **If the order is wrong** (pod rolled first), driver POD/POP sync stalls with
+   503s and drains on its own once order-intake is up: the driver app queues both
+   in `OutboundSyncWorker`, retries with backoff (capped at 5 min, never dropped)
+   and `device_timestamp` was taken at capture, so nothing is lost, only delayed.
+   The same applies to any later order-intake outage: POD/POP sync stalls, queued
+   on the device, no loss.
+
+   pod's migration `0009` (per-tenant shipment uniqueness) is safe in any order:
+   the new indexes are weaker than the old ones, and both upserts conflict on
    `(id)`.
 
    **Behaviour changes at deploy, not behind a flag:**
