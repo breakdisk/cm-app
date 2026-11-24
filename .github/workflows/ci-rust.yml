@@ -388,6 +388,12 @@ jobs:
       - name: Check /health is reachable without a token
         run: ./scripts/check-health-endpoints.sh
 
+      # Compares only the prefixes in scripts/openapi-tracked-prefixes.txt, since
+      # the older specs have drifted. Adding routes under a tracked prefix
+      # without documenting them fails here.
+      - name: Check tracked routes are in their OpenAPI contract
+        run: python3 scripts/check-openapi-routes.py
+
   # ──────────────────────────────────────────────────────────────
   # JOB 3: test
   # Runs full test suite per changed service with live PostgreSQL

@@ -99,6 +99,13 @@ paths:
       operationId: listShipments
       tags: [Shipments]
       summary: List shipments for the authenticated merchant
+      description: |
+        Scope depends on the caller. Merchants and customers (who can create but
+        not update shipments) see only shipments they booked, and a `merchant_id`
+        they pass is ignored. Operators see the whole tenant. A token carrying a
+        partner id (`pid`) sees only shipments linked to that partner. A partner
+        or store token without `pid` is refused with 403 `PARTNER_CONTEXT_REQUIRED`
+        once partner scoping is enforced.
       parameters:
         - name: status
           in: query

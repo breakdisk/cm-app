@@ -86,6 +86,10 @@ paths:
       operationId: getDispatchQueue
       tags: [Dispatch]
       summary: Get the current unassigned order queue
+      description: |
+        Tenant operations only. A token carrying a partner id (`pid`), which
+        includes a store's riders, is refused with 403: the queue holds other
+        parties' parcels and recipient details.
       parameters:
         - name: zone
           in: query

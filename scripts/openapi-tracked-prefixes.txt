@@ -1,0 +1,12 @@
+# service | route prefix that MUST appear in docs/api/openapi/<service>.yaml
+#
+# scripts/check-openapi-routes.py compares only the prefixes listed here, because
+# the existing specs have drifted from the live routes (dispatch's spec names
+# /dispatch/* while the service serves /v1/queue and /v1/drivers). Checking every
+# route would fail on old drift and be turned off. Add a prefix when a phase adds
+# routes, and the contract has to land with the code.
+#
+# Paths in the specs are relative to the server URL, which already ends in /v1,
+# so /v1/partner-memberships/me is documented as /partner-memberships/me.
+identity|/v1/partner-memberships
+identity|/v1/internal/partner-memberships
