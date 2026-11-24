@@ -96,3 +96,10 @@ body {
   0%,100% { background-position: 0% 50%; }
   50%      { background-position: 100% 50%; }
 }
+
+/* Arabic: Inter / Space Grotesk have no Arabic glyphs, so lead with an Arabic-capable face. */
+html[lang="ar"] body,
+html[lang="ar"] .font-sans,
+html[lang="ar"] .font-heading {
+  font-family: var(--font-arabic), var(--font-sans), sans-serif;
+}

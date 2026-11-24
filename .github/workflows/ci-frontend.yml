@@ -14,12 +14,14 @@ on:
       - master
     paths:
       - "apps/**"
+      - "scripts/check-i18n-keys.mjs"
       - ".github/workflows/ci-frontend.yml"
   pull_request:
     branches:
       - master
     paths:
       - "apps/**"
+      - "scripts/check-i18n-keys.mjs"
       - ".github/workflows/ci-frontend.yml"
 
 concurrency:
@@ -453,6 +455,28 @@ jobs:
           NODE_ENV: "test"
 
   # ──────────────────────────────────────────────────────────────
+  # i18n-keys: English and Arabic message keys must match, in the four web
+  # apps and the Android driver app. Dependency-free Node script, so it runs
+  # once, with no npm install and no matrix.
+  # ──────────────────────────────────────────────────────────────
+  i18n-keys:
+    name: i18n Key Parity (en / ar)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check translation keys
+        run: node scripts/check-i18n-keys.mjs
+
+  # ──────────────────────────────────────────────────────────────
   # Summary gate — required by branch protection rules
   # ──────────────────────────────────────────────────────────────
   frontend-ci-complete:
@@ -464,6 +488,7 @@ jobs:
       - build
       - e2e
       - mobile-check
+      - i18n-keys
     if: always()
     steps:
       - name: Check all jobs passed
@@ -473,14 +498,16 @@ jobs:
           BUILD="${{ needs.build.result }}"
           E2E="${{ needs.e2e.result }}"
           MOBILE="${{ needs.mobile-check.result }}"
+          I18N="${{ needs.i18n-keys.result }}"
 
           echo "lint-and-type-check: $LINT"
           echo "test:               $TEST"
           echo "build:              $BUILD"
           echo "e2e:                $E2E"
           echo "mobile-check:       $MOBILE"
+          echo "i18n-keys:          $I18N"
 
-          for RESULT in "$LINT" "$TEST" "$BUILD"; do
+          for RESULT in "$LINT" "$TEST" "$BUILD" "$I18N"; do
             if [ "$RESULT" == "failure" ] || [ "$RESULT" == "cancelled" ]; then
               echo "Required frontend CI job failed."
               exit 1

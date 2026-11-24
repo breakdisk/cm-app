@@ -1,0 +1,14 @@
+{
+  "common": {
+    "appTitle": "LogisticOS Partner Portal",
+    "loading": "Loading…",
+    "error": "Something went wrong.",
+    "retry": "Try again"
+  },
+  "payouts": {
+    "title": "Payouts",
+    "emptyHeading": "Your payout statements are not available here yet",
+    "emptyBody1": "This page used to show the platform account's balance, which is not yours, so it has been removed. Statements for your own deliveries will appear here once partner settlements are available.",
+    "emptyBody2": "For a question about a payment you are owed, contact your operations team."
+  }
+}

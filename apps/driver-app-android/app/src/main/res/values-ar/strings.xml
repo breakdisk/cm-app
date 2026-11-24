@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LogisticOS للسائقين</string>
+    <string name="notification_channel_location">تتبّع الموقع</string>
+    <string name="notification_channel_delivery">تحديثات التوصيل</string>
+    <string name="location_notification_title">الموقع قيد التشغيل</string>
+    <string name="location_notification_text">يجري تتبّع موقعك لأغراض التوصيل</string>
+</resources>
