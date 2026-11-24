@@ -30,12 +30,25 @@ Every step needs the owner's go-ahead. Do them in order and do not skip ahead.
    Before rolling pod, confirm from inside the network that the new order-intake
    returns the tenant (any real shipment id):
 
+   The service images have neither `wget` nor `curl`, so call order-intake's
+   container address from the VPS host itself:
+
    ```
-   docker exec logisticos-pod wget -qO- http://order-intake:8004/v1/internal/shipments/<SHIPMENT_ID>/billing
+   IP=$(docker inspect logisticos-order-intake --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}')
+   SID=$(docker exec logisticos-postgres psql -U logisticos -d svc_order_intake -tAc "select id from order_intake.shipments order by created_at desc limit 1")
+   curl -s "http://$IP:8004/v1/internal/shipments/$SID/billing"
    ```
 
    The JSON must contain `"tenant_id":"<uuid>"`. If it does not, order-intake is
    still the old image: do not roll pod yet.
+
+   After the roll, the other checks that proved step 1 on 2026-11-24:
+   - every touched service logs `partner_scope_enforced: false` (dispatch also
+     `close_assignments: false`, order-intake `permanent_geocoding: false`);
+   - migrations reach identity 18, dispatch 20 (in `svc_driver_ops`), order-intake 26, pod 9;
+   - consumer groups `dispatch-dev-task-outcome` and `order-intake-dev-partner-links`
+     are registered (`kafka-consumer-groups --list`);
+   - the gateway answers `/health` 200 and protected routes 401.
 
    **If the order is wrong** (pod rolled first), driver POD/POP sync stalls with
    503s and drains on its own once order-intake is up: the driver app queues both
