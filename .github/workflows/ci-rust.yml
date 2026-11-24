@@ -394,6 +394,12 @@ jobs:
       - name: Check tracked routes are in their OpenAPI contract
         run: python3 scripts/check-openapi-routes.py
 
+      # A handler a partner or a store's rider can reach must say how it is
+      # scoped. Fails on an unlisted one, on a "denied" handler that no longer
+      # calls require_unscoped, and on a stale entry.
+      - name: Check partner-reachable handlers are classified
+        run: python3 scripts/check-partner-scope.py
+
   # ──────────────────────────────────────────────────────────────
   # JOB 3: test
   # Runs full test suite per changed service with live PostgreSQL
