@@ -1295,6 +1295,7 @@ async fn dispatch(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<
 async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): Path<Uuid>) -> impl IntoResponse {
     use logisticos_types::TenantId;
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let parcels = s.svc.hub_manifest(hub_id, &tenant_id).await?;
 
@@ -1443,6 +1444,7 @@ async fn get_pallet_handler(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let pallet = s.pallet_svc
         .find_pallet(logisticos_types::PalletId::from_uuid(id))
         .await?
@@ -1575,6 +1577,7 @@ async fn get_plan(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let plan = s.consolidation_svc.get_plan(id, claims.tenant_id).await
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::NotFound { resource: "plan", id: id.to_string() })?;
@@ -1587,6 +1590,7 @@ async fn list_hub_plans(
     Path(hub_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let plans = s.consolidation_svc.list_plans(hub_id, claims.tenant_id).await
         .map_err(AppError::internal)?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "plans": plans }))))
@@ -2153,6 +2157,7 @@ async fn list_scans_handler(
     Path(shipment_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let scans = s.hub_transfer_svc
         .list_scans(shipment_id, claims.tenant_id)
         .await?;
@@ -2344,6 +2349,7 @@ async fn get_manifest_handler(
     Path(container_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     match s.hub_transfer_svc.get_manifest(container_id).await? {
         Some(m) => Ok::<_, AppError>((StatusCode::OK, Json(m))),
         None => Err(AppError::NotFound { resource: "manifest", id: container_id.to_string() }),
@@ -2356,6 +2362,7 @@ async fn customs_queue_handler(
     Path(hub_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let queue = s.hub_transfer_svc.list_customs_queue(hub_id, claims.tenant_id).await?;
     let count = queue.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
@@ -2408,6 +2415,7 @@ async fn list_locations_handler(
     Query(q): Query<HubScopedQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let locations = s.hub_transfer_svc.list_locations(q.hub_id, q.zone_id.as_deref()).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(locations)))
 }
@@ -2461,6 +2469,7 @@ async fn list_inventory_handler(
     Query(q): Query<InventoryLocationQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let items = s.hub_transfer_svc.list_inventory_at(q.location_id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(items)))
 }
@@ -2511,6 +2520,7 @@ async fn list_containers_handler(
     Query(q): Query<ListContainersQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let rows: Vec<ContainerSummaryRow> = sqlx::query_as(
         r#"SELECT id, transport_mode, origin_hub_id, destination_hub_id, status,
                   array_length(master_awbs, 1) AS awb_count,
@@ -2541,6 +2551,7 @@ async fn list_routing_handler(
     Query(q): Query<HubScopedQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let configs = s.hub_transfer_svc.list_routing_configs(q.hub_id, claims.tenant_id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(configs)))
 }

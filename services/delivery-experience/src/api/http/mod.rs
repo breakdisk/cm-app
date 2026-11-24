@@ -174,6 +174,7 @@ async fn get_by_shipment_id(
     Path(shipment_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "tenant tracking")?;
 
     // Tenant, and for merchants and customers, owner. This view carries the
     // driver's phone and position.
@@ -216,6 +217,7 @@ async fn list_shipments(
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "tenant tracking")?;
 
     let records = state
         .tracking_svc

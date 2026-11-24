@@ -3792,3 +3792,57 @@ mod partner_scope {
         let _ = (&w.repo, w.other);
     }
 }
+
+// ============================================================================
+// GET /v1/shipments/:id/events
+//
+// The timeline checked the tenant and nothing else, so any merchant, customer or
+// partner with `shipments:read` could read any shipment's events in the tenant
+// by id. These tests use a lazy database pool, so a request that gets past the
+// ownership check fails with a 500 on the query: a 404 proves the check ran
+// first.
+// ============================================================================
+
+mod shipment_events_scope {
+    use super::*;
+
+    #[tokio::test]
+    async fn another_merchant_gets_404_for_a_shipments_timeline() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let tenant_id = uuid::Uuid::new_v4();
+        let owner = uuid::Uuid::new_v4();
+        let shipment = make_shipment(tenant_id, owner, ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+        let intruder = mint_merchant_token(&jwt, tenant_id, uuid::Uuid::new_v4());
+        let resp = server
+            .get(&format!("/v1/shipments/{shipment_id}/events"))
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {intruder}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status_code(), 404, "another merchant must not read this timeline");
+    }
+
+    #[tokio::test]
+    async fn another_tenant_gets_404_for_a_shipments_timeline() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let shipment = make_shipment(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+        let other_tenant = mint_admin_token(&jwt, uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let resp = server
+            .get(&format!("/v1/shipments/{shipment_id}/events"))
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {other_tenant}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status_code(), 404);
+    }
+}

@@ -207,6 +207,7 @@ async fn get_induction(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let hubs = state.hub_svc.list_hubs(&tenant_id).await?;

@@ -460,6 +460,12 @@ async fn list_shipment_events(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    // The timeline is the shipment's, so the same by-id rule applies: tenant, the
+    // booker for merchants and customers, and the linked partner for a
+    // partner-bound token. It used to check the tenant only, so any holder of
+    // shipments:read could read any shipment's events by id.
+    let partner = partner_access(&claims)?;
+    s.query.get_for(id, &acting_as(&claims), partner).await?;
     let rows = sqlx::query(
         r#"SELECT event_type, from_status, to_status, actor_type, metadata, created_at
              FROM order_intake.shipment_events
