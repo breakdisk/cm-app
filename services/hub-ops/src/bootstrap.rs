@@ -733,7 +733,7 @@ async fn check_billing_clearance(
 // POP status HTTP client
 // ---------------------------------------------------------------------------
 
-/// Calls pod service `GET /v1/internal/pop-status?shipment_ids=...`
+/// Calls pod service `GET /v1/internal/pop-status?tenant_id=...&shipment_ids=...`
 /// Returns (all_completed, shipment_ids_missing_pop).
 ///
 /// If the pod service returns 404 the `/v1/internal/pop-status` route does not
@@ -743,6 +743,7 @@ async fn check_billing_clearance(
 /// image is redeployed with the POP endpoints.
 async fn check_pop_status(
     pod_url:      &str,
+    tenant_id:    Uuid,
     shipment_ids: &[Uuid],
 ) -> anyhow::Result<(bool, Vec<Uuid>)> {
     if pod_url.is_empty() || shipment_ids.is_empty() {
@@ -755,7 +756,7 @@ async fn check_pop_status(
         .collect::<Vec<_>>()
         .join("&");
 
-    let url = format!("{pod_url}/v1/internal/pop-status?{qs}");
+    let url = format!("{pod_url}/v1/internal/pop-status?tenant_id={tenant_id}&{qs}");
 
     let resp = client.get(&url).send().await
         .map_err(|e| anyhow::anyhow!("Failed to call pod pop-status: {e}"))?;
@@ -1115,7 +1116,7 @@ async fn load_pallet_handler(
 
     if !s.pod_url.is_empty() && !shipment_ids.is_empty() {
         let (all_completed, missing_pop) =
-            check_pop_status(&s.pod_url, &shipment_ids).await
+            check_pop_status(&s.pod_url, claims.tenant_id, &shipment_ids).await
                 .map_err(AppError::internal)?;
 
         if !all_completed {
@@ -1200,7 +1201,7 @@ async fn load_loose_piece_handler(
 
     if !s.pod_url.is_empty() && !shipment_ids.is_empty() {
         let (all_completed, missing_pop) =
-            check_pop_status(&s.pod_url, &shipment_ids).await
+            check_pop_status(&s.pod_url, claims.tenant_id, &shipment_ids).await
                 .map_err(AppError::internal)?;
 
         if !all_completed {
@@ -2115,7 +2116,7 @@ async fn record_scan_handler(
     // POP-before-InboundReceive gate.
     if matches!(req.scan_type, ScanType::InboundReceive) && !s.pod_url.is_empty() {
         let (all_completed, missing_pop) =
-            check_pop_status(&s.pod_url, &[req.shipment_id]).await.map_err(AppError::internal)?;
+            check_pop_status(&s.pod_url, claims.tenant_id, &[req.shipment_id]).await.map_err(AppError::internal)?;
         if !all_completed {
             return Ok::<_, AppError>((
                 StatusCode::UNPROCESSABLE_ENTITY,

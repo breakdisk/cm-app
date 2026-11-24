@@ -58,7 +58,13 @@ impl ShipmentBillingContextSource for OrderIntakeClient {
         let resp = self.http
             .get(&url)
             .send()
-            .await?
+            .await?;
+        // An explicit 404 is the one answer that says the shipment does not
+        // exist; every other failure is an outage and must not block capture.
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow::Error::new(crate::domain::repositories::ShipmentNotFound(shipment_id)));
+        }
+        let resp = resp
             .error_for_status()?
             .json::<BillingContextResponse>()
             .await?;

@@ -128,23 +128,15 @@ impl PodRepository for PgPodRepository {
         Ok(row.map(ProofOfDelivery::from))
     }
 
-    async fn find_by_shipment_internal(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
-        let row = sqlx::query_as::<_, PodRow>(
-            r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
-                      signature_data, recipient_name, photos,
-                      capture_lat, capture_lng, geofence_verified,
-                      COALESCE(out_of_bounds_handover, false) AS out_of_bounds_handover,
-                      device_timestamp,
-                      otp_verified, otp_id, cod_collected_cents,
-                      requires_photo, requires_signature,
-                      captured_at, created_at
-               FROM pod.proofs WHERE shipment_id = $1
-               ORDER BY created_at DESC LIMIT 1"#
+    async fn exists_for_other_tenant(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<bool> {
+        let found: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pod.proofs WHERE shipment_id = $1 AND tenant_id <> $2)",
         )
         .bind(shipment_id)
-        .fetch_optional(&self.pool)
+        .bind(tenant_id)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(row.map(ProofOfDelivery::from))
+        Ok(found)
     }
 
     async fn save(&self, pod: &ProofOfDelivery) -> anyhow::Result<()> {

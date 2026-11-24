@@ -64,7 +64,7 @@ async fn public_track(
         Ok(record) => {
             // Optional POP/POD photos from the pod service. Best-effort: a miss
             // degrades to absent evidence, never a 500.
-            let evidence = state.pod_client.get_evidence(record.shipment_id).await;
+            let evidence = state.pod_client.get_evidence(record.tenant_id.inner(), record.shipment_id).await;
 
             // Timeline: the customer tracking portal reads `events[]` with
             // { status, description, location, occurred_at } — the StatusEvent
@@ -183,7 +183,7 @@ async fn get_by_shipment_id(
     // Fetch POP + POD evidence from the pod service (non-blocking; optional).
     // Failure is logged by PodClient and surfaced as None so the tracking
     // response degrades gracefully instead of returning 500.
-    let evidence = state.pod_client.get_evidence(record.shipment_id).await;
+    let evidence = state.pod_client.get_evidence(record.tenant_id.inner(), record.shipment_id).await;
 
     // Build the enriched response: start with all TrackingRecord fields, then
     // inject the nested `pop` and `pod` evidence objects the merchant portal

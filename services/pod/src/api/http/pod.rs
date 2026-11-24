@@ -13,7 +13,40 @@ use crate::{
 
 #[derive(serde::Deserialize)]
 pub struct PopStatusQuery {
+    /// The tenant that owns the shipments. Required: the mesh caller already holds it.
+    pub tenant_id:    Uuid,
     pub shipment_ids: Vec<Uuid>,
+}
+
+impl PopStatusQuery {
+    /// Parses `tenant_id=<uuid>&shipment_ids=<uuid>&shipment_ids=<uuid>...`.
+    /// `axum::extract::Query` cannot read a repeated key into a `Vec`, so the
+    /// repeated form every caller uses was a 400 on every request. UUIDs need no
+    /// percent-decoding. A missing or malformed `tenant_id` is an error.
+    pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+        let mut tenant_id = None;
+        let mut shipment_ids = Vec::new();
+        for pair in raw.unwrap_or_default().split('&').filter(|p| !p.is_empty()) {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            match k {
+                "tenant_id" => {
+                    tenant_id = Some(v.parse::<Uuid>().map_err(|_| "tenant_id must be a UUID".to_string())?);
+                }
+                "shipment_ids" => {
+                    shipment_ids.push(v.parse::<Uuid>().map_err(|_| "shipment_ids must be UUIDs".to_string())?);
+                }
+                _ => {}
+            }
+        }
+        let tenant_id = tenant_id.ok_or_else(|| "tenant_id query parameter is required".to_string())?;
+        Ok(Self { tenant_id, shipment_ids })
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct EvidenceQuery {
+    /// The tenant that owns the shipment. Required.
+    pub tenant_id: Uuid,
 }
 
 #[derive(serde::Deserialize)]
@@ -368,7 +401,7 @@ pub async fn list_pops(
     }
 }
 
-/// `GET /v1/internal/pop-evidence/:shipment_id`
+/// `GET /v1/internal/pop-evidence/:shipment_id?tenant_id=<uuid>` (tenant_id required)
 ///
 /// Internal service-to-service endpoint (no JWT — protected by Istio mTLS).
 /// Called by the delivery-experience service to enrich tracking responses with
@@ -383,16 +416,18 @@ pub async fn list_pops(
 /// ```
 pub async fn get_evidence_internal(
     Path(shipment_id): Path<Uuid>,
+    Query(q): Query<EvidenceQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let tenant_id = TenantId::from_uuid(q.tenant_id);
     // Fetch the submitted POP for this shipment (if any).
-    let pop_view = match state.pod_service.get_completed_pop_by_shipment(shipment_id).await? {
+    let pop_view = match state.pod_service.get_completed_pop_by_shipment(&tenant_id, shipment_id).await? {
         Some(ref pop) => Some(state.pod_service.pop_to_view(pop).await),
         None          => None,
     };
 
     // Fetch the POD for this shipment (if any). Use all-photos evidence view.
-    let pod_view = match state.pod_service.get_by_shipment_internal(shipment_id).await? {
+    let pod_view = match state.pod_service.get_by_shipment(&tenant_id, shipment_id).await? {
         Some(ref pod) => Some(state.pod_service.pod_evidence_to_view(pod).await),
         None          => None,
     };
@@ -403,7 +438,7 @@ pub async fn get_evidence_internal(
     })))
 }
 
-/// `GET /v1/internal/pop-status?shipment_ids=<uuid>&shipment_ids=<uuid>...`
+/// `GET /v1/internal/pop-status?tenant_id=<uuid>&shipment_ids=<uuid>&shipment_ids=<uuid>...` (tenant_id required)
 ///
 /// Internal service-to-service endpoint (no JWT — protected by Istio mTLS).
 /// Called by hub-ops before loading a pallet or loose piece into a container.
@@ -411,14 +446,25 @@ pub async fn get_evidence_internal(
 /// Returns per-shipment POP completion status. A POP is "completed" when its
 /// status is `Submitted`.
 pub async fn pop_status_internal(
-    Query(q): Query<PopStatusQuery>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let q = match PopStatusQuery::parse(raw.as_deref()) {
+        Ok(q) => q,
+        Err(m) => {
+            return (axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": m }))).into_response();
+        }
+    };
+    let tenant_id = TenantId::from_uuid(q.tenant_id);
     let mut statuses = Vec::with_capacity(q.shipment_ids.len());
     let mut all_completed = true;
 
     for shipment_id in &q.shipment_ids {
-        let pop = state.pod_service.get_completed_pop_by_shipment(*shipment_id).await?;
+        let pop = match state.pod_service.get_completed_pop_by_shipment(&tenant_id, *shipment_id).await {
+            Ok(p) => p,
+            Err(e) => return e.into_response(),
+        };
         let has_completed_pop = pop.is_some();
         if !has_completed_pop {
             all_completed = false;
@@ -429,10 +475,31 @@ pub async fn pop_status_internal(
         }));
     }
 
-    Ok(Json(serde_json::json!({
+    Json(serde_json::json!({
         "statuses":      statuses,
         "all_completed": all_completed,
-    })))
+    }))
+    .into_response()
+}
+
+#[cfg(test)]
+mod pop_status_query_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_shipment_ids_and_a_tenant_parse() {
+        let (t, a, b) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let q = PopStatusQuery::parse(Some(&format!("tenant_id={t}&shipment_ids={a}&shipment_ids={b}"))).unwrap();
+        assert_eq!((q.tenant_id, q.shipment_ids), (t, vec![a, b]));
+    }
+
+    #[test]
+    fn tenant_is_required() {
+        let a = Uuid::new_v4();
+        assert!(PopStatusQuery::parse(Some(&format!("shipment_ids={a}"))).is_err());
+        assert!(PopStatusQuery::parse(None).is_err());
+        assert!(PopStatusQuery::parse(Some("tenant_id=nope")).is_err());
+    }
 }
 
 #[cfg(test)]

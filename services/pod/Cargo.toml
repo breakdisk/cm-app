@@ -47,6 +47,9 @@ aws-sdk-s3.workspace   = true
 aws-config.workspace   = true
 rand.workspace         = true
 
+[dev-dependencies]
+tower.workspace = true
+
 # The unit suite only. `tests/integration/mod.rs` has ~29 compile errors against
 # the current API — the POP/telemetry work moved a lot here — and wants its own pass.
 #

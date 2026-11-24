@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 /// HTTP client for fetching POP + POD evidence from the pod service.
 ///
-/// Calls the internal `/v1/internal/pop-evidence/:shipment_id` endpoint which
+/// Calls the internal `/v1/internal/pop-evidence/:shipment_id?tenant_id=` endpoint which
 /// requires no JWT — it is protected by Istio mTLS in production and by the
 /// private Docker network in staging/dev.
 ///
@@ -27,11 +27,12 @@ impl PodClient {
     ///
     /// Returns `None` on any network or parse error — callers treat absent
     /// evidence as optional and return the tracking record without it.
-    pub async fn get_evidence(&self, shipment_id: Uuid) -> Option<serde_json::Value> {
+    pub async fn get_evidence(&self, tenant_id: Uuid, shipment_id: Uuid) -> Option<serde_json::Value> {
         let url = format!(
-            "{}/v1/internal/pop-evidence/{}",
+            "{}/v1/internal/pop-evidence/{}?tenant_id={}",
             self.base_url.trim_end_matches('/'),
             shipment_id,
+            tenant_id,
         );
 
         let resp = self.inner

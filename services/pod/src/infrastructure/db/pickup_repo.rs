@@ -119,18 +119,30 @@ impl PickupRepository for PgPickupRepository {
         Ok(row.map(ProofOfPickup::from))
     }
 
-    async fn find_completed_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>> {
+    async fn find_completed_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>> {
         // The unique partial index `uq_pop_shipment_submitted` on (shipment_id)
         // WHERE status = 'submitted' guarantees at most one row matches.
         let sql = format!(
             "SELECT {SELECT_COLS} FROM pod.proofs_of_pickup \
-             WHERE shipment_id = $1 AND status = 'submitted' LIMIT 1"
+             WHERE shipment_id = $1 AND tenant_id = $2 AND status = 'submitted' LIMIT 1"
         );
         let row = sqlx::query_as::<_, PopRow>(&sql)
             .bind(shipment_id)
+            .bind(tenant_id)
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(ProofOfPickup::from))
+    }
+
+    async fn exists_for_other_tenant(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<bool> {
+        let found: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pod.proofs_of_pickup WHERE shipment_id = $1 AND tenant_id <> $2)",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(found)
     }
 
     async fn save(&self, pop: &ProofOfPickup) -> anyhow::Result<()> {

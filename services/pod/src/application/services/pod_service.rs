@@ -89,6 +89,12 @@ impl PodService {
         // by the old driver and the ownership check on submit would 403.
         // Instead we error out and let an operator delete the stale draft —
         // surfacing the inconsistency rather than silently overwriting it.
+        // A shipment another tenant already holds a POD for is not this tenant's
+        // to open evidence on. Answer exactly as for a missing shipment (no oracle).
+        if self.pod_repo.exists_for_other_tenant(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
+            return Err(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() });
+        }
+
         if let Some(existing) = self.pod_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
                 return Ok(existing);
@@ -395,6 +401,11 @@ impl PodService {
         tenant_id: &TenantId,
         cmd: InitiatePickupCommand,
     ) -> AppResult<ProofOfPickup> {
+        // See `initiate`: another tenant's shipment reads as a missing one.
+        if self.pickup_repo.exists_for_other_tenant(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
+            return Err(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() });
+        }
+
         // Idempotency: return existing draft if this driver already started one.
         if let Some(existing) = self.pickup_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
@@ -440,7 +451,7 @@ impl PodService {
                 &cmd.service_code,
                 cmd.declared_value_cents,
             )
-            .await;
+            .await?;
 
         let pop = ProofOfPickup::new(
             tenant_id.inner(),
@@ -506,14 +517,14 @@ impl PodService {
         shipment_id:                 Uuid,
         client_service_code:         &str,
         client_declared_value_cents: Option<i64>,
-    ) -> (String, Option<i64>) {
+    ) -> AppResult<(String, Option<i64>)> {
         let Some(source) = self.shipment_ctx.as_ref() else {
             tracing::warn!(
                 shipment_id = %shipment_id,
                 "ORDER_INTAKE_URL not configured — POP billing track taken from the \
                  driver device. Track A ledger debits may be missed or misvalued."
             );
-            return (client_service_code.to_string(), client_declared_value_cents);
+            return Ok((client_service_code.to_string(), client_declared_value_cents));
         };
 
         match source.fetch(shipment_id).await {
@@ -536,7 +547,12 @@ impl PodService {
                          booking — the driver ledger debit will not fire for this pickup"
                     );
                 }
-                (ctx.service_code, ctx.declared_value_cents)
+                Ok((ctx.service_code, ctx.declared_value_cents))
+            }
+            // An explicit "no such shipment" refuses; anything else is an outage,
+            // and an order-intake outage must never block capture.
+            Err(e) if e.downcast_ref::<crate::domain::repositories::ShipmentNotFound>().is_some() => {
+                Err(AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })
             }
             Err(e) => {
                 tracing::error!(
@@ -546,7 +562,7 @@ impl PodService {
                      falling back to device-supplied values. A Balikbayan pickup may \
                      not debit the driver ledger."
                 );
-                (client_service_code.to_string(), client_declared_value_cents)
+                Ok((client_service_code.to_string(), client_declared_value_cents))
             }
         }
     }
@@ -815,19 +831,13 @@ impl PodService {
     /// Retrieve the *completed* (submitted) POP for a shipment.
     /// Returns `None` when pickup has not yet been captured or is still in draft.
     /// Used by `pop_status_internal` and the carrier container-load guard.
-    pub async fn get_completed_pop_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
-        self.pickup_repo.find_completed_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    pub async fn get_completed_pop_by_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
+        self.pickup_repo.find_completed_by_shipment(tenant_id.inner(), shipment_id).await.map_err(AppError::Internal)
     }
 
     /// Retrieve the most recent POD for a shipment (for admin portal panel).
     pub async fn get_by_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
         self.pod_repo.find_by_shipment(tenant_id.inner(), shipment_id).await.map_err(AppError::Internal)
-    }
-
-    /// Mesh-internal evidence read (no caller identity). Never call from a
-    /// handler that holds a user token: use [`Self::get_by_shipment`].
-    pub async fn get_by_shipment_internal(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
-        self.pod_repo.find_by_shipment_internal(shipment_id).await.map_err(AppError::Internal)
     }
 
     /// Map a POP entity to the JSON shape expected by the admin portal.
