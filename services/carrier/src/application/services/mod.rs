@@ -227,12 +227,28 @@ impl CarrierService {
 
     /// Called by `POST /v1/internal/sla-records` when dispatch allocates a carrier
     /// to a shipment. Creates the SLA record and publishes a `carrier.allocated` event.
+    ///
+    /// The carrier is loaded first and must belong to `record.tenant_id`. A carrier
+    /// that does not exist and one that belongs to another tenant are refused with
+    /// the same `NotFound`, so a caller cannot probe which carrier ids exist in
+    /// other tenants. Nothing is written, published or sent before that check.
     pub async fn create_sla_record(
         &self,
         record: SlaRecord,
         total_cost_cents: i64,
         method: String,
     ) -> AppResult<SlaRecord> {
+        let carrier = self
+            .repo
+            .find_by_id(&CarrierId::from_uuid(record.carrier_id))
+            .await
+            .map_err(AppError::internal)?
+            .filter(|c| c.tenant_id.inner() == record.tenant_id)
+            .ok_or_else(|| AppError::NotFound {
+                resource: "Carrier",
+                id: record.carrier_id.to_string(),
+            })?;
+
         self.sla_repo.create(&record).await.map_err(AppError::internal)?;
 
         let payload = logisticos_events::payloads::CarrierAllocated {
@@ -250,24 +266,19 @@ impl CarrierService {
         }
 
         // Push outbound webhook to the carrier's registered api_endpoint (best-effort).
-        if let Ok(Some(carrier)) = self.repo
-            .find_by_id(&crate::domain::entities::CarrierId::from_uuid(record.carrier_id))
-            .await
-        {
-            if let Some(ref endpoint) = carrier.api_endpoint {
-                let notif = crate::infrastructure::external::CarrierShipmentNotification {
-                    event:           "shipment.allocated",
-                    shipment_id:     record.shipment_id.to_string(),
-                    awb:             String::new(),
-                    service_type:    record.service_level.clone(),
-                    zone:            record.zone.clone(),
-                    promised_by:     record.promised_by.to_rfc3339(),
-                    pickup_address:  None,
-                    dropoff_address: None,
-                    weight_kg:       None,
-                };
-                self.external_client.notify_shipment_allocated(endpoint, &notif).await;
-            }
+        if let Some(ref endpoint) = carrier.api_endpoint {
+            let notif = crate::infrastructure::external::CarrierShipmentNotification {
+                event:           "shipment.allocated",
+                shipment_id:     record.shipment_id.to_string(),
+                awb:             String::new(),
+                service_type:    record.service_level.clone(),
+                zone:            record.zone.clone(),
+                promised_by:     record.promised_by.to_rfc3339(),
+                pickup_address:  None,
+                dropoff_address: None,
+                weight_kg:       None,
+            };
+            self.external_client.notify_shipment_allocated(endpoint, &notif).await;
         }
 
         Ok(record)
@@ -393,5 +404,194 @@ impl CarrierService {
         carrier.updated_at = chrono::Utc::now();
         self.repo.save(&carrier).await.map_err(AppError::internal)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sla_record_tests {
+    use super::*;
+    use std::sync::Mutex;
+    use chrono::{DateTime, Utc};
+    use logisticos_events::{producer::KafkaProducer, topics};
+    use rdkafka::{
+        config::ClientConfig,
+        consumer::{Consumer, StreamConsumer},
+    };
+    use std::time::Duration;
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
+
+    use crate::infrastructure::messaging::CarrierPublisher;
+
+    #[derive(Default)]
+    struct FakeCarriers {
+        carriers: Mutex<Vec<Carrier>>,
+        fail:     bool,
+    }
+
+    #[async_trait::async_trait]
+    impl CarrierRepository for FakeCarriers {
+        async fn find_by_id(&self, id: &CarrierId) -> anyhow::Result<Option<Carrier>> {
+            if self.fail { anyhow::bail!("database unavailable") }
+            Ok(self.carriers.lock().unwrap().iter().find(|c| c.id == *id).cloned())
+        }
+        async fn find_by_code(&self, _: &TenantId, _: &str) -> anyhow::Result<Option<Carrier>> { Ok(None) }
+        async fn find_by_contact_email(&self, _: &TenantId, _: &str) -> anyhow::Result<Option<Carrier>> { Ok(None) }
+        async fn list(&self, _: &TenantId, _: i64, _: i64) -> anyhow::Result<Vec<Carrier>> { Ok(vec![]) }
+        async fn list_active(&self, _: &TenantId) -> anyhow::Result<Vec<Carrier>> { Ok(vec![]) }
+        async fn save(&self, _: &Carrier) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    #[derive(Default)]
+    struct RecordingSla {
+        created: Mutex<Vec<SlaRecord>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SlaRecordRepository for RecordingSla {
+        async fn create(&self, r: &SlaRecord) -> anyhow::Result<()> {
+            self.created.lock().unwrap().push(r.clone());
+            Ok(())
+        }
+        async fn find_by_shipment(&self, _: Uuid) -> anyhow::Result<Option<SlaRecord>> { Ok(None) }
+        async fn save_outcome(&self, _: &SlaRecord) -> anyhow::Result<()> { Ok(()) }
+        async fn list_by_carrier(&self, _: Uuid, _: i64, _: i64) -> anyhow::Result<Vec<SlaRecord>> { Ok(vec![]) }
+        async fn breach_reasons(&self, _: Uuid, _: DateTime<Utc>, _: DateTime<Utc>) -> anyhow::Result<Vec<crate::domain::repositories::BreachReasonRow>> { Ok(vec![]) }
+        async fn zone_summary(&self, _: Uuid, _: DateTime<Utc>, _: DateTime<Utc>) -> anyhow::Result<Vec<ZoneSlaRow>> { Ok(vec![]) }
+    }
+
+    struct Harness {
+        svc:      CarrierService,
+        sla:      Arc<RecordingSla>,
+        brokers:  String,
+    }
+
+    /// An in-process broker (the publisher holds a concrete `KafkaProducer`),
+    /// whose address lets a test read the allocation topic back.
+    fn harness(repo: FakeCarriers) -> Harness {
+        let cluster = rdkafka::mocking::MockCluster::new(1).expect("mock kafka cluster");
+        let brokers = cluster.bootstrap_servers();
+        Box::leak(Box::new(cluster));
+        let producer = Arc::new(KafkaProducer::new(&brokers).expect("producer"));
+        let sla = Arc::new(RecordingSla::default());
+        let svc = CarrierService::new(
+            Arc::new(repo),
+            sla.clone(),
+            Arc::new(CarrierPublisher::new(producer)),
+            Arc::new(crate::infrastructure::external::ExternalCarrierClient::new(None)),
+        );
+        Harness { svc, sla, brokers }
+    }
+
+    fn carrier(tenant: Uuid, endpoint: Option<String>) -> Carrier {
+        let mut c = Carrier::new(
+            TenantId::from_uuid(tenant),
+            "Acme".into(),
+            "ACME".into(),
+            "ops@acme.test".into(),
+            SlaCommitment::default(),
+        );
+        c.api_endpoint = endpoint;
+        c
+    }
+
+    fn record(tenant: Uuid, carrier_id: Uuid) -> SlaRecord {
+        SlaRecord::new(
+            tenant,
+            carrier_id,
+            Uuid::new_v4(),
+            "metro-manila".into(),
+            "standard".into(),
+            Utc::now() + chrono::Duration::hours(48),
+        )
+    }
+
+    /// Whether anything is on the allocation topic. The consumer is created
+    /// afterwards so it sees the topic as it stands once the call has returned.
+    async fn published(h: &Harness, wait: Duration) -> bool {
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &h.brokers)
+            .set("group.id", "sla-record-tests")
+            .set("auto.offset.reset", "earliest")
+            .create()
+            .expect("consumer");
+        consumer.subscribe(&[topics::CARRIER_ALLOCATED]).expect("subscribe");
+        tokio::time::timeout(wait, consumer.recv()).await.is_ok_and(|m| m.is_ok())
+    }
+
+    /// Answers one HTTP request with 200 so the webhook client sees success.
+    async fn serve_one(listener: TcpListener) {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        }
+    }
+
+    #[tokio::test]
+    async fn sla_record_for_own_carrier_is_created() {
+        let tenant = Uuid::new_v4();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let endpoint = format!("http://{}/hook", listener.local_addr().expect("addr"));
+        let own = carrier(tenant, Some(endpoint));
+        let rec = record(tenant, own.id.inner());
+        let h = harness(FakeCarriers { carriers: Mutex::new(vec![own]), fail: false });
+        let server = tokio::spawn(serve_one(listener));
+
+        let saved = h.svc.create_sla_record(rec.clone(), 1_500, "hub_auto".into()).await
+            .expect("own carrier is allocated");
+
+        assert_eq!(saved.shipment_id, rec.shipment_id);
+        assert_eq!(h.sla.created.lock().unwrap().len(), 1);
+        assert!(published(&h, Duration::from_secs(10)).await, "carrier.allocated is published");
+        tokio::time::timeout(Duration::from_secs(5), server).await
+            .expect("the carrier's webhook is called").expect("server task");
+    }
+
+    #[tokio::test]
+    async fn sla_record_for_another_tenants_carrier_is_refused_and_writes_nothing() {
+        let (tenant_a, tenant_b) = (Uuid::new_v4(), Uuid::new_v4());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let endpoint = format!("http://{}/hook", listener.local_addr().expect("addr"));
+        let foreign = carrier(tenant_b, Some(endpoint));
+        let rec = record(tenant_a, foreign.id.inner());
+        let h = harness(FakeCarriers { carriers: Mutex::new(vec![foreign]), fail: false });
+
+        let err = h.svc.create_sla_record(rec, 1_500, "hub_auto".into()).await
+            .expect_err("another tenant's carrier is refused");
+
+        assert!(matches!(err, AppError::NotFound { .. }), "got {err:?}");
+        assert!(h.sla.created.lock().unwrap().is_empty(), "no SLA record inserted");
+        assert!(!published(&h, Duration::from_secs(2)).await, "nothing published");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), listener.accept()).await.is_err(),
+            "the foreign carrier's webhook was not called"
+        );
+    }
+
+    #[tokio::test]
+    async fn sla_record_for_unknown_carrier_is_refused() {
+        let tenant = Uuid::new_v4();
+        let h = harness(FakeCarriers::default());
+
+        let err = h.svc.create_sla_record(record(tenant, Uuid::new_v4()), 0, "hub_auto".into()).await
+            .expect_err("unknown carrier is refused");
+
+        assert!(matches!(err, AppError::NotFound { .. }), "got {err:?}");
+        assert!(h.sla.created.lock().unwrap().is_empty());
+        assert!(!published(&h, Duration::from_secs(2)).await, "nothing published");
+    }
+
+    #[tokio::test]
+    async fn sla_record_is_refused_when_the_carrier_lookup_fails() {
+        let tenant = Uuid::new_v4();
+        let own = carrier(tenant, None);
+        let rec = record(tenant, own.id.inner());
+        let h = harness(FakeCarriers { carriers: Mutex::new(vec![own]), fail: true });
+
+        let err = h.svc.create_sla_record(rec, 0, "hub_auto".into()).await
+            .expect_err("a lookup failure never falls through to the insert");
+
+        assert!(!matches!(err, AppError::NotFound { .. }), "a DB failure is not a not-found: {err:?}");
+        assert!(h.sla.created.lock().unwrap().is_empty());
     }
 }
