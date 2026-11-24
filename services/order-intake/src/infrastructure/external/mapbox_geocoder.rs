@@ -71,9 +71,11 @@ pub fn quality_from_mapbox(
     };
 
     match confidence.map(|c| c.trim().to_ascii_lowercase()).as_deref() {
+        None           => base,
+        Some("exact") | Some("high") => base,
         Some("medium") => base.capped_at(GeocodeQuality::Interpolated),
-        Some("low")    => base.capped_at(GeocodeQuality::Locality),
-        _              => base,
+        // `low`, and any value this build does not recognise: fail closed.
+        Some(_)        => base.capped_at(GeocodeQuality::Locality),
     }
 }
 
@@ -329,9 +331,22 @@ mod tests {
 
     #[test]
     fn exact_high_or_missing_confidence_does_not_cap() {
-        for c in [Some("exact"), Some("high"), None, Some("weird")] {
+        for c in [Some("exact"), Some("high"), None] {
             assert_eq!(quality_from_mapbox("address", Some("rooftop"), c), Rooftop, "{c:?}");
         }
+    }
+
+    #[test]
+    fn unrecognized_confidence_caps_at_locality() {
+        // A confidence value this build does not know is not evidence of
+        // precision: fail closed, like the quality table does.
+        for c in ["weird", "", "very_high", "exactish"] {
+            assert_eq!(quality_from_mapbox("address", Some("rooftop"), Some(c)), Locality, "{c:?}");
+        }
+        // Still never raises: below the cap stays put.
+        assert_eq!(quality_from_mapbox("", None, Some("weird")), Unknown);
+        // Absent confidence is unchanged.
+        assert_eq!(quality_from_mapbox("address", Some("rooftop"), None), Rooftop);
     }
 
     // ── What is stored, with and without permanent geocoding ────────────────
