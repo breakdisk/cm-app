@@ -10,6 +10,11 @@ Creates `identity.partner_memberships` rows for partner users that existed befor
 the `pid` token claim. Required before `AUTH__ENFORCE_PARTNER_SCOPE=true`:
 without a membership, a partner's next token has no `pid` and is refused.
 
+**Run `partner-shipment-links.sh` first.** A `pid` takes effect at the user's next
+login or refresh, not when scoping is enforced, and from then on the partner sees
+only linked shipments. Memberships before links blank the partner's shipment list.
+The full order is in [the rollout runbook](../../docs/runbooks/neighborhood-phase-0-rollout.md).
+
 ```bash
 # production VPS: psql runs inside the postgres container
 export PSQL="docker exec -i logisticos-postgres psql -U logisticos"
@@ -43,8 +48,10 @@ TEST_CONTAINER=my-disposable-postgres bash scripts/backfill/test-partner-members
 
 Fills `order_intake.shipment_partner_links` for shipments a carrier handled before
 the link consumer existed. A partner token is scoped to linked shipments, so
-without this a partner would lose sight of its own history when scoping is
-enforced. Sources: `carrier.sla_records` (allocations) and `driver_ops.tasks`
+without this a partner would lose sight of its own history as soon as their
+token first carries `pid` (their next login or refresh), whether or not scoping is
+enforced yet. Run this **before** `partner-memberships.sh`; see
+[the rollout runbook](../../docs/runbooks/neighborhood-phase-0-rollout.md). Sources: `carrier.sla_records` (allocations) and `driver_ops.tasks`
 joined to drivers that belong to a carrier.
 
 ```bash

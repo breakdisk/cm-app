@@ -433,7 +433,7 @@ AND (SELECT COUNT(*) FROM driver_ops.tasks t WHERE t.route_id = $1)
 Each deploy step needs the owner's go-ahead. Nothing here runs without it.
 
 - [ ] **Step 1:** Deploy all images with `AUTH__ENFORCE_PARTNER_SCOPE=false` and `DISPATCH__CLOSE_ASSIGNMENTS=false`.
-- [ ] **Step 2:** Run both backfills with `--dry-run`, review unmatched rows with the owner, then `--apply`.
+- [ ] **Step 2:** Run the links backfill first (`--dry-run`, review, `--apply`) and check its counts, then the membership backfill. Order matters: a `pid` takes effect at the user's next login or refresh, so memberships before links leave a partner with an empty shipment list. See `docs/runbooks/neighborhood-phase-0-rollout.md`.
 - [ ] **Step 3:** Wait one full token lifetime, then confirm the `partner_scope_missing_pid` log count is zero for that period.
 - [ ] **Step 4:** Set `AUTH__ENFORCE_PARTNER_SCOPE=true`. Confirm an existing partner login still loads Dashboard, Orders, Drivers, Manifests, SLA and Payouts.
 - [ ] **Step 5:** Set `DISPATCH__CLOSE_ASSIGNMENTS=true`. Confirm a real rider finishes a job and receives another.

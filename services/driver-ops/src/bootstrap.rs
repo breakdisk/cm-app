@@ -21,6 +21,7 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: otlp.as_deref(),
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
 
     tracing::info!(env = %cfg.app.env, "driver-ops service starting");
 

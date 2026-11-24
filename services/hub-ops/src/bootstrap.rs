@@ -1934,6 +1934,7 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: otlp.as_deref(),
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
 
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)

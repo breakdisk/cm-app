@@ -91,7 +91,14 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+          description: >-
+            Validation failed: an invalid or half-given customer pin, or an
+            address part that exceeds its length limit (`VALIDATION_ERROR`).
+            Never 400.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -398,7 +405,7 @@ components:
           maximum: 90
           description: >-
             Latitude of the location the customer confirmed on a map. Give it
-            with pin_lng or not at all; one alone is a 400. (0, 0) is refused.
+            with pin_lng or not at all; one alone is a 422 (`VALIDATION_ERROR`). (0, 0) is refused with 422 too.
             A valid pin becomes the destination coordinates and records the
             geocoding source as customer_pin. It does not raise the geocode
             quality: a quality rating does not prove the pin is the customer's

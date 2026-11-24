@@ -126,6 +126,7 @@ Geocoder results normalize to a quality level through a provider adapter, and un
 - Stores become a new operational dependency, so fallback paths must stay healthy.
 - Sharing recipient data with independent stores creates PDPA obligations that need legal review.
 - Dispatch still reads `driver_ops` across schemas to validate riders. This follows the existing pattern and remains accepted debt.
+- Dispatch's assignment close reads `driver_ops.tasks` in the shared `svc_driver_ops` database (precedent: `dispatch_queue_repo.rs`), which couples dispatch to that table's layout. The expected task count recorded on the assignment is what keeps the close correct as job shapes change: finished tasks are compared with what dispatch emitted, not with a shape inferred from route stops.
 
 **Rollout traps**
 

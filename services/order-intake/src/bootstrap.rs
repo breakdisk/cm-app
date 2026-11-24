@@ -31,6 +31,8 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: None,
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
+    tracing::info!(permanent_geocoding = cfg.mapbox.permanent_geocoding, "geocoding mode (MAPBOX__PERMANENT_GEOCODING)");
 
     // Database
     let pool = PgPoolOptions::new()

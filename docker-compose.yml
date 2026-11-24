@@ -417,6 +417,11 @@ services:
     ports:
       - 8004:8004
     environment:
+      # Phase 0 rollout flag. Read once per process: flip on all seven services
+      # together (docs/runbooks/neighborhood-phase-0-rollout.md).
+      AUTH__ENFORCE_PARTNER_SCOPE: "false"
+      # Mapbox permanent (storable, separately priced) geocoding.
+      MAPBOX__PERMANENT_GEOCODING: "false"
       # Promo codes at quote and booking. Unset, quotes simply carry no
       # discount; a quote that asked for a code says promotions is unavailable.
       SERVICES__PROMOTIONS_URL: http://promotions:8022
@@ -497,6 +502,11 @@ services:
     ports:
       - 8005:8005
     environment:
+      # Phase 0 rollout flag. Read once per process: flip on all seven services
+      # together (docs/runbooks/neighborhood-phase-0-rollout.md).
+      AUTH__ENFORCE_PARTNER_SCOPE: "false"
+      # Writes `completed` assignments when work finishes. Turn on only once every dispatch replica runs >= 83045370.
+      DISPATCH__CLOSE_ASSIGNMENTS: "false"
       APP__HOST: "0.0.0.0"
       APP__PORT: "8005"
       APP__ENV: development
@@ -550,6 +560,9 @@ services:
     ports:
       - 8006:8006
     environment:
+      # Phase 0 rollout flag. Read once per process: flip on all seven services
+      # together (docs/runbooks/neighborhood-phase-0-rollout.md).
+      AUTH__ENFORCE_PARTNER_SCOPE: "false"
       APP__HOST: "0.0.0.0"
       APP__PORT: "8006"
       APP__ENV: development
@@ -609,6 +622,9 @@ services:
     ports:
       - 8007:8007
     environment:
+      # Phase 0 rollout flag. Read once per process: flip on all seven services
+      # together (docs/runbooks/neighborhood-phase-0-rollout.md).
+      AUTH__ENFORCE_PARTNER_SCOPE: "false"
       APP__HOST: "0.0.0.0"
       APP__PORT: "8007"
       APP__ENV: development
@@ -716,6 +732,9 @@ services:
     ports:
       - 8009:8009
     environment:
+      # Phase 0 rollout flag. Read once per process: flip on all seven services
+      # together (docs/runbooks/neighborhood-phase-0-rollout.md).
+      AUTH__ENFORCE_PARTNER_SCOPE: "false"
       APP__HOST: "0.0.0.0"
       APP__PORT: "8009"
       APP__ENV: development
@@ -892,6 +911,9 @@ services:
     ports:
       - 8012:8012
     environment:
+      # Phase 0 rollout flag. Read once per process: flip on all seven services
+      # together (docs/runbooks/neighborhood-phase-0-rollout.md).
+      AUTH__ENFORCE_PARTNER_SCOPE: "false"
       APP__HOST: "0.0.0.0"
       APP__PORT: "8012"
       APP__ENV: development
@@ -978,6 +1000,9 @@ services:
     ports:
       - 8013:8013
     environment:
+      # Phase 0 rollout flag. Read once per process: flip on all seven services
+      # together (docs/runbooks/neighborhood-phase-0-rollout.md).
+      AUTH__ENFORCE_PARTNER_SCOPE: "false"
       APP__HOST: "0.0.0.0"
       APP__PORT: "8013"
       APP__ENV: development

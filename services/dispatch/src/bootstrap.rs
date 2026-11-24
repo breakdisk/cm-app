@@ -27,6 +27,8 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: otlp.as_deref(),
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
+    tracing::info!(close_assignments = cfg.dispatch.close_assignments, "assignment close mode (DISPATCH__CLOSE_ASSIGNMENTS)");
 
     tracing::info!(env = %cfg.app.env, "dispatch service starting");
 

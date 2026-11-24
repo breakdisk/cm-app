@@ -20,6 +20,7 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: None,
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
 
     // Connect without search_path first so migrations can create the schema
     let pre_pool = PgPoolOptions::new()
