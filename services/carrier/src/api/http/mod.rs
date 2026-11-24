@@ -147,19 +147,18 @@ pub fn router() -> Router<AppState> {
         .route("/v1/marketplace/bookings/:booking_id/accept",  post(accept_booking))
         .route("/v1/marketplace/bookings/:booking_id/reject",  post(reject_booking))
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
-        // Internal — called by dispatch when allocating a carrier to a shipment
+        // Internal — called by dispatch when allocating a carrier to a shipment.
+        // JWT-protected like the rest of router(); body tenant_id must match it.
         .route("/v1/internal/sla-records",                     post(create_sla_record))
 }
 
 /// Mesh-internal routes, mounted *outside* the JWT layer in bootstrap.
 ///
 /// Note the asymmetry with `/v1/internal/sla-records` above, which sits inside
-/// `router()` and therefore does require a JWT despite its comment — carrier
-/// layers `require_auth` over the whole of `router()`, unlike order-intake,
-/// which applies it to a sub-router and nests `/v1/internal` outside it. That
-/// pre-existing route is left alone: dispatch calls it today and evidently
-/// satisfies the JWT, so flipping it is a separate change with its own blast
-/// radius.
+/// `router()` and therefore requires a JWT — carrier layers `require_auth` over
+/// the whole of `router()`, unlike order-intake, which applies it to a
+/// sub-router and nests `/v1/internal` outside it. The api-gateway refuses
+/// `/v1/internal` paths, and the handler binds the body's tenant to the JWT's.
 pub fn internal_router() -> Router<AppState> {
     Router::new()
         // Called by order-intake to price a consumer move off a carrier rate
@@ -424,8 +423,9 @@ async fn breach_reasons(
 // ── Internal endpoints ────────────────────────────────────────────────────────
 
 /// Body for `POST /v1/internal/sla-records` — sent by dispatch when it allocates
-/// a carrier to a shipment. Not authenticated via JWT; trusted internal call
-/// (mTLS in production, same cluster in dev).
+/// a carrier to a shipment. The route sits inside the JWT-protected `router()`;
+/// `tenant_id` stays in the body for request-shape compatibility but must equal
+/// the caller's tenant.
 #[derive(Debug, Deserialize)]
 struct CreateSlaRecordBody {
     tenant_id:        Uuid,
@@ -442,13 +442,26 @@ struct CreateSlaRecordBody {
 
 fn default_allocation_method() -> String { "rate_shop".into() }
 
+/// The body's `tenant_id` must be the caller's own. A mismatch is the same
+/// `NotFound` the service gives for a missing or foreign carrier, so the
+/// response reveals nothing about other tenants' carriers.
+fn ensure_body_tenant(body_tenant: Uuid, claims_tenant: Uuid, carrier_id: Uuid) -> Result<(), AppError> {
+    if body_tenant == claims_tenant {
+        Ok(())
+    } else {
+        Err(AppError::NotFound { resource: "Carrier", id: carrier_id.to_string() })
+    }
+}
+
 /// POST /v1/internal/sla-records
 /// Creates a per-shipment SLA commitment record and emits `carrier.allocated`.
 /// Called by dispatch immediately after carrier selection.
 async fn create_sla_record(
     State(state): State<AppState>,
+    claims: AuthClaims,
     Json(body): Json<CreateSlaRecordBody>,
 ) -> impl IntoResponse {
+    ensure_body_tenant(body.tenant_id, claims.tenant_id, body.carrier_id)?;
     let record = SlaRecord::new(
         body.tenant_id,
         body.carrier_id,
@@ -820,4 +833,17 @@ async fn carrier_tracking_webhook(
     ).await?;
 
     Ok((StatusCode::OK, Json(serde_json::json!({"received": true, "event": body.event}))))
+}
+
+#[cfg(test)]
+mod sla_route_tests {
+    use super::*;
+
+    #[test]
+    fn body_tenant_must_match_the_callers_tenant() {
+        let (a, b, carrier) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        assert!(ensure_body_tenant(a, a, carrier).is_ok());
+        let err = ensure_body_tenant(b, a, carrier).expect_err("another tenant's id is refused");
+        assert!(matches!(err, AppError::NotFound { resource: "Carrier", .. }), "got {err:?}");
+    }
 }

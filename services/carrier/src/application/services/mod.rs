@@ -463,6 +463,7 @@ mod sla_record_tests {
         svc:      CarrierService,
         sla:      Arc<RecordingSla>,
         brokers:  String,
+        _cluster: rdkafka::mocking::MockCluster<'static, rdkafka::producer::DefaultProducerContext>,
     }
 
     /// An in-process broker (the publisher holds a concrete `KafkaProducer`),
@@ -470,7 +471,6 @@ mod sla_record_tests {
     fn harness(repo: FakeCarriers) -> Harness {
         let cluster = rdkafka::mocking::MockCluster::new(1).expect("mock kafka cluster");
         let brokers = cluster.bootstrap_servers();
-        Box::leak(Box::new(cluster));
         let producer = Arc::new(KafkaProducer::new(&brokers).expect("producer"));
         let sla = Arc::new(RecordingSla::default());
         let svc = CarrierService::new(
@@ -479,7 +479,7 @@ mod sla_record_tests {
             Arc::new(CarrierPublisher::new(producer)),
             Arc::new(crate::infrastructure::external::ExternalCarrierClient::new(None)),
         );
-        Harness { svc, sla, brokers }
+        Harness { svc, sla, brokers, _cluster: cluster }
     }
 
     fn carrier(tenant: Uuid, endpoint: Option<String>) -> Carrier {
@@ -508,6 +508,7 @@ mod sla_record_tests {
     /// Whether anything is on the allocation topic. The consumer is created
     /// afterwards so it sees the topic as it stands once the call has returned.
     async fn published(h: &Harness, wait: Duration) -> bool {
+        // The fixed group.id is safe because every test has its own cluster.
         let consumer: StreamConsumer = ClientConfig::new()
             .set("bootstrap.servers", &h.brokers)
             .set("group.id", "sla-record-tests")
