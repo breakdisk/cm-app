@@ -10,10 +10,23 @@ use logisticos_events::{envelope::Event, payloads::TaskAssigned, producer::Kafka
 use uuid::Uuid;
 
 use crate::domain::events::DriverAssigned;
+use crate::domain::repositories::DriverAssignmentRepository;
 use crate::infrastructure::db::DispatchQueueRow;
+
+/// Whether a pickup leg is emitted: only when origin data exists.
+fn has_pickup_leg(queue_item: &DispatchQueueRow) -> bool {
+    !queue_item.origin_address_line1.is_empty() || queue_item.origin_lat.is_some()
+}
+
+/// Number of `TASK_ASSIGNED` legs emitted for this job: delivery, plus pickup
+/// when origin data exists. The assignment close waits for this many tasks.
+pub(crate) fn expected_leg_count(queue_item: &DispatchQueueRow) -> i32 {
+    if has_pickup_leg(queue_item) { 2 } else { 1 }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_assignment_events(
+    assignment_repo: &dyn DriverAssignmentRepository,
     kafka: &KafkaProducer,
     queue_item: &DispatchQueueRow,
     tenant_id: Uuid,
@@ -28,8 +41,14 @@ pub(crate) async fn emit_assignment_events(
     // sequenced pickup → delivery. Both share assignment_id (same job). The
     // pickup leg is only emitted when origin data exists — legacy shipments
     // without structured origin fall through to a single delivery task.
-    let has_origin = !queue_item.origin_address_line1.is_empty()
-        || queue_item.origin_lat.is_some();
+    let has_origin = has_pickup_leg(queue_item);
+
+    // Record the expected leg count BEFORE publishing anything: the close
+    // predicate waits for this many tasks. If this fails nothing is emitted,
+    // so no leg can exist without its count.
+    assignment_repo
+        .set_expected_tasks(assignment_id, expected_leg_count(queue_item))
+        .await?;
 
     let mut next_sequence: i32 = 1;
     if has_origin {

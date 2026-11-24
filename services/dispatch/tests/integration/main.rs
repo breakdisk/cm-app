@@ -191,6 +191,10 @@ impl DriverAssignmentRepository for MockAssignmentRepo {
     async fn close_finished_assignments(&self, _limit: i64) -> anyhow::Result<u64> {
         Ok(0)
     }
+
+    async fn set_expected_tasks(&self, _assignment_id: Uuid, _expected: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// In-memory driver availability repository.
@@ -418,7 +422,7 @@ fn build_test_app_with_queue(
 
     let dispatch_service = Arc::new(DriverAssignmentService::new(
         Arc::new(route_repo) as _,
-        Arc::new(assignment_repo) as _,
+        Arc::new(assignment_repo.clone()) as _,
         Arc::clone(&avail_arc),
         Arc::clone(&kafka),
         None,               // compliance_cache: None = always assignable in tests
@@ -432,6 +436,7 @@ fn build_test_app_with_queue(
         .expect("lazy pool construction is infallible");
     let offer_service = Arc::new(OfferService::new(
         Arc::new(PgTaskOfferRepository::new(offer_pool)),
+        Arc::new(assignment_repo) as _,
         Arc::clone(&queue_arc),
         avail_arc,
         kafka,

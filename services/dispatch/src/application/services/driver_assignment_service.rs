@@ -551,6 +551,7 @@ impl DriverAssignmentService {
         //      helper — the same emission the gig offer claim path uses, so
         //      the two assignment flows can never drift.
         super::assignment_events::emit_assignment_events(
+            self.assignment_repo.as_ref(),
             &self.kafka,
             &queue_item,
             tenant_id.inner(),

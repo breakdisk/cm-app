@@ -121,6 +121,7 @@ pub async fn run() -> anyhow::Result<()> {
     let offer_service = Arc::new(
         crate::application::services::OfferService::new(
             Arc::clone(&offer_repo),
+            Arc::clone(&assignment_repo) as _,
             Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
             Arc::clone(&driver_avail) as _,
             Arc::clone(&kafka),

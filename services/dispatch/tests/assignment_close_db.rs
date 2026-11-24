@@ -493,3 +493,107 @@ async fn sweep_repairs_a_missed_outcome_and_shipment_fallback_resolves() {
     assert_eq!(repo.close_finished_assignments(100).await.expect("sweep again"), 0);
     db.drop_db().await;
 }
+
+async fn expect_tasks(pool: &PgPool, f: &Fixture, n: i32) {
+    sqlx::query("UPDATE dispatch.driver_assignments SET expected_tasks = $2 WHERE route_id = $1")
+        .bind(f.route)
+        .bind(n)
+        .execute(pool)
+        .await
+        .expect("expected_tasks");
+}
+
+#[tokio::test]
+async fn completed_pickup_with_delivery_not_yet_arrived_stays_active() {
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    // Quick-dispatch shape: no route stops, two legs emitted, only the pickup
+    // has reached driver-ops (the delivery TASK_ASSIGNED is late or lost).
+    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+    expect_tasks(&db.pool, &f, 2).await;
+    task(&db.pool, &f, Uuid::new_v4(), "completed").await;
+
+    assert!(!repo.close_if_finished(f.tenant, f.route).await.expect("close"));
+    assert_eq!(repo.close_finished_assignments(100).await.expect("sweep"), 0);
+    assert_eq!(assignment_status(&db.pool, &f).await, "accepted");
+    assert_eq!(route_status(&db.pool, &f).await, "in_progress");
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn completed_pickup_with_pending_delivery_stays_active() {
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+    expect_tasks(&db.pool, &f, 2).await;
+    let shipment = Uuid::new_v4();
+    task(&db.pool, &f, shipment, "completed").await;
+    task(&db.pool, &f, shipment, "pending").await; // `pending` is open
+
+    assert!(!repo.close_if_finished(f.tenant, f.route).await.expect("close"));
+    assert_eq!(assignment_status(&db.pool, &f).await, "accepted");
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn all_expected_legs_finished_closes() {
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+    expect_tasks(&db.pool, &f, 2).await;
+    let shipment = Uuid::new_v4();
+    task(&db.pool, &f, shipment, "completed").await;
+    task(&db.pool, &f, shipment, "completed").await;
+
+    assert!(repo.close_if_finished(f.tenant, f.route).await.expect("close"));
+    assert_eq!(assignment_status(&db.pool, &f).await, "completed");
+    assert_eq!(route_status(&db.pool, &f).await, "completed");
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn legacy_null_expected_uses_stop_count() {
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    // expected_tasks stays NULL: two stops, one finished task -> still open;
+    // second task arrives -> closes.
+    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+    let (s1, s2) = (Uuid::new_v4(), Uuid::new_v4());
+    stop(&db.pool, &f, s1, 1).await;
+    stop(&db.pool, &f, s2, 2).await;
+    task(&db.pool, &f, s1, "completed").await;
+    assert!(!repo.close_if_finished(f.tenant, f.route).await.expect("close"));
+    task(&db.pool, &f, s2, "completed").await;
+    assert!(repo.close_if_finished(f.tenant, f.route).await.expect("close"));
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn set_expected_tasks_is_recorded_on_the_assignment() {
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM dispatch.driver_assignments WHERE route_id = $1")
+        .bind(f.route)
+        .fetch_one(&db.pool)
+        .await
+        .expect("id");
+    repo.set_expected_tasks(id, 2).await.expect("set");
+    let n: Option<i32> = sqlx::query_scalar("SELECT expected_tasks FROM dispatch.driver_assignments WHERE id = $1")
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("read");
+    assert_eq!(n, Some(2));
+    db.drop_db().await;
+}

@@ -71,17 +71,24 @@ impl From<AssignmentRow> for DriverAssignment {
 }
 
 /// "The work on this route has ended": at least one task, none open, and
-/// every route stop has a task. Quick-dispatch and gig-claim routes have no
-/// route stops, so the EXISTS clause is what keeps an accepted assignment
-/// open until its tasks exist. Only `pending`/`in_progress` are open; every
-/// other task status counts as finished.
+/// every expected task exists. "Expected" is the leg count dispatch recorded
+/// on the assignment when it emitted the legs (`expected_tasks`); a legacy row
+/// without one falls back to the route's stop count. Quick-dispatch and
+/// gig-claim routes have no route stops, so without `expected_tasks` a
+/// finished pickup would close the assignment before the delivery leg arrived.
+/// Only `pending`/`in_progress` are open; every other task status counts as
+/// finished.
 fn finished_predicate(route: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM driver_ops.tasks t WHERE t.route_id = {route})
          AND NOT EXISTS (SELECT 1 FROM driver_ops.tasks t
                           WHERE t.route_id = {route} AND t.status IN ('pending','in_progress'))
          AND (SELECT COUNT(*) FROM driver_ops.tasks t WHERE t.route_id = {route})
-             >= (SELECT COUNT(*) FROM dispatch.route_stops s WHERE s.route_id = {route})"
+             >= COALESCE(
+                  (SELECT x.expected_tasks FROM dispatch.driver_assignments x
+                    WHERE x.route_id = {route}
+                    ORDER BY x.assigned_at DESC, x.id DESC LIMIT 1),
+                  (SELECT COUNT(*) FROM dispatch.route_stops s WHERE s.route_id = {route}))"
     )
 }
 
@@ -236,6 +243,15 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
             }
         }
         Ok(closed)
+    }
+
+    async fn set_expected_tasks(&self, assignment_id: Uuid, expected: i32) -> anyhow::Result<()> {
+        sqlx::query("UPDATE dispatch.driver_assignments SET expected_tasks = $2 WHERE id = $1")
+            .bind(assignment_id)
+            .bind(expected)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn save(&self, a: &DriverAssignment) -> anyhow::Result<()> {
