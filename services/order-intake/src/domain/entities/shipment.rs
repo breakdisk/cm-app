@@ -101,6 +101,7 @@ pub struct Shipment {
     #[serde(default)]
     pub dest_geocoding: crate::domain::value_objects::GeocodingRecord,
     /// Building, unit and area of the destination, when the customer gave them.
+    #[serde(default)]
     pub dest_parts: crate::domain::value_objects::AddressParts,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

@@ -264,6 +264,23 @@ pub(crate) fn customer_pin(
     }
 }
 
+/// Longest building, unit or area, in characters.
+const ADDRESS_PART_MAX_CHARS: usize = 100;
+
+/// Refuse an over-long building, unit or area. The `#[validate]` attributes on
+/// `AddressInput` are not run on the booking path, so the cap is enforced here.
+/// Characters, not bytes: Arabic text is multi-byte.
+pub(crate) fn check_address_parts(
+    input: &crate::application::commands::AddressInput,
+) -> Result<(), String> {
+    for (name, value) in [("building", &input.building), ("unit", &input.unit), ("area", &input.area)] {
+        if value.as_deref().is_some_and(|v| v.chars().count() > ADDRESS_PART_MAX_CHARS) {
+            return Err(format!("{name} must be at most {ADDRESS_PART_MAX_CHARS} characters"));
+        }
+    }
+    Ok(())
+}
+
 /// The destination as it will be stored. Without a pin, the geocoder's answer
 /// stands (and its failure is the booking's failure, as before). With one, the
 /// coordinates are the customer's and the source says so; the geocoder still
@@ -554,8 +571,10 @@ impl ShipmentService {
         }
 
         // ── Normalize and geocode addresses ──────────────────────────────────
-        let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
+        // Checked before any network call.
         let pin = customer_pin(&cmd.destination).map_err(AppError::Validation)?;
+        check_address_parts(&cmd.destination).map_err(AppError::Validation)?;
+        let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
         let geocoded = self.normalizer.normalize_detailed(&cmd.destination).await;
         let destination_geocoded = resolve_destination(&cmd.destination, pin, geocoded, Utc::now())
             .map_err(AppError::Internal)?;
@@ -1384,5 +1403,38 @@ mod pin_tests {
             "postal_code": "1000", "country_code": "PH"
         })).expect("old clients unaffected");
         assert_eq!((i.pin_lat, i.pin_lng, i.building), (None, None, None));
+    }
+
+    #[test]
+    fn address_part_over_100_chars_is_rejected() {
+        let mut i = input(None, None);
+        i.unit = Some("x".repeat(101));
+        let e = check_address_parts(&i).expect_err("too long");
+        assert!(e.contains("unit"), "names the field: {e}");
+        i.unit = None;
+        i.area = Some("x".repeat(101));
+        assert!(check_address_parts(&i).expect_err("too long").contains("area"));
+        i.area = None;
+        i.building = Some("x".repeat(101));
+        assert!(check_address_parts(&i).expect_err("too long").contains("building"));
+    }
+
+    #[test]
+    fn address_part_of_100_arabic_chars_is_accepted() {
+        let mut i = input(None, None);
+        let arabic = "ب".repeat(100); // 200 bytes
+        i.building = Some(arabic.clone());
+        i.unit = Some(arabic.clone());
+        i.area = Some(arabic);
+        assert_eq!(check_address_parts(&i), Ok(()));
+    }
+
+    #[test]
+    fn missing_address_parts_are_accepted() {
+        let mut i = input(None, None);
+        i.building = None;
+        i.unit = None;
+        i.area = None;
+        assert_eq!(check_address_parts(&i), Ok(()));
     }
 }
