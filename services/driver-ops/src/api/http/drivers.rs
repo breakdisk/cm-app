@@ -97,9 +97,14 @@ pub async fn list_drivers(
     State(state): State<Arc<AppState>>,
     AxumQuery(q): AxumQuery<ListDriversQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_VIEW);
+    // Operators list the tenant; a token bound to a partner lists only that
+    // partner's own riders, with its own authority rather than fleet:read.
+    let carrier = crate::api::http::partner_scope::roster_scope(&claims)?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let mut drivers = state.driver_service.list_by_tenant(&tenant_id).await?;
+    if let Some(carrier_id) = carrier {
+        drivers.retain(|d| d.carrier_id == Some(carrier_id));
+    }
 
     // Filter by hub_id when provided (Hub Staff tab — assigned scanners).
     if let Some(hub_id) = q.hub_id {

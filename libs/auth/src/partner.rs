@@ -40,6 +40,18 @@ pub enum PartnerAccess {
     Scoped(Uuid),
 }
 
+impl PartnerAccess {
+    /// The carrier filter a read must apply. A scoped token is pinned to its own
+    /// partner and whatever it asked for is ignored; anyone else keeps the
+    /// filter they requested. Use it for every `?carrier_id=` style parameter.
+    pub fn carrier_filter(self, requested: Option<Uuid>) -> Option<Uuid> {
+        match self {
+            PartnerAccess::Scoped(pid) => Some(pid),
+            PartnerAccess::Unscoped => requested,
+        }
+    }
+}
+
 impl Claims {
     pub fn partner_scope(&self) -> PartnerScope {
         match self.pid {
@@ -70,7 +82,8 @@ pub fn resolve_partner_access(c: &Claims, enforce: bool) -> Result<PartnerAccess
     }
 }
 
-fn enforcement_on() -> bool {
+/// Is `AUTH__ENFORCE_PARTNER_SCOPE` on? Read once per process.
+pub fn enforcement_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("AUTH__ENFORCE_PARTNER_SCOPE")
@@ -82,7 +95,25 @@ fn enforcement_on() -> bool {
 /// [`resolve_partner_access`] with the rollout switch read from
 /// `AUTH__ENFORCE_PARTNER_SCOPE`, once per process.
 pub fn partner_access(c: &Claims) -> Result<PartnerAccess, AppError> {
-    resolve_partner_access(c, enforcement_on())
+    resolve_partner_access(c, enforcement_enabled())
+}
+
+/// Refuse a partner-scoped token on a surface that is a tenant operation, such
+/// as the dispatch queue or the tenant-wide roster. Those lists hold other
+/// parties' parcels and recipient details, so holding `dispatch:view` or
+/// `shipments:read` (a store rider's plain `driver` role does) is not enough.
+///
+/// `what` names the surface in the 403.
+pub fn require_unscoped(c: &Claims, what: &'static str) -> Result<(), AppError> {
+    require_unscoped_when(c, enforcement_enabled(), what)
+}
+
+/// [`require_unscoped`] with the rollout switch given, for tests.
+pub fn require_unscoped_when(c: &Claims, enforce: bool, what: &'static str) -> Result<(), AppError> {
+    match resolve_partner_access(c, enforce)? {
+        PartnerAccess::Unscoped => Ok(()),
+        PartnerAccess::Scoped(_) => Err(AppError::Forbidden { resource: what.to_owned() }),
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +185,43 @@ mod tests {
             let access = resolve_partner_access(&claims_with(&["partner"], Some(pid)), enforce).unwrap();
             assert_eq!(access, PartnerAccess::Scoped(pid));
         }
+    }
+
+    #[test]
+    fn a_scoped_token_always_gets_its_own_carrier_whatever_it_asks_for() {
+        let pid = Uuid::new_v4();
+        let someone_else = Uuid::new_v4();
+        assert_eq!(PartnerAccess::Scoped(pid).carrier_filter(Some(someone_else)), Some(pid));
+        assert_eq!(PartnerAccess::Scoped(pid).carrier_filter(None), Some(pid));
+    }
+
+    #[test]
+    fn an_unscoped_token_keeps_the_filter_it_asked_for() {
+        let wanted = Uuid::new_v4();
+        assert_eq!(PartnerAccess::Unscoped.carrier_filter(Some(wanted)), Some(wanted));
+        assert_eq!(PartnerAccess::Unscoped.carrier_filter(None), None);
+    }
+
+    #[test]
+    fn operator_only_surfaces_refuse_a_scoped_token() {
+        let err = require_unscoped_when(&claims_with(&["driver"], Some(Uuid::new_v4())), false, "dispatch queue")
+            .unwrap_err();
+        assert!(matches!(err, AppError::Forbidden { .. }), "{err:?}");
+        assert_eq!(err.status_code(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn operator_only_surfaces_admit_a_platform_token() {
+        assert!(require_unscoped_when(&claims_with(&["driver"], None), true, "dispatch queue").is_ok());
+        assert!(require_unscoped_when(&claims_with(&["admin"], None), true, "dispatch queue").is_ok());
+    }
+
+    /// Once enforcement is on, a partner role with no pid is not "operator":
+    /// it is refused with the specific code, not waved through as unscoped.
+    #[test]
+    fn operator_only_surfaces_refuse_a_partner_with_no_pid_once_enforced() {
+        let err = require_unscoped_when(&claims_with(&["partner"], None), true, "dispatch queue").unwrap_err();
+        assert!(matches!(err, AppError::PartnerContextRequired), "{err:?}");
     }
 
     #[test]

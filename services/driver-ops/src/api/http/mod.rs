@@ -3,6 +3,7 @@ pub mod drivers;
 pub mod provider;
 pub mod tasks;
 pub mod location;
+pub mod partner_scope;
 pub mod health;
 pub mod ws;
 

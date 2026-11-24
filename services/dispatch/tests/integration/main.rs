@@ -1585,3 +1585,65 @@ mod quick_dispatch {
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests: the queue and roster are tenant operations, not a partner's view
+//
+// A store's rider holds the plain `driver` role, and `driver` holds
+// `dispatch:view`. Without a pid check that is enough to read every pending
+// parcel and its recipient, and every driver, in the tenant.
+// ---------------------------------------------------------------------------
+
+mod partner_scope {
+    use super::*;
+
+    /// A driver-role token, optionally bound to a partner (a store's rider).
+    fn rider_token(pid: Option<Uuid>) -> String {
+        let jwt = JwtService::new(TEST_JWT_SECRET, 3600, 86400);
+        let claims = Claims::new(
+            Uuid::new_v4(),
+            TEST_TENANT_ID,
+            "test-tenant".to_owned(),
+            "business".to_owned(),
+            "rider@logisticos.io".to_owned(),
+            vec!["driver".to_owned()],
+            vec![permissions::DISPATCH_VIEW.to_owned()],
+            3600,
+        )
+        .with_partner(pid);
+        jwt.issue_access_token(claims).expect("mintable")
+    }
+
+    #[tokio::test]
+    async fn rider_with_pid_gets_403_on_queue() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(Some(Uuid::new_v4()));
+        let resp = send(app, auth_request(Method::GET, "/v1/queue", &token)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rider_with_pid_gets_403_on_dispatch_drivers() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(Some(Uuid::new_v4()));
+        let resp = send(app, auth_request(Method::GET, "/v1/drivers", &token)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn platform_driver_keeps_queue_access() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(None);
+        let resp = send(app, auth_request(Method::GET, "/v1/queue", &token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_keeps_queue_and_roster_access() {
+        let token = dispatcher_token(Uuid::new_v4());
+        for uri in ["/v1/queue", "/v1/drivers"] {
+            let resp = send(build_app_with_drivers(vec![]), auth_request(Method::GET, uri, &token)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        }
+    }
+}

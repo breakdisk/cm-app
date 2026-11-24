@@ -39,10 +39,11 @@ paths:
       tags: [Drivers]
       summary: List drivers for tenant
       description: |
-        A token carrying a partner id (`pid`) lists only that partner's own
-        riders; the tenant-wide roster is for operators. A partner or store token
-        without `pid` is refused with 403 `PARTNER_CONTEXT_REQUIRED` once partner
-        scoping is enforced.
+        Operators (`fleet:read`) list the tenant. A token carrying a partner id
+        (`pid`) lists only that partner's own riders, and may do so with
+        `carriers:manage-own` or `store_riders:manage` instead of `fleet:read`. A
+        partner or store token without `pid` is refused with 403
+        `PARTNER_CONTEXT_REQUIRED` once partner scoping is enforced.
       parameters:
         - name: status
           in: query
@@ -218,9 +219,11 @@ paths:
       tags: [Tasks]
       summary: Daily manifest per driver and task type
       description: |
-        Requires `fleet:read` or `carriers:manage`, or a token carrying a partner
-        id (`pid`). A scoped token always gets its own partner's manifest and the
-        `carrier_id` query parameter is ignored. Operators may pass `carrier_id`.
+        Requires `fleet:read`, `carriers:manage` or `carriers:manage-own`; a
+        token bound to a partner (`pid`) may also hold `store_riders:manage`. A
+        rider's plain `driver` role is not enough, with or without a `pid`. A
+        scoped token always gets its own partner's manifest and the `carrier_id`
+        query parameter is ignored. Operators may pass `carrier_id`.
       parameters:
         - name: date
           in: query

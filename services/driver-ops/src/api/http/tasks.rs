@@ -77,12 +77,16 @@ pub async fn list_manifest(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ManifestQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // A token bound to a partner gets that partner's manifest whatever
+    // `carrier_id` it asked for; an unbound token needs a fleet or carrier
+    // permission. This used to take any caller's `carrier_id` and check nothing.
+    let carrier_id = crate::api::http::partner_scope::manifest_scope(&claims, q.carrier_id)?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let entries = state.task_service.list_manifest(&tenant_id, q.carrier_id, q.date).await?;
+    let entries = state.task_service.list_manifest(&tenant_id, carrier_id, q.date).await?;
     Ok(Json(serde_json::json!({
         "data":       entries,
         "date":       q.date,
-        "carrier_id": q.carrier_id,
+        "carrier_id": carrier_id,
     })))
 }
 

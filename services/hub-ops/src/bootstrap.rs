@@ -2172,6 +2172,9 @@ async fn shipment_by_awb_handler(
     Query(params): Query<AwbQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    // A hub-scanner tool that resolves any tracking number in the tenant. A
+    // token bound to a partner, a store rider's included, has no business here.
+    logisticos_auth::partner::require_unscoped(&claims, "shipment lookup by AWB")?;
 
     #[derive(sqlx::FromRow)]
     struct AwbRow {
@@ -2581,4 +2584,26 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
+#[cfg(test)]
+mod partner_scope_source_tests {
+    /// The AWB lookup resolves any tracking number in the tenant to its shipment
+    /// id, and `shipments:read` is held by a store rider's plain driver role. It is
+    /// a hub-scanner tool, so a partner-bound token must be refused. This handler
+    /// needs a database to run, so the guard is checked in the source: removing the
+    /// call fails here.
+    #[test]
+    fn shipment_lookup_by_awb_refuses_partner_scoped_tokens() {
+        let src = include_str!("bootstrap.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production part");
+        let start = production
+            .find("async fn shipment_by_awb_handler(")
+            .expect("the handler exists");
+        let body = &production[start..(start + 900).min(production.len())];
+        assert!(
+            body.contains("require_unscoped("),
+            "shipment_by_awb_handler must call require_unscoped before reading"
+        );
+    }
 }
