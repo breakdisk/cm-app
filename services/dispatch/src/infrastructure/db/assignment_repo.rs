@@ -33,7 +33,14 @@ fn parse_status(s: &str) -> AssignmentStatus {
         "accepted"  => AssignmentStatus::Accepted,
         "rejected"  => AssignmentStatus::Rejected,
         "cancelled" => AssignmentStatus::Cancelled,
-        _           => AssignmentStatus::Pending,
+        "completed" => AssignmentStatus::Completed,
+        "pending"   => AssignmentStatus::Pending,
+        // Unknown must never read as active: Pending would pin a driver as
+        // busy forever. Fail closed to a terminal state and make noise.
+        other => {
+            tracing::error!(status = other, "unknown driver_assignments.status; treating as cancelled");
+            AssignmentStatus::Cancelled
+        }
     }
 }
 
@@ -43,6 +50,7 @@ fn status_str(s: AssignmentStatus) -> &'static str {
         AssignmentStatus::Accepted  => "accepted",
         AssignmentStatus::Rejected  => "rejected",
         AssignmentStatus::Cancelled => "cancelled",
+        AssignmentStatus::Completed => "completed",
     }
 }
 
@@ -129,5 +137,36 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod assignment_status_tests {
+    use super::*;
+
+    #[test]
+    fn completed_round_trips() {
+        assert_eq!(status_str(AssignmentStatus::Completed), "completed");
+        assert_eq!(parse_status("completed"), AssignmentStatus::Completed);
+    }
+
+    #[test]
+    fn unknown_status_is_not_silently_active() {
+        // An unrecognised value must never read as an active (Pending) assignment:
+        // that would hold a driver "busy" forever on a value this image cannot read.
+        let parsed = parse_status("some_future_status");
+        assert_eq!(parsed, AssignmentStatus::Cancelled);
+        assert!(!DriverAssignment {
+            id: Uuid::nil(),
+            tenant_id: TenantId::from_uuid(Uuid::nil()),
+            driver_id: DriverId::from_uuid(Uuid::nil()),
+            route_id: RouteId::from_uuid(Uuid::nil()),
+            status: parsed,
+            assigned_at: chrono::Utc::now(),
+            accepted_at: None,
+            rejected_at: None,
+            rejection_reason: None,
+        }
+        .is_active());
     }
 }
