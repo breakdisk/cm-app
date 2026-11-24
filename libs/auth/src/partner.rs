@@ -92,6 +92,13 @@ pub fn enforcement_enabled() -> bool {
     })
 }
 
+/// Log the effective rollout switch once. Call from each service's bootstrap
+/// right after tracing is initialised, so an operator can see from the logs
+/// which services enforce (a partial flip leaves them disagreeing).
+pub fn log_partner_scope_mode() {
+    tracing::info!(partner_scope_enforced = enforcement_enabled(), "partner scope mode (AUTH__ENFORCE_PARTNER_SCOPE)");
+}
+
 /// [`resolve_partner_access`] with the rollout switch read from
 /// `AUTH__ENFORCE_PARTNER_SCOPE`, once per process.
 pub fn partner_access(c: &Claims) -> Result<PartnerAccess, AppError> {

@@ -32,6 +32,21 @@ fn validate_role(role: &str) -> Result<(), AppError> {
     }
 }
 
+/// Platform roles a partner-scoped user may hold. A membership binds the token
+/// to one partner's rows; on an admin, ops or finance user that would either
+/// silently narrow a tenant operator or, worse, be the wrong account entirely.
+const SCOPABLE_PLATFORM_ROLES: &[&str] = &["partner", "store_manager", "store_clerk", "driver"];
+
+fn ensure_scopable(roles: &[String]) -> Result<(), AppError> {
+    match roles.iter().find(|r| !SCOPABLE_PLATFORM_ROLES.contains(&r.as_str())) {
+        None => Ok(()),
+        Some(r) => Err(AppError::Conflict(format!(
+            "this user holds the '{r}' role and cannot be partner-scoped;              only users whose roles are within {} can",
+            SCOPABLE_PLATFORM_ROLES.join(", ")
+        ))),
+    }
+}
+
 /// A suspended row is a conflict, not a success: the caller asked for an active
 /// membership and must not believe it got one.
 fn outcome_to_result(outcome: UpsertOutcome) -> Result<PartnerMembership, AppError> {
@@ -63,11 +78,21 @@ pub async fn get_my(
 /// `POST /v1/internal/partner-memberships`: create a membership. Mesh-internal,
 /// guarded by the internal secret and blocked at the gateway. Idempotent on
 /// `(tenant_id, user_id, carrier_id)`.
+///
+/// Identity validates the role label and that the user exists in the tenant and
+/// holds only partner-scopable roles. It cannot read the carrier database, so
+/// that `carrier_id` belongs to `tenant_id` is the mesh caller's responsibility.
 pub async fn upsert_internal(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpsertPartnerMembershipRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     validate_role(&req.role)?;
+    let roles = state
+        .auth_service
+        .roles_in_tenant(req.tenant_id, req.user_id)
+        .await?
+        .ok_or(AppError::NotFound { resource: "User", id: req.user_id.to_string() })?;
+    ensure_scopable(&roles)?;
     let outcome = state
         .partner_membership_repo
         .upsert_active(&NewPartnerMembership {
@@ -113,6 +138,23 @@ mod tests {
     fn a_platform_role_is_not_a_membership_role() {
         for role in ["admin", "tenant_admin", "dispatcher", "driver", "", "STORE_MANAGER"] {
             assert!(matches!(validate_role(role), Err(AppError::Validation(_))), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn membership_for_an_admin_user_is_refused() {
+        for roles in [vec!["admin"], vec!["driver", "tenant_admin"], vec!["finance"], vec!["dispatcher"]] {
+            let roles: Vec<String> = roles.into_iter().map(String::from).collect();
+            let err = ensure_scopable(&roles).unwrap_err();
+            assert!(matches!(err, AppError::Conflict(ref m) if m.contains("cannot be partner-scoped")), "{roles:?}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn partner_and_rider_users_can_be_scoped() {
+        for roles in [vec!["partner"], vec!["store_manager"], vec!["store_clerk"], vec!["driver"], vec!["driver", "store_clerk"]] {
+            let roles: Vec<String> = roles.into_iter().map(String::from).collect();
+            assert!(ensure_scopable(&roles).is_ok(), "{roles:?}");
         }
     }
 

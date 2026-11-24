@@ -99,17 +99,32 @@ impl AuthService {
     /// The partner this user acts for, from their active membership, or `None`
     /// for anyone who is not a partner's person.
     ///
+    /// A user whose memberships are all suspended gets no token at all
+    /// (`PARTNER_MEMBERSHIP_INACTIVE`): a token without a `pid` would be the
+    /// tenant-wide token a plain `driver` holds, so a suspension would widen
+    /// access instead of removing it. Refresh goes through here too, so a
+    /// suspension takes effect at the next refresh.
+    ///
     /// A lookup failure fails the login rather than minting a token with no
-    /// partner binding. The two outcomes look the same to a partner user who is
-    /// then scoped to nothing (or, before enforcement, to everything), and a
-    /// transient database error is not a reason to hand out the wider token.
+    /// partner binding, for the same reason.
     async fn partner_id_for(&self, tenant_id: uuid::Uuid, user_id: uuid::Uuid) -> AppResult<Option<uuid::Uuid>> {
-        let membership = self
+        let binding = self
             .partner_membership_repo
-            .find_active(tenant_id, user_id)
+            .binding(tenant_id, user_id)
             .await
             .map_err(AppError::Internal)?;
-        Ok(membership.map(|m| m.carrier_id))
+        pid_from_binding(binding)
+    }
+
+    /// The platform roles of a user in a tenant. `None` when the user does not
+    /// exist in that tenant (a foreign tenant's user reads as absent).
+    pub async fn roles_in_tenant(&self, tenant_id: uuid::Uuid, user_id: uuid::Uuid) -> AppResult<Option<Vec<String>>> {
+        let user = self
+            .user_repo
+            .find_by_id(&logisticos_types::UserId::from_uuid(user_id))
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(user.filter(|u| u.tenant_id.inner() == tenant_id).map(|u| u.roles))
     }
 
     /// Resolve feature keys enabled for the given tier from the pricing matrix.
@@ -981,6 +996,16 @@ impl AuthService {
     }
 }
 
+/// Turn a membership state into the `pid` a token carries, or refuse.
+fn pid_from_binding(binding: crate::domain::repositories::PartnerBinding) -> AppResult<Option<uuid::Uuid>> {
+    use crate::domain::repositories::PartnerBinding;
+    match binding {
+        PartnerBinding::Active(carrier_id) => Ok(Some(carrier_id)),
+        PartnerBinding::Unbound => Ok(None),
+        PartnerBinding::SuspendedOnly => Err(AppError::PartnerMembershipInactive),
+    }
+}
+
 /// Verify the HMAC-SHA256 signature a white-label partner includes when
 /// deep-linking a customer into their tenant:
 ///
@@ -1100,6 +1125,39 @@ mod synthesized_email_tests {
         // some other host that merely starts the same way.
         assert!(!is_synthesized_login_email("x@customer.logisticos.app.evil.com"));
         assert!(!is_synthesized_login_email("x@notcustomer.logisticos.app.co"));
+    }
+}
+
+#[cfg(test)]
+mod partner_binding_tests {
+    use super::*;
+    use crate::domain::repositories::PartnerBinding;
+
+    #[test]
+    fn active_membership_still_issues_pid() {
+        let c = uuid::Uuid::new_v4();
+        assert_eq!(pid_from_binding(PartnerBinding::Active(c)).unwrap(), Some(c));
+    }
+
+    #[test]
+    fn no_membership_unchanged() {
+        assert_eq!(pid_from_binding(PartnerBinding::Unbound).unwrap(), None);
+    }
+
+    #[test]
+    fn suspended_only_membership_refuses_token() {
+        let err = pid_from_binding(PartnerBinding::SuspendedOnly).unwrap_err();
+        assert!(matches!(err, AppError::PartnerMembershipInactive), "{err:?}");
+    }
+
+    /// All four token sites must resolve the partner through the one helper that
+    /// refuses, never straight from the repository.
+    #[test]
+    fn token_sites_resolve_partner_through_the_refusing_helper() {
+        let src = include_str!("auth_service.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production part");
+        assert_eq!(production.matches("self.partner_id_for(").count(), 4);
+        assert_eq!(production.matches("find_active(").count(), 0, "token code must use binding()");
     }
 }
 

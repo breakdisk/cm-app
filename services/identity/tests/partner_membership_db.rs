@@ -11,7 +11,7 @@ use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
 
 use logisticos_identity::domain::entities::NewPartnerMembership;
-use logisticos_identity::domain::repositories::{PartnerMembershipRepository, UpsertOutcome};
+use logisticos_identity::domain::repositories::{PartnerBinding, PartnerMembershipRepository, UpsertOutcome};
 use logisticos_identity::infrastructure::db::PgPartnerMembershipRepository;
 
 fn database_url() -> Option<String> {
@@ -137,4 +137,44 @@ async fn concurrent_upserts_for_two_carriers_leave_exactly_one_active() {
         "SELECT COUNT(*) FROM identity.partner_memberships WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'")
         .bind(t).bind(u).fetch_one(&pool).await.unwrap();
     assert_eq!(active_rows, 1);
+}
+
+#[tokio::test]
+async fn no_membership_is_unbound() {
+    let Some((repo, _)) = repo().await else { return };
+    let b = repo.binding(Uuid::new_v4(), Uuid::new_v4()).await.unwrap();
+    assert_eq!(b, PartnerBinding::Unbound);
+}
+
+#[tokio::test]
+async fn active_membership_is_bound() {
+    let Some((repo, _)) = repo().await else { return };
+    let (t, u, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    repo.upsert_active(&new_membership(t, u, c)).await.unwrap();
+    assert_eq!(repo.binding(t, u).await.unwrap(), PartnerBinding::Active(c));
+}
+
+/// The case that must not look like "no partner": suspending a rider must not
+/// hand them the tenant-wide driver token.
+#[tokio::test]
+async fn suspended_only_membership_is_reported_as_such() {
+    let Some((repo, pool)) = repo().await else { return };
+    let (t, u, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    repo.upsert_active(&new_membership(t, u, c)).await.unwrap();
+    sqlx::query("UPDATE identity.partner_memberships SET status = 'suspended' WHERE tenant_id = $1 AND user_id = $2")
+        .bind(t).bind(u).execute(&pool).await.unwrap();
+    assert_eq!(repo.binding(t, u).await.unwrap(), PartnerBinding::SuspendedOnly);
+}
+
+/// A user suspended at one partner but active at another is still bound.
+#[tokio::test]
+async fn active_membership_wins_over_a_suspended_one() {
+    let Some((repo, pool)) = repo().await else { return };
+    let (t, u) = (Uuid::new_v4(), Uuid::new_v4());
+    let (old, current) = (Uuid::new_v4(), Uuid::new_v4());
+    repo.upsert_active(&new_membership(t, u, old)).await.unwrap();
+    sqlx::query("UPDATE identity.partner_memberships SET status = 'suspended' WHERE tenant_id = $1 AND user_id = $2")
+        .bind(t).bind(u).execute(&pool).await.unwrap();
+    repo.upsert_active(&new_membership(t, u, current)).await.unwrap();
+    assert_eq!(repo.binding(t, u).await.unwrap(), PartnerBinding::Active(current));
 }

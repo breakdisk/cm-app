@@ -14,8 +14,22 @@ pub enum UpsertOutcome {
     ConflictsWith(uuid::Uuid),
 }
 
+/// What a user's memberships say about their partner binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartnerBinding {
+    /// No membership rows at all: not a partner's person.
+    Unbound,
+    /// An active membership for this carrier.
+    Active(uuid::Uuid),
+    /// Membership rows exist but none is active. Must not be treated as
+    /// `Unbound`: that would turn a suspension into wider access.
+    SuspendedOnly,
+}
+
 #[async_trait]
 pub trait PartnerMembershipRepository: Send + Sync {
+    /// The user's binding across all of their membership rows.
+    async fn binding(&self, tenant_id: uuid::Uuid, user_id: uuid::Uuid) -> anyhow::Result<PartnerBinding>;
     /// The user's active membership, if any. At most one can exist.
     async fn find_active(&self, tenant_id: uuid::Uuid, user_id: uuid::Uuid) -> anyhow::Result<Option<PartnerMembership>>;
     /// Create the membership if it does not exist. Idempotent on

@@ -371,6 +371,12 @@ paths:
         Also 409 when the user already has an active membership for a different
         carrier. `role` is one of `partner`, `store_manager`, `store_clerk`,
         `store_rider`.
+
+        Identity checks that the user exists in `tenant_id` (404 otherwise) and
+        holds only the platform roles `partner`, `store_manager`, `store_clerk`
+        and `driver`; an admin, ops or finance user is refused with 409.
+        Identity cannot read the carrier database, so that `carrier_id` belongs
+        to `tenant_id` is **the calling service's responsibility**.
       security: []
       requestBody:
         required: true
@@ -389,7 +395,7 @@ paths:
                   data:
                     $ref: "#/components/schemas/PartnerMembership"
         "409":
-          description: The membership is suspended, or the user already acts for another carrier
+          description: The membership is suspended, the user already acts for another carrier, or the user holds a role that cannot be partner-scoped
           content:
             application/json:
               schema:

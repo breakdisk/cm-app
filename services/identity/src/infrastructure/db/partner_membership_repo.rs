@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::{
     entities::{NewPartnerMembership, PartnerMembership},
-    repositories::{PartnerMembershipRepository, UpsertOutcome},
+    repositories::{PartnerBinding, PartnerMembershipRepository, UpsertOutcome},
 };
 
 /// The partial unique index that allows one active membership per user.
@@ -43,6 +43,22 @@ const COLUMNS: &str = "id, tenant_id, user_id, carrier_id, role, status, created
 
 #[async_trait]
 impl PartnerMembershipRepository for PgPartnerMembershipRepository {
+    async fn binding(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<PartnerBinding> {
+        // Active first: a user suspended at one partner but active at another is bound.
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT carrier_id, status FROM identity.partner_memberships              WHERE tenant_id = $1 AND user_id = $2              ORDER BY (status = 'active') DESC, created_at DESC",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(match rows.first() {
+            None => PartnerBinding::Unbound,
+            Some((carrier_id, status)) if status == "active" => PartnerBinding::Active(*carrier_id),
+            Some(_) => PartnerBinding::SuspendedOnly,
+        })
+    }
+
     async fn find_active(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<PartnerMembership>> {
         let row = sqlx::query_as::<_, Row>(&format!(
             "SELECT {COLUMNS} FROM identity.partner_memberships \

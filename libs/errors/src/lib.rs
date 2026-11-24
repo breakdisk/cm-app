@@ -18,6 +18,12 @@ pub enum AppError {
     #[error("Partner context required: this token is not bound to a partner")]
     PartnerContextRequired,
 
+    /// The user's only partner membership is suspended. Identity refuses the
+    /// token rather than issuing one without a `pid`, which would be a wider,
+    /// tenant-wide token than the one the user had before the suspension.
+    #[error("Partner membership inactive: this account's partner access is suspended")]
+    PartnerMembershipInactive,
+
     // ── Validation ──────────────────────────────────────────
     #[error("Validation failed: {0}")]
     Validation(String),
@@ -75,6 +81,7 @@ impl AppError {
             AppError::Unauthorized(_)              => StatusCode::UNAUTHORIZED,
             AppError::Forbidden { .. }             => StatusCode::FORBIDDEN,
             AppError::PartnerContextRequired       => StatusCode::FORBIDDEN,
+            AppError::PartnerMembershipInactive    => StatusCode::FORBIDDEN,
             AppError::Validation(_)                => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::NotFound { .. }              => StatusCode::NOT_FOUND,
             AppError::Conflict(_)                  => StatusCode::CONFLICT,
@@ -92,6 +99,7 @@ impl AppError {
             AppError::Unauthorized(_)              => "UNAUTHORIZED",
             AppError::Forbidden { .. }             => "FORBIDDEN",
             AppError::PartnerContextRequired       => "PARTNER_CONTEXT_REQUIRED",
+            AppError::PartnerMembershipInactive    => "PARTNER_MEMBERSHIP_INACTIVE",
             AppError::Validation(_)                => "VALIDATION_ERROR",
             AppError::NotFound { .. }              => "NOT_FOUND",
             AppError::Conflict(_)                  => "CONFLICT",
@@ -127,3 +135,15 @@ impl IntoResponse for AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partner_membership_inactive_is_a_403_with_its_own_code() {
+        let e = AppError::PartnerMembershipInactive;
+        assert_eq!(e.status_code(), StatusCode::FORBIDDEN);
+        assert_eq!(e.error_code(), "PARTNER_MEMBERSHIP_INACTIVE");
+    }
+}
