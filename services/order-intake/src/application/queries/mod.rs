@@ -8,7 +8,7 @@ use logisticos_types::ShipmentId;
 
 use crate::{
     application::services::shipment_service::{authorize_shipment, ShipmentListFilter, ShipmentRepository},
-    domain::value_objects::cancel_authority::ActingAs,
+    domain::value_objects::cancel_authority::{effective_merchant_filter, Actor, ActingAs},
     domain::entities::shipment::Shipment,
 };
 
@@ -73,16 +73,18 @@ impl ShipmentQueryService {
             .ok_or_else(|| AppError::NotFound { resource: "Shipment", id: id.to_string() })
     }
 
+    /// A user-facing list. Tenant is always enforced, and an owner-scoped
+    /// caller sees only what they booked whatever `merchant_id` they pass.
     pub async fn list(
         &self,
-        tenant_id: Uuid,
+        actor: &Actor,
         q: ListShipmentsQuery,
     ) -> AppResult<(Vec<Shipment>, i64)> {
         let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
         let page     = q.page.unwrap_or(1).max(1);
         let filter = ShipmentListFilter {
-            tenant_id,
-            merchant_id: q.merchant_id,
+            tenant_id: actor.tenant_id,
+            merchant_id: effective_merchant_filter(actor, q.merchant_id),
             status: q.status,
             updated_from: None,
             updated_to:   None,

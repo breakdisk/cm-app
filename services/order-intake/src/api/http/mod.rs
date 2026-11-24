@@ -27,15 +27,19 @@ use crate::domain::value_objects::cancellation_policy::CancelTier;
 /// The by-id actor for this token. Tenant is always enforced. Merchants and
 /// customers (create without update) are limited to shipments they booked:
 /// `create_shipment` stamps `merchant_id = claims.user_id` for every caller.
-fn acting_as(claims: &AuthClaims) -> ActingAs {
-    ActingAs::User(Actor {
+fn actor_of(claims: &AuthClaims) -> Actor {
+    Actor {
         tenant_id: claims.tenant_id,
         user_id: claims.user_id,
         tenant_wide: is_tenant_wide(
             claims.has_permission(permissions::SHIPMENT_CREATE),
             claims.has_permission(permissions::SHIPMENT_UPDATE),
         ),
-    })
+    }
+}
+
+fn acting_as(claims: &AuthClaims) -> ActingAs {
+    ActingAs::User(actor_of(claims))
 }
 
 pub mod accessorials;
@@ -637,7 +641,7 @@ async fn list_shipments(
     Query(q): Query<crate::application::queries::ListShipmentsQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let (shipments, total) = s.query.list(claims.tenant_id, q).await?;
+    let (shipments, total) = s.query.list(&actor_of(&claims), q).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "shipments": shipments,
         "total": total,

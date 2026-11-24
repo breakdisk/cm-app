@@ -48,6 +48,20 @@ pub fn may_act_on(actor: &Actor, shipment_tenant: Uuid, shipment_owner: Uuid) ->
     actor.tenant_wide || actor.user_id == shipment_owner
 }
 
+/// The merchant filter a list read may use.
+///
+/// An owner-scoped caller (merchant, customer) is pinned to their own id and a
+/// `merchant_id` they supply is ignored: honouring it would let any merchant
+/// list another merchant's shipments, recipient contact details included. A
+/// tenant-wide caller keeps whatever filter they asked for.
+pub fn effective_merchant_filter(actor: &Actor, requested: Option<Uuid>) -> Option<Uuid> {
+    if actor.tenant_wide {
+        requested
+    } else {
+        Some(actor.user_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +104,28 @@ mod tests {
         assert!(is_tenant_wide(true, true), "admin / tenant_admin");
         assert!(is_tenant_wide(false, true), "dispatcher / hub_scanner");
         assert!(is_tenant_wide(false, false), "driver / partner / readonly");
+    }
+
+    #[test]
+    fn merchant_list_is_pinned_to_self() {
+        let me = Uuid::new_v4();
+        let a = Actor { tenant_id: Uuid::new_v4(), user_id: me, tenant_wide: false };
+        assert_eq!(effective_merchant_filter(&a, None), Some(me));
+    }
+
+    #[test]
+    fn merchant_cannot_widen_by_naming_another_merchant() {
+        let me = Uuid::new_v4();
+        let a = Actor { tenant_id: Uuid::new_v4(), user_id: me, tenant_wide: false };
+        assert_eq!(effective_merchant_filter(&a, Some(Uuid::new_v4())), Some(me));
+    }
+
+    #[test]
+    fn operator_keeps_the_requested_filter() {
+        let wanted = Uuid::new_v4();
+        let a = Actor { tenant_id: Uuid::new_v4(), user_id: Uuid::new_v4(), tenant_wide: true };
+        assert_eq!(effective_merchant_filter(&a, Some(wanted)), Some(wanted));
+        assert_eq!(effective_merchant_filter(&a, None), None);
     }
 
     /// A command that nobody stamped with an actor must not reach the data.
