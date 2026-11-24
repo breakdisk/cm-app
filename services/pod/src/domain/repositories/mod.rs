@@ -5,8 +5,12 @@ use crate::domain::entities::{ProofOfDelivery, OtpCode, ProofOfPickup};
 
 #[async_trait]
 pub trait PodRepository: Send + Sync {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
+    /// Always tenant-scoped: another tenant's id reads as absent.
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
+    async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
+    /// Mesh-internal only (no caller identity to scope by): the evidence
+    /// endpoint delivery-experience calls. Never expose to a user token.
+    async fn find_by_shipment_internal(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
     async fn save(&self, pod: &ProofOfDelivery) -> anyhow::Result<()>;
 }
 
@@ -25,12 +29,14 @@ pub trait OtpRepository: Send + Sync {
 
 #[async_trait]
 pub trait PickupRepository: Send + Sync {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
-    /// Returns the most recent POP (any status) for a shipment.
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
+    /// Always tenant-scoped: another tenant's id reads as absent.
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
+    /// Returns the most recent POP (any status) for a shipment, within the tenant.
+    async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
     /// Returns the completed (submitted) POP for a shipment, or None if pickup has
     /// not yet been captured. Used by the carrier/container assignment guard to block
     /// sea-container loading until the chain of custody is open.
+    /// Mesh-internal only (callers carry no user identity): never expose to a user token.
     async fn find_completed_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
     /// Upsert — idempotent; uses `ON CONFLICT (id) DO UPDATE` for draft → submitted transitions.
     async fn save(&self, pop: &ProofOfPickup) -> anyhow::Result<()>;

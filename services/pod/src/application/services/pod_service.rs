@@ -89,7 +89,7 @@ impl PodService {
         // by the old driver and the ownership check on submit would 403.
         // Instead we error out and let an operator delete the stale draft —
         // surfacing the inconsistency rather than silently overwriting it.
-        if let Some(existing) = self.pod_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::Internal)? {
+        if let Some(existing) = self.pod_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
                 return Ok(existing);
             }
@@ -150,8 +150,8 @@ impl PodService {
     }
 
     /// Step 2a: Attach recipient signature to the POD.
-    pub async fn attach_signature(&self, cmd: AttachSignatureCommand) -> AppResult<()> {
-        let mut pod = self.load_pod(cmd.pod_id).await?;
+    pub async fn attach_signature(&self, tenant_id: &TenantId, cmd: AttachSignatureCommand) -> AppResult<()> {
+        let mut pod = self.load_pod(tenant_id.inner(), cmd.pod_id).await?;
         self.assert_draft(&pod)?;
 
         // Basic size check — signature data shouldn't exceed 500KB (compressed SVG/PNG)
@@ -177,7 +177,7 @@ impl PodService {
             )));
         }
 
-        let pod = self.load_pod(pod_id).await?;
+        let pod = self.load_pod(tenant_id.inner(), pod_id).await?;
         self.assert_draft(&pod)?;
 
         if pod.photos.len() >= MAX_PHOTOS_PER_POD {
@@ -234,8 +234,8 @@ impl PodService {
     }
 
     /// Step 2c: Register a completed photo upload (called after driver finishes S3 PUT).
-    pub async fn attach_photo(&self, cmd: AttachPhotoCommand) -> AppResult<()> {
-        let mut pod = self.load_pod(cmd.pod_id).await?;
+    pub async fn attach_photo(&self, tenant_id: &TenantId, cmd: AttachPhotoCommand) -> AppResult<()> {
+        let mut pod = self.load_pod(tenant_id.inner(), cmd.pod_id).await?;
         self.assert_draft(&pod)?;
 
         if cmd.size_bytes > MAX_PHOTO_SIZE_BYTES {
@@ -267,7 +267,7 @@ impl PodService {
         tenant_id: &TenantId,
         cmd: SubmitPodCommand,
     ) -> AppResult<Uuid> {
-        let mut pod = self.load_pod(cmd.pod_id).await?;
+        let mut pod = self.load_pod(tenant_id.inner(), cmd.pod_id).await?;
         self.assert_draft(&pod)?;
 
         // Validate driver owns this POD
@@ -396,7 +396,7 @@ impl PodService {
         cmd: InitiatePickupCommand,
     ) -> AppResult<ProofOfPickup> {
         // Idempotency: return existing draft if this driver already started one.
-        if let Some(existing) = self.pickup_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::Internal)? {
+        if let Some(existing) = self.pickup_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
                 return Ok(existing);
             }
@@ -560,7 +560,7 @@ impl PodService {
         cmd:       SubmitPickupCommand,
         tenant_code: String,
     ) -> AppResult<Uuid> {
-        let mut pop = self.pickup_repo.find_by_id(cmd.pop_id).await.map_err(AppError::Internal)?
+        let mut pop = self.pickup_repo.find_by_id(tenant_id.inner(), cmd.pop_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POP", id: cmd.pop_id.to_string() })?;
 
         if pop.driver_id != driver_id.inner() {
@@ -695,7 +695,7 @@ impl PodService {
             )));
         }
 
-        let pop = self.pickup_repo.find_by_id(pop_id).await.map_err(AppError::Internal)?
+        let pop = self.pickup_repo.find_by_id(tenant_id.inner(), pop_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POP", id: pop_id.to_string() })?;
 
         if pop.status == crate::domain::entities::PopStatus::Submitted {
@@ -797,19 +797,19 @@ impl PodService {
     }
 
     /// Retrieve a POD record by ID (for admin/ops views).
-    pub async fn get_by_id(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
-        self.load_pod(pod_id).await
+    pub async fn get_by_id(&self, tenant_id: &TenantId, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
+        self.load_pod(tenant_id.inner(), pod_id).await
     }
 
     /// Retrieve a POP record by ID (for admin/ops views).
-    pub async fn get_pop_by_id(&self, pop_id: Uuid) -> AppResult<ProofOfPickup> {
-        self.pickup_repo.find_by_id(pop_id).await.map_err(AppError::Internal)?
+    pub async fn get_pop_by_id(&self, tenant_id: &TenantId, pop_id: Uuid) -> AppResult<ProofOfPickup> {
+        self.pickup_repo.find_by_id(tenant_id.inner(), pop_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POP", id: pop_id.to_string() })
     }
 
     /// Retrieve the most recent POP for a shipment (for admin portal panel).
-    pub async fn get_pop_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
-        self.pickup_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    pub async fn get_pop_by_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
+        self.pickup_repo.find_by_shipment(tenant_id.inner(), shipment_id).await.map_err(AppError::Internal)
     }
 
     /// Retrieve the *completed* (submitted) POP for a shipment.
@@ -820,8 +820,14 @@ impl PodService {
     }
 
     /// Retrieve the most recent POD for a shipment (for admin portal panel).
-    pub async fn get_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
-        self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    pub async fn get_by_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
+        self.pod_repo.find_by_shipment(tenant_id.inner(), shipment_id).await.map_err(AppError::Internal)
+    }
+
+    /// Mesh-internal evidence read (no caller identity). Never call from a
+    /// handler that holds a user token: use [`Self::get_by_shipment`].
+    pub async fn get_by_shipment_internal(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
+        self.pod_repo.find_by_shipment_internal(shipment_id).await.map_err(AppError::Internal)
     }
 
     /// Map a POP entity to the JSON shape expected by the admin portal.
@@ -1008,8 +1014,8 @@ impl PodService {
         }
     }
 
-    async fn load_pod(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
-        self.pod_repo.find_by_id(pod_id).await.map_err(AppError::Internal)?
+    async fn load_pod(&self, tenant_id: Uuid, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
+        self.pod_repo.find_by_id(tenant_id, pod_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POD", id: pod_id.to_string() })
     }
 

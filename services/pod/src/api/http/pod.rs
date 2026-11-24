@@ -56,7 +56,7 @@ pub async fn initiate(
 }
 
 pub async fn attach_signature(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
@@ -65,7 +65,9 @@ pub async fn attach_signature(
         .ok_or_else(|| AppError::Validation("signature_data required".into()))?
         .to_string();
 
-    state.pod_service.attach_signature(AttachSignatureCommand { pod_id, signature_data }).await?;
+    state.pod_service
+        .attach_signature(&TenantId::from_uuid(claims.tenant_id), AttachSignatureCommand { pod_id, signature_data })
+        .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -116,13 +118,13 @@ pub async fn internal_media_urls(
 }
 
 pub async fn attach_photo(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<AttachPhotoCommand>,
 ) -> Result<axum::http::StatusCode, AppError> {
     let cmd = AttachPhotoCommand { pod_id, ..cmd };
-    state.pod_service.attach_photo(cmd).await?;
+    state.pod_service.attach_photo(&TenantId::from_uuid(claims.tenant_id), cmd).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -160,14 +162,14 @@ pub async fn submit(
 /// GET /v1/pods?shipment_id=<uuid> — fetch POD for the admin portal panel.
 /// Returns the most recent POD for the shipment with presigned photo/signature URLs.
 pub async fn list_pods(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Query(q): Query<PodQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let shipment_id = q.shipment_id
         .ok_or_else(|| AppError::Validation("shipment_id query param required".into()))?;
 
-    match state.pod_service.get_by_shipment(shipment_id).await? {
+    match state.pod_service.get_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
         Some(pod) => {
             let view = state.pod_service.pod_to_view(&pod).await;
             Ok(Json(serde_json::json!({ "data": [view] })))
@@ -177,11 +179,11 @@ pub async fn list_pods(
 }
 
 pub async fn get_pod(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let pod = state.pod_service.get_by_id(pod_id).await?;
+    let pod = state.pod_service.get_by_id(&TenantId::from_uuid(claims.tenant_id), pod_id).await?;
     let view = state.pod_service.pod_to_view(&pod).await;
     Ok(Json(serde_json::json!({ "data": view })))
 }
@@ -338,11 +340,11 @@ pub async fn get_pop_upload_url(
 /// GET /v1/pops/:id — fetch a single POP record (ops / admin portal).
 /// Returns a presigned `photo_url` (1-hour TTL) instead of the raw S3 key.
 pub async fn get_pop(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pop_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let pop = state.pod_service.get_pop_by_id(pop_id).await?;
+    let pop = state.pod_service.get_pop_by_id(&TenantId::from_uuid(claims.tenant_id), pop_id).await?;
     let view = state.pod_service.pop_to_view(&pop).await;
     Ok(Json(serde_json::json!({ "data": view })))
 }
@@ -350,14 +352,14 @@ pub async fn get_pop(
 /// GET /v1/pops?shipment_id=<uuid> — fetch POP for the admin portal panel.
 /// Returns the most recent submitted POP for the shipment with a presigned photo URL.
 pub async fn list_pops(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Query(q): Query<PopQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let shipment_id = q.shipment_id
         .ok_or_else(|| AppError::Validation("shipment_id query parameter is required".into()))?;
 
-    match state.pod_service.get_pop_by_shipment(shipment_id).await? {
+    match state.pod_service.get_pop_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
         Some(pop) => {
             let view = state.pod_service.pop_to_view(&pop).await;
             Ok(Json(serde_json::json!({ "data": view })))
@@ -390,7 +392,7 @@ pub async fn get_evidence_internal(
     };
 
     // Fetch the POD for this shipment (if any). Use all-photos evidence view.
-    let pod_view = match state.pod_service.get_by_shipment(shipment_id).await? {
+    let pod_view = match state.pod_service.get_by_shipment_internal(shipment_id).await? {
         Some(ref pod) => Some(state.pod_service.pod_evidence_to_view(pod).await),
         None          => None,
     };

@@ -89,7 +89,7 @@ impl From<PodRow> for ProofOfDelivery {
 
 #[async_trait]
 impl PodRepository for PgPodRepository {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
         let row = sqlx::query_as::<_, PodRow>(
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,
@@ -99,15 +99,36 @@ impl PodRepository for PgPodRepository {
                       otp_verified, otp_id, cod_collected_cents,
                       requires_photo, requires_signature,
                       captured_at, created_at
-               FROM pod.proofs WHERE id = $1"#
+               FROM pod.proofs WHERE id = $1 AND tenant_id = $2"#
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(ProofOfDelivery::from))
     }
 
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
+    async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
+        let row = sqlx::query_as::<_, PodRow>(
+            r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
+                      signature_data, recipient_name, photos,
+                      capture_lat, capture_lng, geofence_verified,
+                      COALESCE(out_of_bounds_handover, false) AS out_of_bounds_handover,
+                      device_timestamp,
+                      otp_verified, otp_id, cod_collected_cents,
+                      requires_photo, requires_signature,
+                      captured_at, created_at
+               FROM pod.proofs WHERE shipment_id = $1 AND tenant_id = $2
+               ORDER BY created_at DESC LIMIT 1"#
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(ProofOfDelivery::from))
+    }
+
+    async fn find_by_shipment_internal(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
         let row = sqlx::query_as::<_, PodRow>(
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,

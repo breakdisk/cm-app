@@ -96,22 +96,24 @@ const SELECT_COLS: &str = r#"
 
 #[async_trait]
 impl PickupRepository for PgPickupRepository {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfPickup>> {
-        let sql = format!("SELECT {SELECT_COLS} FROM pod.proofs_of_pickup WHERE id = $1");
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfPickup>> {
+        let sql = format!("SELECT {SELECT_COLS} FROM pod.proofs_of_pickup WHERE id = $1 AND tenant_id = $2");
         let row = sqlx::query_as::<_, PopRow>(&sql)
             .bind(id)
+            .bind(tenant_id)
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(ProofOfPickup::from))
     }
 
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>> {
+    async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>> {
         let sql = format!(
             "SELECT {SELECT_COLS} FROM pod.proofs_of_pickup \
-             WHERE shipment_id = $1 ORDER BY created_at DESC LIMIT 1"
+             WHERE shipment_id = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 1"
         );
         let row = sqlx::query_as::<_, PopRow>(&sql)
             .bind(shipment_id)
+            .bind(tenant_id)
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(ProofOfPickup::from))
