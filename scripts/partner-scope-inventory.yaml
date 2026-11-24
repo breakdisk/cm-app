@@ -78,6 +78,19 @@ services/hub-ops/src/bootstrap.rs::list_scans_handler: denied  # scan history of
 services/hub-ops/src/bootstrap.rs::manifest: denied  # hub manifest
 services/hub-ops/src/bootstrap.rs::shipment_by_awb_handler: denied  # resolves any tracking number in the tenant to its shipment
 
+# MCP tools: hub-ops' MCP module is not mounted by any router yet (nothing builds
+# an McpContext outside McpContext::from_claims), so these are unreachable today.
+# The guard is in anyway, so mounting it later cannot open the hub to a partner.
+services/hub-ops/src/mcp/tools/get_container_status.rs::handle: denied  # ctx.require_unscoped: a partner-bound caller is refused; MCP module not mounted yet
+services/hub-ops/src/mcp/tools/get_customs_queue.rs::handle: denied  # ctx.require_unscoped: customs queue across the hub; MCP module not mounted yet
+services/hub-ops/src/mcp/tools/get_hub_inventory.rs::handle: denied  # ctx.require_unscoped: hub inventory at any location; MCP module not mounted yet
+
+# ── driver-ops scoping helpers: the code that narrows the rest ──────────────
+services/driver-ops/src/api/http/partner_scope.rs::manifest_scope: scoped  # pins a bound token to its own partner's carrier filter
+services/driver-ops/src/api/http/partner_scope.rs::manifest_scope_when: scoped  # the manifest scoping rule itself (resolve_partner_access + carrier_filter)
+services/driver-ops/src/api/http/partner_scope.rs::roster_scope: scoped  # pins a bound token to its own partner's roster
+services/driver-ops/src/api/http/partner_scope.rs::roster_scope_when: scoped  # the roster scoping rule itself (resolve_partner_access + carrier_filter)
+
 # ── order-intake: shipments, scoped to the booker or the linked partner ──────
 services/order-intake/src/api/http/mod.rs::cancellation_preview: scoped  # get_for: tenant, booker, and linked partner
 services/order-intake/src/api/http/mod.rs::get_shipment: scoped  # get_for: tenant, booker, and linked partner

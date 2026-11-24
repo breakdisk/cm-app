@@ -12,6 +12,7 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<McpState>) -> Re
     if !ctx.has_permission(permissions::SHIPMENT_READ) {
         return Err("permission denied: shipments:read required".into());
     }
+    ctx.require_unscoped("hub container status")?;
     let container_id = req_uuid(args, "container_id")?;
     let (container, manifest) = state
         .hub_transfer_svc

@@ -9,9 +9,13 @@ next year with `shipments:read` and no scope check would repeat it.
 
 What it checks, with no dependencies beyond the standard library:
 
-  1. Find every async handler that takes the caller's claims and names a
-     permission that partner, store or driver roles hold (read from
+  1. Find every fn, at any indentation and including impl methods, whose full
+     parameter list takes `Claims`, `AuthClaims` or `McpContext` and whose body
+     names a permission that partner, store or driver roles hold (read from
      libs/auth/src/rbac.rs, so a new role or grant is picked up on its own).
+     A permission is named as `permissions::X`, or as the string or const
+     argument of `has_permission(...)` / `require_permission(...)`. Code under
+     `#[cfg(test)]` is ignored.
   2. Each such handler must appear in scripts/partner-scope-inventory.yaml with
      a status and a reason. An unlisted one fails the build.
   3. The status is verified against the source, not just trusted:
@@ -46,8 +50,12 @@ SCOPE_MARKERS = (
     "get_by_email(", "load_readable_carrier(", "load_writable_carrier(", "CarrierAuthority",
 )
 
-FN_RE = re.compile(r"^(?:pub(?:\([a-z]+\))?\s+)?async\s+fn\s+(\w+)", re.M)
+FN_RE = re.compile(r"^[ \t]*(?:pub(?:\([a-z: ]+\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)", re.M)
+CALLER_RE = re.compile(r"\b(?:Claims|AuthClaims|McpContext)\b")
 PERM_RE = re.compile(r"permissions::([A-Z][A-Z0-9_]*)")
+PERM_CALL_RE = re.compile(r"\b(?:has_permission|require_permission)\s*\(")
+RAW_STR_RE = re.compile(r'b?r(#*)"')
+CHAR_RE = re.compile(r"'(?:\\.[^']*|[^\\'])'")
 CONST_RE = re.compile(r'pub const ([A-Z][A-Z0-9_]*):\s*&str\s*=\s*"([^"]+)"')
 ENTRY_RE = re.compile(r"^(\S+::\w+):\s*(scoped|denied|not_sensitive)\s*#\s*(\S.*)$")
 
@@ -78,21 +86,101 @@ def sensitive_permissions(values):
     return held
 
 
+def _skip_literal(text, i):
+    """If a comment, string, raw string or char literal starts at i, return the
+    index after it, else None. Lets bracket matching ignore their contents."""
+    n = len(text)
+    c = text[i]
+    if text.startswith("//", i):
+        j = text.find("\n", i)
+        return n if j < 0 else j
+    if text.startswith("/*", i):
+        j = text.find("*/", i + 2)
+        return n if j < 0 else j + 2
+    m = RAW_STR_RE.match(text, i)
+    if m:
+        end = text.find('"' + m.group(1), m.end())
+        return n if end < 0 else end + 1 + len(m.group(1))
+    if c == '"':
+        j = i + 1
+        while j < n and text[j] != '"':
+            j += 2 if text[j] == "\\" else 1
+        return j + 1
+    if c == "'":
+        m = CHAR_RE.match(text, i)
+        if m:  # a char literal; a lifetime such as 'a does not match
+            return m.end()
+    return None
+
+
+def _match(text, i, open_c, close_c):
+    """Index just past the bracket that closes the one at text[i]."""
+    depth, n = 0, len(text)
+    while i < n:
+        skip = _skip_literal(text, i)
+        if skip is not None:
+            i = skip
+            continue
+        if text[i] == open_c:
+            depth += 1
+        elif text[i] == close_c:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _test_regions(text):
+    """Spans of `#[cfg(test)]` items, so test helpers are not read as handlers."""
+    spans = []
+    for m in re.finditer(r"#\[cfg\(test\)\]", text):
+        j = text.find("{", m.end())
+        semi = text.find(";", m.end())
+        if j >= 0 and (semi < 0 or j < semi):
+            spans.append((m.start(), _match(text, j, "{", "}")))
+    return spans
+
+
+def permissions_used(body, values):
+    """Permissions a body names: `permissions::X` anywhere, plus the string or
+    bare-const argument of has_permission(...) / require_permission(...)."""
+    used = {values[n] for n in PERM_RE.findall(body) if n in values}
+    for m in PERM_CALL_RE.finditer(body):
+        args = body[m.end() : _match(body, m.end() - 1, "(", ")")]
+        used.update(re.findall(r'"([a-z_]+:[a-z_-]+)"', args))
+        for name in re.findall(r"\b([A-Z][A-Z0-9_]*)\b", args):
+            if name in values:
+                used.add(values[name])
+    return used
+
+
 def handlers():
-    """(key, body, permission strings used) for every claims-taking async fn."""
+    """(key, body, permission strings used) for every fn that takes the caller's
+    claims, at any indentation (impl methods included)."""
     values = permission_values()
-    out = []
+    merged = {}
     for rs in sorted((ROOT / "services").glob("*/src/**/*.rs")):
         text = rs.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
+        tests = _test_regions(text)
         for m in FN_RE.finditer(text):
-            start_line = text.count("\n", 0, m.start())
-            # A top-level fn ends at the next line that is exactly "}".
-            end_line = next((i for i in range(start_line + 1, len(lines)) if lines[i].rstrip() == "}"), len(lines) - 1)
-            body = "\n".join(lines[start_line : end_line + 1])
-            if "claims" not in body[:600] and "AuthClaims" not in body[:600]:
+            if any(a <= m.start() < b for a, b in tests):
                 continue
-            used = {values[n] for n in PERM_RE.findall(body) if n in values}
+            paren = text.find("(", m.end())
+            if paren < 0:
+                continue
+            params_end = _match(text, paren, "(", ")")
+            if not CALLER_RE.search(text[paren:params_end]):
+                continue
+            # The body starts at the first `{` after the params; a `;` first
+            # means a trait method with no body.
+            i = params_end
+            while i < len(text) and text[i] not in "{;":
+                i += 1
+            if i >= len(text) or text[i] == ";":
+                continue
+            body = text[m.start() : _match(text, i, "{", "}")]
+            used = permissions_used(body, values)
             # A handler that delegates to the scoping helpers may name no
             # permission itself (the manifest and roster do), but it is exactly
             # the kind that must stay classified and verified.
@@ -100,8 +188,9 @@ def handlers():
                 used = used | {"(partner scoping)"}
             if used:
                 key = f"{rs.relative_to(ROOT).as_posix()}::{m.group(1)}"
-                out.append((key, body, used))
-    return out
+                prev = merged.get(key)
+                merged[key] = (prev[0] + "\n" + body, prev[1] | used) if prev else (body, used)
+    return [(k, b, u) for k, (b, u) in merged.items()]
 
 
 def load_inventory():

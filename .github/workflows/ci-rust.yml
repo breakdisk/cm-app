@@ -26,6 +26,13 @@ on:
       # not even trigger the workflow, so the guard ships unexercised.
       - "scripts/check-*.sh"
       - "scripts/check-*.py"
+      # Inputs of check-partner-scope.py and check-openapi-routes.py: editing the
+      # inventory or the contract must run the guard that reads it.
+      - "scripts/partner-scope-inventory.yaml"
+      - "scripts/openapi-tracked-prefixes.txt"
+      - "scripts/check-partner-scope.py"
+      - "scripts/check-openapi-routes.py"
+      - "docs/api/openapi/**"
       # The console half of the CSV contract. Without this a rename in the
       # portal alone never triggers the guard that compares it to the parser.
       - "apps/merchant-portal/src/components/storefront/csv-format.tsx"
@@ -42,6 +49,13 @@ on:
       # not even trigger the workflow, so the guard ships unexercised.
       - "scripts/check-*.sh"
       - "scripts/check-*.py"
+      # Inputs of check-partner-scope.py and check-openapi-routes.py: editing the
+      # inventory or the contract must run the guard that reads it.
+      - "scripts/partner-scope-inventory.yaml"
+      - "scripts/openapi-tracked-prefixes.txt"
+      - "scripts/check-partner-scope.py"
+      - "scripts/check-openapi-routes.py"
+      - "docs/api/openapi/**"
       # The console half of the CSV contract. Without this a rename in the
       # portal alone never triggers the guard that compares it to the parser.
       - "apps/merchant-portal/src/components/storefront/csv-format.tsx"
@@ -87,6 +101,11 @@ jobs:
               - "libs/**"
               - "Cargo.toml"
               - "Cargo.lock"
+              - "scripts/partner-scope-inventory.yaml"
+              - "scripts/openapi-tracked-prefixes.txt"
+              - "scripts/check-partner-scope.py"
+              - "scripts/check-openapi-routes.py"
+              - "docs/api/openapi/**"
             libs:
               - "libs/**"
             api-gateway:
