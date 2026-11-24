@@ -100,6 +100,8 @@ pub struct Shipment {
     /// only; dispatch never gates on it.
     #[serde(default)]
     pub dest_geocoding: crate::domain::value_objects::GeocodingRecord,
+    /// Building, unit and area of the destination, when the customer gave them.
+    pub dest_parts: crate::domain::value_objects::AddressParts,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -295,6 +297,7 @@ mod tests {
             booking_amount_cents:        None,
             booking_currency:            None,
             dest_geocoding:              Default::default(),
+            dest_parts:                Default::default(),
         };
         assert_eq!(s.customer_name,  "Test Customer");
         assert_eq!(s.customer_phone, "+63912345678");
@@ -338,6 +341,7 @@ mod tests {
             booking_amount_cents:        None,
             booking_currency:            None,
             dest_geocoding:              Default::default(),
+            dest_parts:                Default::default(),
         };
         let fee = s.compute_base_fee();
         assert_eq!(fee, logisticos_types::Money::new(8500, Currency::PHP));
@@ -410,6 +414,7 @@ mod tests {
             booking_amount_cents:        None,
             booking_currency:            None,
             dest_geocoding:              Default::default(),
+            dest_parts:                Default::default(),
         };
         let fee = s.compute_base_fee_aed();
         assert_eq!(fee, ae_base_fee_for(ServiceType::Standard, 1_500));

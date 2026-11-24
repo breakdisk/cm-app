@@ -84,6 +84,7 @@ fn shipment(dest_geocoding: GeocodingRecord) -> Shipment {
         booking_amount_cents: None,
         booking_currency: None,
         dest_geocoding,
+        dest_parts: Default::default(),
     }
 }
 
@@ -130,4 +131,37 @@ async fn a_row_with_no_geocoding_reads_as_unknown_and_an_unrecognized_value_too(
         .expect("update");
     let back = repo.find_by_id(&s.id).await.expect("find").expect("row");
     assert_eq!(back.dest_geocoding.quality, GeocodeQuality::Unknown);
+}
+
+#[tokio::test]
+async fn pin_survives_a_later_save_and_address_parts_round_trip() {
+    let Some(pool) = pool().await else { return };
+    let repo = PgShipmentRepository { pool };
+    let mut s = shipment(GeocodingRecord {
+        quality: GeocodeQuality::Street,
+        source: Some("customer_pin".into()),
+        provider: Some("customer".into()),
+        place_id: None,
+        confidence: None,
+        geocoded_at: Some(Utc::now()),
+    });
+    s.destination.coordinates = Some(logisticos_types::Coordinates { lat: 25.0803, lng: 55.1403 });
+    s.dest_parts = logisticos_order_intake::domain::value_objects::AddressParts {
+        building: Some("Marina Tower".into()),
+        unit: Some("1204".into()),
+        area: Some("Dubai Marina".into()),
+    };
+    repo.save(&s).await.expect("save");
+
+    // A later save of the loaded shipment (a status change, say) keeps the pin.
+    let mut back = repo.find_by_id(&s.id).await.expect("find").expect("row");
+    back.status = ShipmentStatus::Confirmed;
+    repo.save(&back).await.expect("second save");
+
+    let back = repo.find_by_id(&s.id).await.expect("find").expect("row");
+    assert_eq!(back.dest_geocoding.source.as_deref(), Some("customer_pin"));
+    assert_eq!(back.destination.coordinates, Some(logisticos_types::Coordinates { lat: 25.0803, lng: 55.1403 }));
+    assert_eq!(back.dest_parts.building.as_deref(), Some("Marina Tower"));
+    assert_eq!(back.dest_parts.unit.as_deref(), Some("1204"));
+    assert_eq!(back.dest_parts.area.as_deref(), Some("Dubai Marina"));
 }

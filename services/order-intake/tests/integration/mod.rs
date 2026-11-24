@@ -724,6 +724,7 @@ fn make_shipment(
         booking_amount_cents:        None,
         booking_currency:            None,
         dest_geocoding:              Default::default(),
+        dest_parts:                Default::default(),
     }
 }
 

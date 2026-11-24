@@ -96,6 +96,9 @@ struct ShipmentRow {
     cancellation_policy_version: Option<String>,
     booking_amount_cents:        Option<i64>,
     booking_currency:            Option<String>,
+    dest_building:               Option<String>,
+    dest_unit:                   Option<String>,
+    dest_area:                   Option<String>,
 }
 
 impl ShipmentRow {
@@ -217,6 +220,11 @@ impl ShipmentRow {
             cancellation_policy_version: self.cancellation_policy_version,
             booking_amount_cents:        self.booking_amount_cents,
             booking_currency:            self.booking_currency,
+            dest_parts: crate::domain::value_objects::AddressParts {
+                building: self.dest_building,
+                unit:     self.dest_unit,
+                area:     self.dest_area,
+            },
             dest_geocoding: GeocodingRecord {
                 // Anything this build does not recognise reads as UNKNOWN.
                 quality:     GeocodeQuality::parse(&self.dest_geocoding_quality),
@@ -265,7 +273,8 @@ const SHIPMENT_COLS: &str = r#"
     merchant_reference, source_platform, external_order_id,
     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
     created_at, updated_at,
-    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency
+    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency,
+    dest_building, dest_unit, dest_area
 "#;
 
 /// Maps a dynamic `PgRow` into the typed `ShipmentRow` struct.
@@ -328,6 +337,9 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         cancellation_policy_version: r.get("cancellation_policy_version"),
         booking_amount_cents:        r.get("booking_amount_cents"),
         booking_currency:            r.get("booking_currency"),
+        dest_building:               r.get("dest_building"),
+        dest_unit:                   r.get("dest_unit"),
+        dest_area:                   r.get("dest_area"),
     }
 }
 
@@ -458,7 +470,8 @@ impl ShipmentRepository for PgShipmentRepository {
                     merchant_reference, source_platform, external_order_id,
                     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
                     created_at, updated_at,
-                    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency
+                    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency,
+                    dest_building, dest_unit, dest_area
                 ) VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,
                     $10,$11,$12,$13,
@@ -467,7 +480,8 @@ impl ShipmentRepository for PgShipmentRepository {
                     $32,$33,$34,$35,$36,$37,
                     $38,$39,$40,$41,$42,$43,$44,$45,$46,$47,
                     $48,$49,$50,$51,$52,$53,
-                    $54,$55,$56,$57
+                    $54,$55,$56,$57,
+                    $58,$59,$60
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -486,6 +500,9 @@ impl ShipmentRepository for PgShipmentRepository {
                     dest_geocoding_place_id   = EXCLUDED.dest_geocoding_place_id,
                     dest_geocoding_confidence = EXCLUDED.dest_geocoding_confidence,
                     dest_geocoded_at          = EXCLUDED.dest_geocoded_at,
+                    dest_building             = EXCLUDED.dest_building,
+                    dest_unit                 = EXCLUDED.dest_unit,
+                    dest_area                 = EXCLUDED.dest_area,
                     special_instructions = EXCLUDED.special_instructions,
                     merchant_reference   = EXCLUDED.merchant_reference,
                     source_platform      = EXCLUDED.source_platform,
@@ -561,6 +578,9 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.cancellation_policy_version.as_deref())
             .bind(s.booking_amount_cents)
             .bind(s.booking_currency.as_deref())
+            .bind(s.dest_parts.building.as_deref())
+            .bind(s.dest_parts.unit.as_deref())
+            .bind(s.dest_parts.area.as_deref())
             .execute(&self.pool)
             .await?;
             Ok(())

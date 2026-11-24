@@ -8,7 +8,7 @@ pub use accessorials::{
 };
 
 pub mod geocoding;
-pub use geocoding::{GeocodedAddress, GeocodingRecord};
+pub use geocoding::{AddressParts, GeocodedAddress, GeocodingRecord, PROVIDER_CUSTOMER, SOURCE_CUSTOMER_PIN};
 pub mod cancel_authority;
 pub mod cancellation_policy;
 pub mod home_move;

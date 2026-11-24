@@ -237,6 +237,75 @@ pub trait AddressNormalizer: Send + Sync {
     }
 }
 
+/// The customer's pin on an address, when they gave one.
+///
+/// `Ok(None)` means no pin. A pin that is half given, out of range, not a
+/// number or at (0, 0) is an error: it is the caller's explicit input, and
+/// dropping it quietly would hide a client bug. (0, 0) is what a client sends
+/// when it has no location yet.
+pub(crate) fn customer_pin(
+    input: &crate::application::commands::AddressInput,
+) -> Result<Option<logisticos_types::Coordinates>, String> {
+    match (input.pin_lat, input.pin_lng) {
+        (None, None) => Ok(None),
+        (Some(lat), Some(lng)) => {
+            if !lat.is_finite() || !lng.is_finite() {
+                return Err("pin_lat and pin_lng must be finite numbers".into());
+            }
+            if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+                return Err("pin_lat must be within -90..90 and pin_lng within -180..180".into());
+            }
+            if lat == 0.0 && lng == 0.0 {
+                return Err("pin at (0, 0) is not a location".into());
+            }
+            Ok(Some(logisticos_types::Coordinates { lat, lng }))
+        }
+        _ => Err("pin_lat and pin_lng must be given together".into()),
+    }
+}
+
+/// The destination as it will be stored. Without a pin, the geocoder's answer
+/// stands (and its failure is the booking's failure, as before). With one, the
+/// coordinates are the customer's and the source says so; the geocoder still
+/// supplies the normalised text and the quality. The pin does not make the
+/// address text more precise, so quality is not raised. If the geocoder fails
+/// the pin still applies, with quality UNKNOWN.
+pub(crate) fn resolve_destination(
+    input: &crate::application::commands::AddressInput,
+    pin: Option<logisticos_types::Coordinates>,
+    geocoded: anyhow::Result<crate::domain::value_objects::GeocodedAddress>,
+    now: chrono::DateTime<Utc>,
+) -> anyhow::Result<crate::domain::value_objects::GeocodedAddress> {
+    use crate::domain::value_objects::{GeocodedAddress, GeocodingRecord, PROVIDER_CUSTOMER, SOURCE_CUSTOMER_PIN};
+    let Some(pin) = pin else { return geocoded };
+    let mut out = match geocoded {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(error = %e, "geocoder failed; the customer pin still applies");
+            GeocodedAddress {
+                address: logisticos_types::Address {
+                    line1:        input.line1.clone(),
+                    line2:        input.line2.clone(),
+                    barangay:     input.barangay.clone(),
+                    city:         input.city.clone(),
+                    province:     input.province.clone(),
+                    postal_code:  input.postal_code.clone(),
+                    country_code: input.country_code.clone(),
+                    coordinates:  None,
+                },
+                geocoding: GeocodingRecord::unknown(),
+            }
+        }
+    };
+    out.address.coordinates = Some(pin);
+    out.geocoding.source = Some(SOURCE_CUSTOMER_PIN.into());
+    out.geocoding.provider = Some(PROVIDER_CUSTOMER.into());
+    out.geocoding.place_id = None;
+    out.geocoding.confidence = None;
+    out.geocoding.geocoded_at = Some(now);
+    Ok(out)
+}
+
 /// Threshold above which an uncategorized shipment is treated as "heavy" for
 /// driver-app iconography and dispatch vehicle matching (20 kg).
 const HEAVY_WEIGHT_GRAMS: u32 = 20_000;
@@ -486,7 +555,15 @@ impl ShipmentService {
 
         // ── Normalize and geocode addresses ──────────────────────────────────
         let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
-        let destination_geocoded = self.normalizer.normalize_detailed(&cmd.destination).await.map_err(AppError::Internal)?;
+        let pin = customer_pin(&cmd.destination).map_err(AppError::Validation)?;
+        let geocoded = self.normalizer.normalize_detailed(&cmd.destination).await;
+        let destination_geocoded = resolve_destination(&cmd.destination, pin, geocoded, Utc::now())
+            .map_err(AppError::Internal)?;
+        let dest_parts = crate::domain::value_objects::AddressParts {
+            building: cmd.destination.building.clone(),
+            unit:     cmd.destination.unit.clone(),
+            area:     cmd.destination.area.clone(),
+        };
         let destination = destination_geocoded.address;
         let dest_geocoding = destination_geocoded.geocoding;
         tracing::info!(step = "normalized", "create");
@@ -692,6 +769,7 @@ impl ShipmentService {
             booking_amount_cents: verified_amount_cents,
             booking_currency: verified_currency.clone(),
             dest_geocoding,
+            dest_parts,
             created_at: now,
             updated_at: now,
         };
@@ -1206,5 +1284,105 @@ impl ShipmentService {
 
         tracing::info!(created = created.len(), failed = failed.len(), "Bulk shipment creation complete");
         Ok(BulkCreateResult { created, failed })
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+    use crate::application::commands::AddressInput;
+    use crate::domain::value_objects::{GeocodedAddress, GeocodingRecord};
+    use logisticos_types::{Address, Coordinates, GeocodeQuality};
+
+    fn input(lat: Option<f64>, lng: Option<f64>) -> AddressInput {
+        AddressInput {
+            line1: "Marina Tower".into(), line2: None, barangay: None, city: "Dubai".into(),
+            province: "Dubai".into(), postal_code: "00000".into(), country_code: "AE".into(),
+            pin_lat: lat, pin_lng: lng, building: Some("Marina Tower".into()),
+            unit: Some("1204".into()), area: Some("Dubai Marina".into()),
+        }
+    }
+
+    fn geocoded() -> anyhow::Result<GeocodedAddress> {
+        Ok(GeocodedAddress {
+            address: Address {
+                line1: "Marina Tower, Dubai".into(), line2: None, barangay: None, city: "Dubai".into(),
+                province: "Dubai".into(), postal_code: "00000".into(), country_code: "AE".into(),
+                coordinates: Some(Coordinates { lat: 25.0, lng: 55.0 }),
+            },
+            geocoding: GeocodingRecord {
+                quality: GeocodeQuality::Street,
+                source: Some("provider".into()),
+                provider: Some("mapbox".into()),
+                place_id: Some("p1".into()),
+                confidence: Some("high".into()),
+                geocoded_at: None,
+            },
+        })
+    }
+
+    #[test]
+    fn pin_overrides_geocoder_and_marks_customer_pin() {
+        let i = input(Some(25.0803), Some(55.1403));
+        let pin = customer_pin(&i).expect("valid");
+        let out = resolve_destination(&i, pin, geocoded(), Utc::now()).expect("ok");
+        assert_eq!(out.address.coordinates, Some(Coordinates { lat: 25.0803, lng: 55.1403 }));
+        assert_eq!(out.address.line1, "Marina Tower, Dubai", "the geocoder still supplies the text");
+        assert_eq!(out.geocoding.source.as_deref(), Some("customer_pin"));
+        assert_eq!(out.geocoding.provider.as_deref(), Some("customer"));
+        assert_eq!(out.geocoding.quality, GeocodeQuality::Street, "a pin does not raise quality");
+        assert_eq!(out.geocoding.place_id, None);
+        assert_eq!(out.geocoding.confidence, None);
+        assert!(out.geocoding.geocoded_at.is_some());
+    }
+
+    #[test]
+    fn pin_survives_a_geocoder_failure() {
+        let i = input(Some(25.0803), Some(55.1403));
+        let pin = customer_pin(&i).expect("valid");
+        let out = resolve_destination(&i, pin, Err(anyhow::anyhow!("down")), Utc::now()).expect("ok");
+        assert_eq!(out.address.coordinates, Some(Coordinates { lat: 25.0803, lng: 55.1403 }));
+        assert_eq!(out.geocoding.quality, GeocodeQuality::Unknown);
+        assert_eq!(out.geocoding.source.as_deref(), Some("customer_pin"));
+    }
+
+    #[test]
+    fn pin_with_only_one_coordinate_is_rejected() {
+        assert!(customer_pin(&input(Some(25.0), None)).is_err());
+        assert!(customer_pin(&input(None, Some(55.0))).is_err());
+    }
+
+    #[test]
+    fn pin_out_of_range_is_rejected() {
+        assert!(customer_pin(&input(Some(91.0), Some(55.0))).is_err());
+        assert!(customer_pin(&input(Some(25.0), Some(-181.0))).is_err());
+        assert!(customer_pin(&input(Some(f64::NAN), Some(55.0))).is_err());
+        assert!(customer_pin(&input(Some(25.0), Some(f64::INFINITY))).is_err());
+    }
+
+    #[test]
+    fn pin_at_zero_zero_is_rejected() {
+        assert!(customer_pin(&input(Some(0.0), Some(0.0))).is_err());
+    }
+
+    #[test]
+    fn booking_without_a_pin_is_unchanged() {
+        let i = input(None, None);
+        assert_eq!(customer_pin(&i), Ok(None));
+        let out = resolve_destination(&i, None, geocoded(), Utc::now()).expect("ok");
+        assert_eq!(out.address.coordinates, Some(Coordinates { lat: 25.0, lng: 55.0 }));
+        assert_eq!(out.geocoding.source.as_deref(), Some("provider"));
+        assert_eq!(out.geocoding.place_id.as_deref(), Some("p1"));
+        // and a geocoder failure is still the booking's failure
+        assert!(resolve_destination(&i, None, Err(anyhow::anyhow!("down")), Utc::now()).is_err());
+    }
+
+    #[test]
+    fn a_request_without_pin_fields_still_deserializes() {
+        let i: AddressInput = serde_json::from_value(serde_json::json!({
+            "line1": "12345 Main", "city": "Manila", "province": "NCR",
+            "postal_code": "1000", "country_code": "PH"
+        })).expect("old clients unaffected");
+        assert_eq!((i.pin_lat, i.pin_lng, i.building), (None, None, None));
     }
 }

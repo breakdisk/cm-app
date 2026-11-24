@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 /// `dest_geocoding_source` values.
 pub const SOURCE_PROVIDER: &str = "provider";
+/// The customer confirmed the location on a map. The coordinates are theirs.
+pub const SOURCE_CUSTOMER_PIN: &str = "customer_pin";
+/// `dest_geocoding_provider` for a customer pin.
+pub const PROVIDER_CUSTOMER: &str = "customer";
 
 /// The six `dest_geocod*` columns, as one value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,4 +55,13 @@ impl Default for GeocodingRecord {
 pub struct GeocodedAddress {
     pub address: Address,
     pub geocoding: GeocodingRecord,
+}
+
+/// The destination's building, unit and area, as the customer gave them. Kept
+/// as given and never fed to the geocoder.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AddressParts {
+    pub building: Option<String>,
+    pub unit: Option<String>,
+    pub area: Option<String>,
 }

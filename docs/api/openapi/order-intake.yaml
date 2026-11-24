@@ -390,6 +390,41 @@ components:
           type: number
           format: double
           nullable: true
+        pin_lat:
+          type: number
+          format: double
+          nullable: true
+          minimum: -90
+          maximum: 90
+          description: >-
+            Latitude of the location the customer confirmed on a map. Give it
+            with pin_lng or not at all; one alone is a 400. (0, 0) is refused.
+            A valid pin becomes the destination coordinates and records the
+            geocoding source as customer_pin. It does not raise the geocode
+            quality: a quality rating does not prove the pin is the customer's
+            entrance.
+        pin_lng:
+          type: number
+          format: double
+          nullable: true
+          minimum: -180
+          maximum: 180
+          description: Longitude of the customer's pin. See pin_lat.
+        building:
+          type: string
+          maxLength: 100
+          nullable: true
+          description: Building name or number (UAE addresses).
+        unit:
+          type: string
+          maxLength: 100
+          nullable: true
+          description: Unit, apartment or office within the building.
+        area:
+          type: string
+          maxLength: 100
+          nullable: true
+          description: Area or community, for example Dubai Marina.
 
     Parcel:
       type: object

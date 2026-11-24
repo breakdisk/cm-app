@@ -54,6 +54,7 @@ mod tests {
             province: "NCR".into(),
             postal_code: "1000".into(),
             country_code: "PH".into(),
+            pin_lat: None, pin_lng: None, building: None, unit: None, area: None,
         };
         let out = PassthroughNormalizer.normalize_detailed(&input).await.expect("normalizes");
         assert_eq!(out.geocoding.quality, GeocodeQuality::Unknown);

@@ -972,6 +972,7 @@ mod tests {
         AddressInput {
             line1: "12 Acacia St".into(), line2: None, barangay: None, city: "Makati".into(),
             province: "Metro Manila".into(), postal_code: "1200".into(), country_code: "PH".into(),
+            pin_lat: None, pin_lng: None, building: None, unit: None, area: None,
         }
     }
 

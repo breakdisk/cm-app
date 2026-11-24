@@ -133,6 +133,22 @@ pub struct AddressInput {
     pub postal_code: String,
     #[validate(length(min = 2, max = 2))]
     pub country_code: String,   // "PH"
+    /// Where the customer placed the pin. Both or neither: one alone, a value
+    /// out of range, or (0, 0) is refused at booking rather than dropped.
+    #[serde(default)]
+    pub pin_lat: Option<f64>,
+    #[serde(default)]
+    pub pin_lng: Option<f64>,
+    /// UAE-style address parts; kept with the destination, never geocoded.
+    #[serde(default)]
+    #[validate(length(max = 100))]
+    pub building: Option<String>,
+    #[serde(default)]
+    #[validate(length(max = 100))]
+    pub unit: Option<String>,
+    #[serde(default)]
+    #[validate(length(max = 100))]
+    pub area: Option<String>,
 }
 
 /// Command issued by the connectors service via the internal (Istio mTLS) endpoint.
