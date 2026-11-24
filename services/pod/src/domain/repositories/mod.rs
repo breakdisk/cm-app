@@ -100,7 +100,8 @@ pub struct ShipmentBillingContext {
 /// order-intake said, explicitly, that the shipment is not this tenant's: it
 /// does not exist, or it belongs to another tenant (the two are deliberately
 /// indistinguishable). Carried inside the `anyhow::Error` of a failed lookup so
-/// callers can tell it from an outage, which must never block capture.
+/// callers can tell it from an outage, which is refused (503) rather than
+/// treated as a pass: ownership that cannot be verified writes nothing.
 #[derive(Debug)]
 pub struct ShipmentNotFound(pub Uuid);
 

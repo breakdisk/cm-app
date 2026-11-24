@@ -75,7 +75,7 @@ pub async fn handle_partner_link(pool: &PgPool, topic: &str, payload: &[u8]) -> 
     let Some(carrier_id) = carrier_id else { return Ok(()) };
 
     sqlx::query(
-        "INSERT INTO order_intake.shipment_partner_links (tenant_id, shipment_id, carrier_id, source)          VALUES ($1, $2, $3, $4)          ON CONFLICT (shipment_id, carrier_id) DO NOTHING",
+        "INSERT INTO order_intake.shipment_partner_links (tenant_id, shipment_id, carrier_id, source) VALUES ($1, $2, $3, $4) ON CONFLICT (shipment_id, carrier_id) DO NOTHING",
     )
     .bind(tenant_id)
     .bind(shipment_id)
@@ -99,7 +99,7 @@ fn log_gave_up(topic: &str, offset: i64, payload: &[u8], attempts: u32, err: &an
         shipment_id = ?link.as_ref().map(|l| l.shipment_id),
         carrier_id  = ?link.as_ref().and_then(|l| l.carrier_id),
         err = %err,
-        "partner link consumer: giving up; this shipment stays hidden from its partner.          Remedy: re-run scripts/backfill/partner-shipment-links.sh"
+        "partner link consumer: giving up; this shipment stays hidden from its partner. Remedy: re-run scripts/backfill/partner-shipment-links.sh"
     );
 }
 

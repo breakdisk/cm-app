@@ -46,7 +46,7 @@ impl PartnerMembershipRepository for PgPartnerMembershipRepository {
     async fn binding(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<PartnerBinding> {
         // Active first: a user suspended at one partner but active at another is bound.
         let rows: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT carrier_id, status FROM identity.partner_memberships              WHERE tenant_id = $1 AND user_id = $2              ORDER BY (status = 'active') DESC, created_at DESC",
+            "SELECT carrier_id, status FROM identity.partner_memberships WHERE tenant_id = $1 AND user_id = $2 ORDER BY (status = 'active') DESC, created_at DESC",
         )
         .bind(tenant_id)
         .bind(user_id)

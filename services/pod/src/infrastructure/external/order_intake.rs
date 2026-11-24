@@ -63,7 +63,7 @@ impl ShipmentBillingContextSource for OrderIntakeClient {
             .send()
             .await?;
         // An explicit 404 is the one answer that says the shipment does not
-        // exist; every other failure is an outage and must not block capture.
+        // exist; every other failure is an outage: ownership cannot be shown, so the caller refuses (503) and writes nothing.
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(anyhow::Error::new(crate::domain::repositories::ShipmentNotFound(shipment_id)));
         }

@@ -41,7 +41,7 @@ fn ensure_scopable(roles: &[String]) -> Result<(), AppError> {
     match roles.iter().find(|r| !SCOPABLE_PLATFORM_ROLES.contains(&r.as_str())) {
         None => Ok(()),
         Some(r) => Err(AppError::Conflict(format!(
-            "this user holds the '{r}' role and cannot be partner-scoped;              only users whose roles are within {} can",
+            "this user holds the '{r}' role and cannot be partner-scoped; only users whose roles are within {} can",
             SCOPABLE_PLATFORM_ROLES.join(", ")
         ))),
     }

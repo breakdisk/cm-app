@@ -463,14 +463,6 @@ impl PodService {
         Ok(pop)
     }
 
-    /// Resolve the shipment's billing track and declared value from order-intake,
-    /// falling back to the device-supplied values when the lookup is unavailable.
-    ///
-    /// Track A (Balikbayan) debits `declared_value_cents` to the driver's ledger at
-    /// pickup, so a wrong or missing value here is a financial control failure, not
-    /// a cosmetic one. It is still non-blocking: a driver standing at the merchant's
-    /// counter must never be stopped by a transient internal HTTP failure, so every
-    /// degraded path logs loudly rather than returning an error.
     /// The recipient's phone for a shipment, from the booking record.
     ///
     /// Resolved through the same verified lookup as POD/POP initiate
@@ -998,9 +990,12 @@ impl PodService {
     }
 }
 
-/// `survey/{tenant}/{shipment}/{uuid}.{ext}`
-/// POP billing classification from the verified booking. The device's value
-/// disagreeing is logged and the booking wins.
+/// POP billing classification from the verified booking. Track A (Balikbayan)
+/// debits `declared_value_cents` to the driver's ledger at pickup, so the value
+/// comes from the booking, never the device. The device's service code
+/// disagreeing is logged and the booking wins; a Balikbayan booking with no
+/// declared value is logged loudly (the ledger debit will not fire) but is not
+/// refused here.
 fn billing_from_booking(
     booking:             &ShipmentBillingContext,
     shipment_id:         Uuid,
@@ -1034,6 +1029,7 @@ fn ownership_refusal(e: &anyhow::Error, shipment_id: Uuid) -> Option<AppError> {
         .map(|_| AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })
 }
 
+/// `survey/{tenant}/{shipment}/{uuid}.{ext}`
 pub fn survey_key(tenant_id: Uuid, shipment_id: Uuid, content_type: &str) -> String {
     let ext = if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" };
     format!("survey/{tenant_id}/{shipment_id}/{}.{ext}", Uuid::new_v4())
