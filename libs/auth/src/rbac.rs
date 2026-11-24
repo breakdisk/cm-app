@@ -146,6 +146,21 @@ pub mod permissions {
     // ── Webhooks ─────────────────────────────────────────────
     pub const WEBHOOKS_READ:     &str = "webhooks:read";
     pub const WEBHOOKS_MANAGE:   &str = "webhooks:manage";
+
+    // ── Neighborhood delivery network (totes and stores) ─────
+    // None of these implies tenant-wide reach. A store holds them together with
+    // a `pid` claim, and every read is scoped to that partner. `hub_scanner` is
+    // deliberately not reused for stores: it holds tenant-wide `shipments:update`.
+    pub const TOTES_READ:          &str = "totes:read";
+    pub const TOTES_RECEIVE:       &str = "totes:receive";
+    pub const TOTES_RELEASE:       &str = "totes:release";
+    /// Hub sorters. Granted to hub roles in Phase 2.
+    pub const TOTES_SORT:          &str = "totes:sort";
+    /// Platform transfer drivers. Granted in Phase 2.
+    pub const TOTES_CARRY:         &str = "totes:carry";
+    pub const STORE_RIDERS_MANAGE: &str = "store_riders:manage";
+    pub const STORE_BATCHES_ASSIGN: &str = "store_batches:assign";
+    pub const STORE_LEDGER_READ:   &str = "store_ledger:read";
 }
 
 /// Predefined role → permissions mappings applied at tenant setup.
@@ -255,6 +270,21 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::SHIPMENT_READ,
             permissions::SHIPMENT_UPDATE,
         ],
+        // A neighborhood store's owner. Reaches only its own partner's totes,
+        // riders, batches and statements, through the `pid` claim.
+        "store_manager" => vec![
+            permissions::TOTES_READ,
+            permissions::TOTES_RECEIVE,
+            permissions::STORE_RIDERS_MANAGE,
+            permissions::STORE_BATCHES_ASSIGN,
+            permissions::STORE_LEDGER_READ,
+        ],
+        // A store's counter staff: receives and releases, nothing financial.
+        "store_clerk" => vec![
+            permissions::TOTES_READ,
+            permissions::TOTES_RECEIVE,
+            permissions::TOTES_RELEASE,
+        ],
         _ => vec![],
     }
 }
@@ -273,6 +303,58 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
 /// lives here so the two cannot drift.
 pub fn shipments_tenant_wide(can_create: bool, can_update: bool) -> bool {
     !(can_create && !can_update)
+}
+
+#[cfg(test)]
+mod store_role_tests {
+    use super::*;
+
+    #[test]
+    fn store_manager_holds_exactly_the_manager_permissions() {
+        let mut got = default_permissions_for_role("store_manager");
+        let mut want = vec![
+            permissions::TOTES_READ,
+            permissions::TOTES_RECEIVE,
+            permissions::STORE_RIDERS_MANAGE,
+            permissions::STORE_BATCHES_ASSIGN,
+            permissions::STORE_LEDGER_READ,
+        ];
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn store_clerk_holds_exactly_the_clerk_permissions() {
+        let mut got = default_permissions_for_role("store_clerk");
+        let mut want = vec![
+            permissions::TOTES_READ,
+            permissions::TOTES_RECEIVE,
+            permissions::TOTES_RELEASE,
+        ];
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    /// A store must never inherit tenant-wide reach. These are what the
+    /// existing `partner` and `driver` roles hold that stores must not.
+    #[test]
+    fn store_roles_hold_no_tenant_wide_permission() {
+        for role in ["store_manager", "store_clerk"] {
+            let p = default_permissions_for_role(role);
+            for banned in [
+                permissions::SHIPMENT_READ,
+                permissions::SHIPMENT_UPDATE,
+                permissions::PAYMENTS_READ,
+                permissions::ANALYTICS_VIEW,
+                permissions::DISPATCH_VIEW,
+                permissions::FLEET_READ,
+            ] {
+                assert!(!p.contains(&banned), "{role} must not hold {banned}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

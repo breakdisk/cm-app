@@ -12,6 +12,12 @@ pub enum AppError {
     #[error("Forbidden: insufficient permissions for {resource}")]
     Forbidden { resource: String },
 
+    /// A partner or store token that carries no partner id. Distinct from
+    /// `Forbidden` so a client can tell "you lack a permission" from "this
+    /// session was minted before your partner membership existed, sign in again".
+    #[error("Partner context required: this token is not bound to a partner")]
+    PartnerContextRequired,
+
     // ── Validation ──────────────────────────────────────────
     #[error("Validation failed: {0}")]
     Validation(String),
@@ -68,6 +74,7 @@ impl AppError {
         match self {
             AppError::Unauthorized(_)              => StatusCode::UNAUTHORIZED,
             AppError::Forbidden { .. }             => StatusCode::FORBIDDEN,
+            AppError::PartnerContextRequired       => StatusCode::FORBIDDEN,
             AppError::Validation(_)                => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::NotFound { .. }              => StatusCode::NOT_FOUND,
             AppError::Conflict(_)                  => StatusCode::CONFLICT,
@@ -84,6 +91,7 @@ impl AppError {
         match self {
             AppError::Unauthorized(_)              => "UNAUTHORIZED",
             AppError::Forbidden { .. }             => "FORBIDDEN",
+            AppError::PartnerContextRequired       => "PARTNER_CONTEXT_REQUIRED",
             AppError::Validation(_)                => "VALIDATION_ERROR",
             AppError::NotFound { .. }              => "NOT_FOUND",
             AppError::Conflict(_)                  => "CONFLICT",

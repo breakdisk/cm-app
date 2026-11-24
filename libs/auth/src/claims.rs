@@ -80,6 +80,16 @@ pub struct Claims {
     /// hasn't finished onboarding, or a token minted before this field existed.
     #[serde(default)]
     pub currency: Option<String>,
+
+    /// The partner (carrier or store) this subject acts for, from an active
+    /// `identity.partner_memberships` row. Services scope partner reads on this
+    /// and never on a partner id supplied by the client.
+    ///
+    /// `#[serde(default)]` so every token minted before this decodes as `None`.
+    /// A partner-role token with no `pid` is not trusted as tenant-wide: see
+    /// [`crate::partner::resolve_partner_access`].
+    #[serde(default)]
+    pub pid: Option<Uuid>,
 }
 
 impl Claims {
@@ -116,6 +126,7 @@ impl Claims {
             enabled_features: Vec::new(),
             phone: None,
             currency: None,
+            pid: None,
         }
     }
 
@@ -171,6 +182,14 @@ impl Claims {
     #[must_use]
     pub fn with_currency(mut self, currency: Option<String>) -> Self {
         self.currency = currency;
+        self
+    }
+
+    /// Bind the token to the partner the subject acts for. Chainable, like
+    /// [`Self::with_currency`], so no existing `Claims::new` call site changes.
+    #[must_use]
+    pub fn with_partner(mut self, pid: Option<Uuid>) -> Self {
+        self.pid = pid;
         self
     }
 

@@ -152,7 +152,9 @@ pub async fn patch_user_roles(
 
     // Only roles in this allowlist may be assigned or revoked through this endpoint.
     // Prevents privilege escalation via a compromised admin account.
-    const ASSIGNABLE_ROLES: &[&str] = &["hub_scanner", "driver", "readonly", "dispatcher"];
+    const ASSIGNABLE_ROLES: &[&str] = &[
+        "hub_scanner", "driver", "readonly", "dispatcher", "store_manager", "store_clerk",
+    ];
     if !ASSIGNABLE_ROLES.contains(&body.role.as_str()) {
         return Err(AppError::Validation(
             format!("Role '{}' cannot be managed via this endpoint", body.role)
