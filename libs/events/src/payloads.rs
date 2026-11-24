@@ -962,6 +962,10 @@ pub struct HubDispatchRequested {
     pub sla_hours:                 i64,
     #[serde(default)]
     pub total_cost_cents:          i64,
+    /// Carrier configured for the zone; set under Auto routing so the dispatch
+    /// fallback books this carrier. `None` for OwnDriver.
+    #[serde(default)]
+    pub fallback_carrier_id:       Option<Uuid>,
     pub requested_at:              String,
 }
 

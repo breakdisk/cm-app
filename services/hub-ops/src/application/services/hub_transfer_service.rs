@@ -392,6 +392,7 @@ impl HubTransferService {
                             service_level: service_level.clone(),
                             sla_hours,
                             total_cost_cents: 0,
+                            fallback_carrier_id: if matches!(routing_type, RoutingType::Auto) { carrier_id } else { None },
                             requested_at: now.clone(),
                         },
                     );

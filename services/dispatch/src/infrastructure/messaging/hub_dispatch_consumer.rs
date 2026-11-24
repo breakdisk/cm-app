@@ -38,6 +38,23 @@ fn should_fallback_to_carrier(auto_fallback_window_mins: i32) -> bool {
     auto_fallback_window_mins > 0
 }
 
+/// Build the carrier-booking escalation for a failed Auto dispatch.
+/// Returns `None` when hub-ops supplied no configured carrier — nothing can be booked.
+fn fallback_event(d: &HubDispatchRequested) -> Option<HubCarrierBookingRequested> {
+    let carrier_id = d.fallback_carrier_id?;
+    Some(HubCarrierBookingRequested {
+        shipment_id:      d.shipment_id,
+        tenant_id:        d.tenant_id,
+        hub_id:           d.hub_id,
+        destination_zone: d.destination_zone.clone(),
+        carrier_id:       Some(carrier_id),
+        service_level:    d.service_level.clone(),
+        sla_hours:        d.sla_hours,
+        total_cost_cents: d.total_cost_cents,
+        requested_at:     chrono::Utc::now().to_rfc3339(),
+    })
+}
+
 pub async fn start_hub_dispatch_consumer(
     brokers: &str,
     group_id: &str,
@@ -113,25 +130,27 @@ async fn handle(
                     err         = %e,
                     "Own-driver dispatch failed under Auto routing — escalating to carrier"
                 );
-                let fallback = Event::new(
-                    "dispatch",
-                    topics::HUB_CARRIER_BOOKING_REQUESTED,
-                    d.tenant_id,
-                    HubCarrierBookingRequested {
-                        shipment_id:      d.shipment_id,
-                        tenant_id:        d.tenant_id,
-                        hub_id:           d.hub_id,
-                        destination_zone: d.destination_zone.clone(),
-                        carrier_id:       None,
-                        service_level:    d.service_level.clone(),
-                        sla_hours:        d.sla_hours,
-                        total_cost_cents: d.total_cost_cents,
-                        requested_at:     chrono::Utc::now().to_rfc3339(),
-                    },
-                );
-                kafka
-                    .publish_event(topics::HUB_CARRIER_BOOKING_REQUESTED, &fallback)
-                    .await?;
+                match fallback_event(&d) {
+                    Some(payload) => {
+                        let fallback = Event::new(
+                            "dispatch",
+                            topics::HUB_CARRIER_BOOKING_REQUESTED,
+                            d.tenant_id,
+                            payload,
+                        );
+                        kafka
+                            .publish_event(topics::HUB_CARRIER_BOOKING_REQUESTED, &fallback)
+                            .await?;
+                    }
+                    None => {
+                        tracing::error!(
+                            hub_id      = %d.hub_id,
+                            shipment_id = %d.shipment_id,
+                            zone        = %d.destination_zone,
+                            "Auto routing has no carrier configured for this hub/zone — cannot fall back; shipment remains queued for manual dispatch"
+                        );
+                    }
+                }
             } else {
                 tracing::warn!(
                     shipment_id = %d.shipment_id,
@@ -157,5 +176,51 @@ mod tests {
     #[test]
     fn own_driver_routing_does_not_escalate() {
         assert!(!should_fallback_to_carrier(0));
+    }
+
+    fn request(fallback_carrier_id: Option<uuid::Uuid>) -> HubDispatchRequested {
+        HubDispatchRequested {
+            shipment_id:               uuid::Uuid::new_v4(),
+            tenant_id:                 uuid::Uuid::new_v4(),
+            hub_id:                    uuid::Uuid::new_v4(),
+            destination_zone:          "Z1".into(),
+            auto_fallback_window_mins: 30,
+            service_level:             "standard".into(),
+            sla_hours:                 48,
+            total_cost_cents:          1500,
+            fallback_carrier_id,
+            requested_at:              "2026-11-23T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn auto_fallback_carries_the_configured_carrier() {
+        let carrier = uuid::Uuid::new_v4();
+        let d = request(Some(carrier));
+        let ev = fallback_event(&d).expect("carrier configured");
+        assert_eq!(ev.carrier_id, Some(carrier));
+        assert_eq!(ev.shipment_id, d.shipment_id);
+        assert_eq!(ev.hub_id, d.hub_id);
+        assert_eq!(ev.sla_hours, 48);
+        assert_eq!(ev.total_cost_cents, 1500);
+    }
+
+    #[test]
+    fn auto_without_a_carrier_stays_queued_and_logs() {
+        assert!(fallback_event(&request(None)).is_none());
+    }
+
+    #[test]
+    fn old_payload_without_the_field_decodes() {
+        let json = r#"{
+            "shipment_id":"00000000-0000-0000-0000-000000000001",
+            "tenant_id":"00000000-0000-0000-0000-000000000002",
+            "hub_id":"00000000-0000-0000-0000-000000000003",
+            "destination_zone":"Z1",
+            "auto_fallback_window_mins":30,
+            "requested_at":"2026-11-23T00:00:00Z"
+        }"#;
+        let d: HubDispatchRequested = serde_json::from_str(json).expect("old payload decodes");
+        assert_eq!(d.fallback_carrier_id, None);
     }
 }
