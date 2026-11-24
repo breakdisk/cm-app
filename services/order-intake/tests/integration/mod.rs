@@ -3848,3 +3848,180 @@ mod shipment_events_scope {
         assert_eq!(resp.status_code(), 404);
     }
 }
+
+// ============================================================================
+// Partner and owner scope through the real HTTP router
+//
+// The query-service tests above call the service directly; these go through
+// the real axum handlers with real signed JWTs against the real Pg repository,
+// so the claim extraction (`pid`, roles, permissions), `partner_access`, the
+// handler wiring and the SQL are exercised together. Skipped locally without
+// DATABASE_URL (migrated order_intake schema); fatal in CI.
+// ============================================================================
+
+mod scope_over_http {
+    use super::*;
+    use logisticos_order_intake::infrastructure::db::PgShipmentRepository;
+    use uuid::Uuid;
+
+    struct Pg {
+        server:    TestServer,
+        jwt:       JwtService,
+        pool:      sqlx::PgPool,
+        repo:      PgShipmentRepository,
+    }
+
+    async fn pg() -> Option<Pg> {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(u) => u,
+            Err(_) => {
+                assert!(std::env::var("CI").is_err(), "DATABASE_URL unset while CI is set");
+                eprintln!("skipping: DATABASE_URL not set (fatal when CI is set)");
+                return None;
+            }
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(4).connect(&url).await.unwrap();
+        let repo_arc: Arc<dyn ShipmentRepository> = Arc::new(PgShipmentRepository { pool: pool.clone() });
+        let svc = Arc::new(ShipmentService::new(
+            Arc::clone(&repo_arc),
+            Arc::new(NoOpEventPublisher),
+            Arc::new(PassthroughNormalizer),
+            Arc::new(MockAwbGenerator::default()),
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+        ));
+        let query = Arc::new(ShipmentQueryService::new(repo_arc));
+        let state = AppState {
+            svc,
+            query,
+            jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+            pool: pool.clone(),
+        };
+        Some(Pg {
+            server: TestClient::new(router(state)),
+            jwt: JwtService::new(TEST_JWT_SECRET, 3600, 86400),
+            repo: PgShipmentRepository { pool: pool.clone() },
+            pool,
+        })
+    }
+
+    /// Seed a shipment (unique AWB so reruns never collide) and return its id.
+    async fn seed(pg: &Pg, tenant: Uuid, merchant: Uuid) -> Uuid {
+        let mut s = make_shipment(tenant, merchant, ShipmentStatus::Confirmed);
+        let seq = (Uuid::new_v4().as_u128() % 9_000_000) as u32 + 1;
+        s.awb = Awb::generate(&TenantCode::new("TST").unwrap(), AwbServiceCode::Standard, seq);
+        pg.repo.save(&s).await.expect("seed a shipment");
+        s.id.inner()
+    }
+
+    async fn link(pg: &Pg, tenant: Uuid, shipment: Uuid, carrier: Uuid) {
+        sqlx::query("INSERT INTO order_intake.shipment_partner_links (tenant_id, shipment_id, carrier_id, source) VALUES ($1, $2, $3, 'test')")
+            .bind(tenant).bind(shipment).bind(carrier).execute(&pg.pool).await.unwrap();
+    }
+
+    /// A signed token for `roles`, with that role's default permissions and an
+    /// optional partner binding, exactly as identity issues them.
+    fn token(pg: &Pg, tenant: Uuid, user: Uuid, role: &str, pid: Option<Uuid>) -> String {
+        let permissions: Vec<String> = default_permissions_for_role(role).iter().map(|p| p.to_string()).collect();
+        let claims = Claims::new(
+            user, tenant, "test-tenant".into(), "starter".into(), "u@test.local".into(),
+            vec![role.to_string()], permissions, 3600,
+        )
+        .with_partner(pid);
+        pg.jwt.issue_access_token(claims).expect("token")
+    }
+
+    async fn get(pg: &Pg, uri: &str, token: &str) -> TestResponse {
+        pg.server
+            .get(uri)
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await
+    }
+
+    fn listed_ids(resp: &TestResponse) -> Vec<Uuid> {
+        let body: Value = resp.json();
+        let mut v: Vec<Uuid> = body["shipments"]
+            .as_array()
+            .expect("shipments array")
+            .iter()
+            .map(|s| s["id"].as_str().expect("id").parse().expect("uuid"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[tokio::test]
+    async fn merchant_cannot_list_another_merchants_shipments_by_filter() {
+        let Some(pg) = pg().await else { return };
+        let tenant = Uuid::new_v4();
+        let (me, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let mine = seed(&pg, tenant, me).await;
+        let theirs = seed(&pg, tenant, other).await;
+        let token = token(&pg, tenant, me, "merchant", None);
+
+        // Asking for the other merchant's rows by filter must not widen the view.
+        let resp = get(&pg, &format!("/v1/shipments?merchant_id={other}"), &token).await;
+        resp.assert_status(StatusCode::OK);
+        let ids = listed_ids(&resp);
+        assert!(!ids.contains(&theirs), "another merchant's shipment leaked: {ids:?}");
+        assert_eq!(ids, vec![mine]);
+
+        let resp = get(&pg, "/v1/shipments", &token).await;
+        assert_eq!(listed_ids(&resp), vec![mine]);
+    }
+
+    #[tokio::test]
+    async fn partner_token_lists_only_its_linked_shipments() {
+        let Some(pg) = pg().await else { return };
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchant = Uuid::new_v4();
+        let (s1, s2, s3, s4) = (
+            seed(&pg, tenant, merchant).await,
+            seed(&pg, tenant, merchant).await,
+            seed(&pg, tenant, merchant).await,
+            seed(&pg, tenant, merchant).await,
+        );
+        link(&pg, tenant, s1, mine).await;
+        link(&pg, tenant, s2, mine).await;
+        link(&pg, tenant, s3, other).await;
+        let _ = s4; // linked to nobody
+
+        for role in ["partner", "driver"] {
+            let token = token(&pg, tenant, Uuid::new_v4(), role, Some(mine));
+            let resp = get(&pg, "/v1/shipments", &token).await;
+            resp.assert_status(StatusCode::OK);
+            let mut want = vec![s1, s2];
+            want.sort();
+            assert_eq!(listed_ids(&resp), want, "role {role}");
+
+            // merchant_id cannot widen a partner's view either.
+            let resp = get(&pg, &format!("/v1/shipments?merchant_id={merchant}"), &token).await;
+            assert_eq!(listed_ids(&resp), want, "role {role} with merchant_id");
+        }
+    }
+
+    #[tokio::test]
+    async fn partner_token_gets_404_for_an_unlinked_shipment_and_200_for_a_linked_one() {
+        let Some(pg) = pg().await else { return };
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchant = Uuid::new_v4();
+        let linked = seed(&pg, tenant, merchant).await;
+        let theirs = seed(&pg, tenant, merchant).await;
+        let nobodys = seed(&pg, tenant, merchant).await;
+        link(&pg, tenant, linked, mine).await;
+        link(&pg, tenant, theirs, other).await;
+
+        let token = token(&pg, tenant, Uuid::new_v4(), "partner", Some(mine));
+        get(&pg, &format!("/v1/shipments/{linked}"), &token).await.assert_status(StatusCode::OK);
+        for id in [theirs, nobodys] {
+            get(&pg, &format!("/v1/shipments/{id}"), &token).await.assert_status(StatusCode::NOT_FOUND);
+        }
+    }
+}

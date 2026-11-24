@@ -1665,6 +1665,14 @@ mod partner_scope {
     }
 
     #[tokio::test]
+    async fn platform_driver_keeps_roster_access() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(None);
+        let resp = send(app, auth_request(Method::GET, "/v1/drivers", &token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn dispatcher_keeps_queue_and_roster_access() {
         let token = dispatcher_token(Uuid::new_v4());
         for uri in ["/v1/queue", "/v1/drivers"] {
