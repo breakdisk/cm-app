@@ -12,6 +12,7 @@ use uuid::Uuid;
 use sqlx::{PgPool, Row};
 
 use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::partner::partner_access;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
@@ -180,7 +181,8 @@ async fn get_shipment(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let shipment = s.query.get_for(id, &acting_as(&claims)).await?;
+    let partner = partner_access(&claims)?;
+    let shipment = s.query.get_for(id, &acting_as(&claims), partner).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(shipment)))
 }
 
@@ -216,7 +218,8 @@ async fn cancellation_preview(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let shipment = s.query.get_for(id, &acting_as(&claims)).await?;
+    let partner = partner_access(&claims)?;
+    let shipment = s.query.get_for(id, &acting_as(&claims), partner).await?;
     let (quote, survey_kept) = s.svc.cancellation_quote(&shipment, chrono::Utc::now()).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "cancellable":     shipment.can_cancel(),
@@ -641,7 +644,8 @@ async fn list_shipments(
     Query(q): Query<crate::application::queries::ListShipmentsQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let (shipments, total) = s.query.list(&actor_of(&claims), q).await?;
+    let partner = partner_access(&claims)?;
+    let (shipments, total) = s.query.list(&actor_of(&claims), partner, q).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "shipments": shipments,
         "total": total,

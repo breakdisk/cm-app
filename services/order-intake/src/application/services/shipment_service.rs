@@ -61,6 +61,10 @@ pub struct ShipmentListFilter {
     pub updated_from: Option<chrono::DateTime<chrono::Utc>>,
     /// Exclusive upper bound on `updated_at`.
     pub updated_to:   Option<chrono::DateTime<chrono::Utc>>,
+    /// Restrict to shipments linked to this partner (carrier). `None` for every
+    /// caller that is not a partner-scoped token. It narrows on top of the other
+    /// fields, so a caller can never widen the result by also naming a merchant.
+    pub partner_id:  Option<uuid::Uuid>,
     pub limit:       i64,
     pub offset:      i64,
 }

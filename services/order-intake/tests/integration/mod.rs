@@ -190,20 +190,40 @@ pub struct InMemoryShipmentRepository {
     /// that no lifecycle event was published for a shipment that never
     /// persisted.
     fail_save: bool,
+    /// (tenant, shipment, carrier) partner links, as `shipment_partner_links`.
+    links: Mutex<Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid)>>,
 }
 
 impl InMemoryShipmentRepository {
     pub fn new() -> Self {
-        Self { shipments: Mutex::new(Vec::new()), fail_save: false }
+        Self { shipments: Mutex::new(Vec::new()), fail_save: false, links: Mutex::new(Vec::new()) }
     }
 
     /// A repo whose `save` always fails.
     pub fn failing_save() -> Self {
-        Self { shipments: Mutex::new(Vec::new()), fail_save: true }
+        Self { shipments: Mutex::new(Vec::new()), fail_save: true, links: Mutex::new(Vec::new()) }
+    }
+
+    /// Record that `carrier` handles `shipment`.
+    pub fn link(&self, tenant: uuid::Uuid, shipment: uuid::Uuid, carrier: uuid::Uuid) {
+        self.links.lock().unwrap().push((tenant, shipment, carrier));
+    }
+
+    fn linked(&self, tenant: uuid::Uuid, shipment: uuid::Uuid, carrier: uuid::Uuid) -> bool {
+        self.links.lock().unwrap().contains(&(tenant, shipment, carrier))
     }
 }
 
 impl ShipmentRepository for InMemoryShipmentRepository {
+    fn is_linked<'a>(
+        &'a self,
+        tenant_id: uuid::Uuid,
+        shipment_id: uuid::Uuid,
+        carrier_id: uuid::Uuid,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move { Ok(self.linked(tenant_id, shipment_id, carrier_id)) })
+    }
+
     fn find_by_id<'a>(
         &'a self,
         id: &'a ShipmentId,
@@ -308,6 +328,11 @@ impl ShipmentRepository for InMemoryShipmentRepository {
                 .filter(|s| {
                     filter.status.as_ref().is_none_or(|st| {
                         format!("{:?}", s.status).to_lowercase() == st.to_lowercase()
+                    })
+                })
+                .filter(|s| {
+                    filter.partner_id.is_none_or(|carrier| {
+                        self.linked(filter.tenant_id, s.id.inner(), carrier)
                     })
                 })
                 .cloned()
@@ -3565,5 +3590,205 @@ mod home_moves {
         let first_move = data["move"][0]["starts_at"].as_str().unwrap().to_owned();
         assert!(first_survey < first_move, "the first survey window comes before the first move");
         assert!(data["move"].as_array().unwrap().len() > 10);
+    }
+}
+
+// ============================================================================
+// Partner-scoped shipment reads
+//
+// A partner token used to read every shipment in the tenant: the list filtered
+// only on tenant, and a by-id read checked only tenant and owner. These drive
+// the real query service with an in-memory repository that knows the links.
+// ============================================================================
+
+mod partner_scope {
+    use super::*;
+    use logisticos_auth::partner::PartnerAccess;
+    use logisticos_errors::AppError;
+    use logisticos_order_intake::application::queries::ListShipmentsQuery;
+    use logisticos_order_intake::domain::value_objects::cancel_authority::{ActingAs, Actor};
+    use uuid::Uuid;
+
+    struct World {
+        repo:   Arc<InMemoryShipmentRepository>,
+        query:  ShipmentQueryService,
+        tenant: Uuid,
+        mine:   Uuid, // carrier C
+        other:  Uuid, // carrier D
+        /// Shipments: s1, s2 linked to C; s3 linked to D; s4 linked to nobody.
+        s: [Uuid; 4],
+        merchants: [Uuid; 2],
+    }
+
+    fn world() -> World {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchants = [Uuid::new_v4(), Uuid::new_v4()];
+        let mut s = [Uuid::nil(); 4];
+        for (i, slot) in s.iter_mut().enumerate() {
+            let shipment = make_shipment(tenant, merchants[i % 2], ShipmentStatus::Confirmed);
+            *slot = shipment.id.inner();
+            repo.shipments.lock().unwrap().push(shipment);
+        }
+        repo.link(tenant, s[0], mine);
+        repo.link(tenant, s[1], mine);
+        repo.link(tenant, s[2], other);
+        let query = ShipmentQueryService::new(Arc::clone(&repo) as Arc<dyn ShipmentRepository>);
+        World { repo, query, tenant, mine, other, s, merchants }
+    }
+
+    /// A partner, store rider or operator: all reach the tenant by permission
+    /// (they create nothing), which is exactly why the link check has to exist.
+    fn tenant_wide(w: &World) -> Actor {
+        Actor { tenant_id: w.tenant, user_id: Uuid::new_v4(), tenant_wide: true }
+    }
+
+    fn all() -> ListShipmentsQuery {
+        ListShipmentsQuery { status: None, merchant_id: None, page: None, per_page: None }
+    }
+
+    fn ids(shipments: &[Shipment]) -> Vec<Uuid> {
+        let mut v: Vec<Uuid> = shipments.iter().map(|s| s.id.inner()).collect();
+        v.sort();
+        v
+    }
+
+    #[tokio::test]
+    async fn partner_lists_only_linked_shipments() {
+        let w = world();
+        let (rows, total) = w.query.list(&tenant_wide(&w), PartnerAccess::Scoped(w.mine), all()).await.unwrap();
+        let mut want = vec![w.s[0], w.s[1]];
+        want.sort();
+        assert_eq!(ids(&rows), want);
+        assert_eq!(total, 2);
+    }
+
+    /// The store rider holds the plain `driver` role, which reaches the tenant.
+    /// With a pid and no links it must see nothing, not everything.
+    #[tokio::test]
+    async fn store_rider_with_pid_cannot_list_the_tenant() {
+        let w = world();
+        let stranger_store = Uuid::new_v4();
+        let (rows, total) = w.query.list(&tenant_wide(&w), PartnerAccess::Scoped(stranger_store), all()).await.unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn partner_cannot_widen_with_merchant_id() {
+        let w = world();
+        // s[2] belongs to merchants[0], is linked to the OTHER carrier, and so
+        // must stay invisible however the caller filters.
+        let q = ListShipmentsQuery { merchant_id: Some(w.merchants[0]), ..all() };
+        let (rows, _) = w.query.list(&tenant_wide(&w), PartnerAccess::Scoped(w.mine), q).await.unwrap();
+        assert!(!ids(&rows).contains(&w.s[2]), "an unlinked shipment appeared");
+        assert!(!ids(&rows).contains(&w.s[3]), "a shipment linked to nobody appeared");
+        // merchants[0] owns s[0] and s[2]; only s[0] is also linked to us.
+        assert_eq!(ids(&rows), vec![w.s[0]]);
+    }
+
+    #[tokio::test]
+    async fn operator_view_is_unchanged() {
+        let w = world();
+        let (rows, total) = w.query.list(&tenant_wide(&w), PartnerAccess::Unscoped, all()).await.unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(total, 4);
+    }
+
+    #[tokio::test]
+    async fn partner_gets_404_for_an_unlinked_shipment_by_id() {
+        let w = world();
+        let acting = ActingAs::User(tenant_wide(&w));
+        for unlinked in [w.s[2], w.s[3]] {
+            let err = w.query.get_for(unlinked, &acting, PartnerAccess::Scoped(w.mine)).await
+                .expect_err("an unlinked shipment must not be readable");
+            assert!(matches!(err, AppError::NotFound { .. }), "must be 404 so ids cannot be probed: {err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn partner_reads_a_linked_shipment_by_id() {
+        let w = world();
+        let acting = ActingAs::User(tenant_wide(&w));
+        let got = w.query.get_for(w.s[0], &acting, PartnerAccess::Scoped(w.mine)).await.unwrap();
+        assert_eq!(got.id.inner(), w.s[0]);
+    }
+
+    #[tokio::test]
+    async fn operator_reads_any_shipment_by_id() {
+        let w = world();
+        let acting = ActingAs::User(tenant_wide(&w));
+        for sid in w.s {
+            assert!(w.query.get_for(sid, &acting, PartnerAccess::Unscoped).await.is_ok());
+        }
+    }
+
+    /// The real SQL, not the in-memory stand-in: the EXISTS clause and its
+    /// parameter numbering are only exercised here. Skipped locally without a
+    /// database; fatal in CI.
+    #[tokio::test]
+    async fn pg_list_filters_by_partner_link() {
+        use logisticos_order_intake::infrastructure::db::PgShipmentRepository;
+
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(u) => u,
+            Err(_) => {
+                assert!(std::env::var("CI").is_err(), "DATABASE_URL unset while CI is set");
+                eprintln!("skipping: DATABASE_URL not set (fatal when CI is set)");
+                return;
+            }
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+        let repo = PgShipmentRepository { pool: pool.clone() };
+
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchants = [Uuid::new_v4(), Uuid::new_v4()];
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let mut s = make_shipment(tenant, merchants[i % 2], ShipmentStatus::Confirmed);
+            // make_shipment always uses sequence 1, and tracking numbers are
+            // unique, so give each seed its own (random, to survive reruns).
+            let seq = (Uuid::new_v4().as_u128() % 9_000_000) as u32 + 1;
+            s.awb = Awb::generate(&TenantCode::new("TST").unwrap(), AwbServiceCode::Standard, seq);
+            ids.push(s.id.inner());
+            repo.save(&s).await.expect("seed a shipment");
+        }
+        for (shipment, carrier) in [(ids[0], mine), (ids[1], mine), (ids[2], other)] {
+            sqlx::query("INSERT INTO order_intake.shipment_partner_links (tenant_id, shipment_id, carrier_id, source) VALUES ($1, $2, $3, 'test')")
+                .bind(tenant).bind(shipment).bind(carrier).execute(&pool).await.unwrap();
+        }
+
+        let filter = |partner: Option<Uuid>, merchant: Option<Uuid>| ShipmentListFilter {
+            tenant_id: tenant, merchant_id: merchant, status: None,
+            updated_from: None, updated_to: None, partner_id: partner, limit: 50, offset: 0,
+        };
+        let sorted = |rows: &[Shipment]| { let mut v: Vec<Uuid> = rows.iter().map(|s| s.id.inner()).collect(); v.sort(); v };
+        let mut want_mine = vec![ids[0], ids[1]]; want_mine.sort();
+
+        let (rows, total) = repo.list(&filter(Some(mine), None)).await.unwrap();
+        assert_eq!((sorted(&rows), total), (want_mine, 2), "only the shipments linked to my carrier");
+
+        let (rows, total) = repo.list(&filter(None, None)).await.unwrap();
+        assert_eq!((rows.len(), total), (3, 3), "an operator sees the tenant");
+
+        // Narrowing by merchant on top of the link can only remove rows.
+        let (rows, _) = repo.list(&filter(Some(mine), Some(merchants[1]))).await.unwrap();
+        assert_eq!(sorted(&rows), vec![ids[1]], "merchant narrows within the linked set");
+
+        let (rows, total) = repo.list(&filter(Some(Uuid::new_v4()), None)).await.unwrap();
+        assert!((rows.len(), total) == (0, 0), "a partner with no links sees nothing");
+    }
+
+    /// A link is not a key to another tenant: the tenant check still runs first.
+    #[tokio::test]
+    async fn a_link_does_not_cross_tenants() {
+        let w = world();
+        let elsewhere = Actor { tenant_id: Uuid::new_v4(), user_id: Uuid::new_v4(), tenant_wide: true };
+        let err = w.query.get_for(w.s[0], &ActingAs::User(elsewhere), PartnerAccess::Scoped(w.mine)).await
+            .expect_err("another tenant must not read it");
+        assert!(matches!(err, AppError::NotFound { .. }));
+        let _ = (&w.repo, w.other);
     }
 }

@@ -340,13 +340,19 @@ impl ShipmentRepository for PgShipmentRepository {
                      AND ($2::uuid IS NULL OR merchant_id = $2)
                      AND ($3::text IS NULL OR status = $3)
                      AND ($4::timestamptz IS NULL OR updated_at >= $4)
-                     AND ($5::timestamptz IS NULL OR updated_at < $5)"#,
+                     AND ($5::timestamptz IS NULL OR updated_at < $5)
+                     AND ($6::uuid IS NULL OR EXISTS (
+                           SELECT 1 FROM order_intake.shipment_partner_links l
+                            WHERE l.shipment_id = shipments.id
+                              AND l.tenant_id   = shipments.tenant_id
+                              AND l.carrier_id  = $6))"#,
             )
             .bind(filter.tenant_id)
             .bind(filter.merchant_id)
             .bind(filter.status.as_deref())
             .bind(filter.updated_from)
             .bind(filter.updated_to)
+            .bind(filter.partner_id)
             .fetch_one(&self.pool)
             .await?;
 
@@ -357,6 +363,11 @@ impl ShipmentRepository for PgShipmentRepository {
                      AND ($3::text IS NULL OR status = $3)
                      AND ($4::timestamptz IS NULL OR updated_at >= $4)
                      AND ($5::timestamptz IS NULL OR updated_at < $5)
+                     AND ($8::uuid IS NULL OR EXISTS (
+                           SELECT 1 FROM order_intake.shipment_partner_links l
+                            WHERE l.shipment_id = shipments.id
+                              AND l.tenant_id   = shipments.tenant_id
+                              AND l.carrier_id  = $8))
                    ORDER BY created_at DESC
                    LIMIT $6 OFFSET $7"#,
                 SHIPMENT_COLS,
@@ -370,6 +381,7 @@ impl ShipmentRepository for PgShipmentRepository {
                 .bind(filter.updated_to)
                 .bind(filter.limit)
                 .bind(filter.offset)
+                .bind(filter.partner_id)
                 .fetch_all(&self.pool)
                 .await?;
 

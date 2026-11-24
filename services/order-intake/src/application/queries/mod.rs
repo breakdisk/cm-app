@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use logisticos_auth::partner::PartnerAccess;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::ShipmentId;
 
@@ -58,9 +59,28 @@ impl ShipmentQueryService {
 
     /// A user-facing read. Tenant always enforced; merchants and customers see
     /// only their own. `get_by_id` below stays for mesh-internal callers.
-    pub async fn get_for(&self, id: Uuid, acting_as: &ActingAs) -> AppResult<Shipment> {
+    ///
+    /// A partner-scoped token additionally needs the shipment linked to its
+    /// partner. An unlinked shipment answers exactly like a missing one, so a
+    /// partner cannot probe which ids exist.
+    pub async fn get_for(
+        &self,
+        id: Uuid,
+        acting_as: &ActingAs,
+        partner: PartnerAccess,
+    ) -> AppResult<Shipment> {
         let shipment = self.get_by_id(id).await?;
         authorize_shipment(acting_as, &shipment)?;
+        if let PartnerAccess::Scoped(carrier_id) = partner {
+            let linked = self
+                .repo
+                .is_linked(shipment.tenant_id.inner(), id, carrier_id)
+                .await
+                .map_err(AppError::Internal)?;
+            if !linked {
+                return Err(AppError::NotFound { resource: "Shipment", id: id.to_string() });
+            }
+        }
         Ok(shipment)
     }
 
@@ -78,6 +98,7 @@ impl ShipmentQueryService {
     pub async fn list(
         &self,
         actor: &Actor,
+        partner: PartnerAccess,
         q: ListShipmentsQuery,
     ) -> AppResult<(Vec<Shipment>, i64)> {
         let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
@@ -88,6 +109,10 @@ impl ShipmentQueryService {
             status: q.status,
             updated_from: None,
             updated_to:   None,
+            partner_id: match partner {
+                PartnerAccess::Scoped(carrier_id) => Some(carrier_id),
+                PartnerAccess::Unscoped => None,
+            },
             limit:  per_page,
             offset: (page - 1) * per_page,
         };
@@ -113,6 +138,8 @@ impl ShipmentQueryService {
                 status:       Some("delivered".into()),
                 updated_from: Some(q.from),
                 updated_to:   Some(q.to),
+                // Mesh-internal billing reads the merchant's whole period.
+                partner_id:   None,
                 limit:        CHUNK,
                 offset,
             };
