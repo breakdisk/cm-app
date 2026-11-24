@@ -371,12 +371,12 @@ pub async fn run() -> anyhow::Result<()> {
         loop {
             tick.tick().await;
             // Repair pass: free riders whose outcome event was missed.
-            if close_assignments_sweep {
-                match crate::domain::repositories::DriverAssignmentRepository::close_finished_assignments(assignment_repo_sweep.as_ref(), 100).await {
-                    Ok(n) if n > 0 => tracing::info!(closed = n, "dispatch-sweep: closed finished assignments"),
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!(err = %e, "dispatch-sweep: close_finished_assignments failed"),
-                }
+            match crate::infrastructure::db::assignment_repo::repair_pass(
+                close_assignments_sweep, assignment_repo_sweep.as_ref(), 100,
+            ).await {
+                Ok(n) if n > 0 => tracing::info!(closed = n, "dispatch-sweep: closed finished assignments"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(err = %e, "dispatch-sweep: close_finished_assignments failed"),
             }
             let pending = match sweep_repo.list_all_pending().await {
                 Ok(rows) => rows,

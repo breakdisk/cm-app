@@ -597,3 +597,44 @@ async fn set_expected_tasks_is_recorded_on_the_assignment() {
     assert_eq!(n, Some(2));
     db.drop_db().await;
 }
+
+#[tokio::test]
+async fn sweep_with_flag_off_writes_nothing() {
+    use logisticos_dispatch::infrastructure::db::assignment_repo::repair_pass;
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+    let s1 = Uuid::new_v4();
+    stop(&db.pool, &f, s1, 1).await;
+    task(&db.pool, &f, s1, "completed").await;
+
+    // Work ended and the repair is due, but DISPATCH__CLOSE_ASSIGNMENTS=false.
+    assert_eq!(repair_pass(false, &repo, 100).await.expect("off"), 0);
+    assert_eq!(assignment_status(&db.pool, &f).await, "accepted");
+    assert_eq!(route_status(&db.pool, &f).await, "in_progress");
+
+    assert_eq!(repair_pass(true, &repo, 100).await.expect("on"), 1);
+    assert_eq!(assignment_status(&db.pool, &f).await, "completed");
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn sweep_pages_in_a_stable_order() {
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    // Three finished routes, page size 2: two passes close all three, none twice.
+    for _ in 0..3 {
+        let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+        let s = Uuid::new_v4();
+        stop(&db.pool, &f, s, 1).await;
+        task(&db.pool, &f, s, "completed").await;
+    }
+    assert_eq!(repo.close_finished_assignments(2).await.expect("p1"), 2);
+    assert_eq!(repo.close_finished_assignments(2).await.expect("p2"), 1);
+    assert_eq!(repo.close_finished_assignments(2).await.expect("p3"), 0);
+    db.drop_db().await;
+}

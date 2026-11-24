@@ -92,6 +92,51 @@ fn finished_predicate(route: &str) -> String {
     )
 }
 
+/// An accepted assignment whose work looks finished.
+struct Candidate {
+    assignment_id: Uuid,
+    route_id:      Uuid,
+    tenant_id:     Uuid,
+}
+
+/// Closes each candidate in order. A row that errors is logged with enough to
+/// find it and skipped: one bad row must not stop the rest of the pass, or
+/// every rider behind it stays busy until someone notices.
+async fn close_candidates<F, Fut>(candidates: Vec<Candidate>, mut close: F) -> u64
+where
+    F: FnMut(Uuid, Uuid) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<bool>>,
+{
+    let mut closed = 0u64;
+    for c in candidates {
+        match close(c.tenant_id, c.route_id).await {
+            Ok(true) => closed += 1,
+            Ok(false) => {}
+            Err(e) => tracing::error!(
+                tenant_id = %c.tenant_id,
+                route_id = %c.route_id,
+                assignment_id = %c.assignment_id,
+                err = %e,
+                "dispatch-sweep: closing a finished assignment failed; continuing with the rest"
+            ),
+        }
+    }
+    closed
+}
+
+/// One repair pass, behind the `DISPATCH__CLOSE_ASSIGNMENTS` gate: disabled
+/// writes nothing. Extracted from the 90-second loop so the gate is testable.
+pub async fn repair_pass(
+    enabled: bool,
+    repo: &dyn DriverAssignmentRepository,
+    limit: i64,
+) -> anyhow::Result<u64> {
+    if !enabled {
+        return Ok(0);
+    }
+    repo.close_finished_assignments(limit).await
+}
+
 #[async_trait]
 impl DriverAssignmentRepository for PgDriverAssignmentRepository {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverAssignment>> {
@@ -225,24 +270,25 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
     }
 
     async fn close_finished_assignments(&self, limit: i64) -> anyhow::Result<u64> {
+        // Stable order: a bad row cannot make the pages shuffle under us, and
+        // two replicas sweeping at once walk the same sequence.
         let sql = format!(
-            r#"SELECT DISTINCT a.route_id, a.tenant_id
+            r#"SELECT a.id, a.route_id, a.tenant_id
                  FROM dispatch.driver_assignments a
                 WHERE a.status = 'accepted' AND {pred}
+                ORDER BY a.id
                 LIMIT $1"#,
             pred = finished_predicate("a.route_id"),
         );
-        let candidates: Vec<(Uuid, Uuid)> = sqlx::query_as(&sql)
+        let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(&sql)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
-        let mut closed = 0u64;
-        for (route_id, tenant_id) in candidates {
-            if self.close_if_finished(tenant_id, route_id).await? {
-                closed += 1;
-            }
-        }
-        Ok(closed)
+        let candidates = rows
+            .into_iter()
+            .map(|(assignment_id, route_id, tenant_id)| Candidate { assignment_id, route_id, tenant_id })
+            .collect();
+        Ok(close_candidates(candidates, |tenant, route| self.close_if_finished(tenant, route)).await)
     }
 
     async fn set_expected_tasks(&self, assignment_id: Uuid, expected: i32) -> anyhow::Result<()> {
@@ -310,5 +356,25 @@ mod assignment_status_tests {
             rejection_reason: None,
         }
         .is_active());
+    }
+
+    #[tokio::test]
+    async fn one_failing_row_does_not_stop_the_repair_pass() {
+        let rows = vec![
+            Candidate { assignment_id: Uuid::new_v4(), route_id: Uuid::new_v4(), tenant_id: Uuid::new_v4() },
+            Candidate { assignment_id: Uuid::new_v4(), route_id: Uuid::new_v4(), tenant_id: Uuid::new_v4() },
+            Candidate { assignment_id: Uuid::new_v4(), route_id: Uuid::new_v4(), tenant_id: Uuid::new_v4() },
+        ];
+        let bad = rows[0].route_id;
+        let attempted = std::sync::Mutex::new(Vec::new());
+        let closed = close_candidates(rows, |_tenant, route| {
+            attempted.lock().expect("lock").push(route);
+            async move {
+                if route == bad { Err(anyhow::anyhow!("boom")) } else { Ok(true) }
+            }
+        })
+        .await;
+        assert_eq!(closed, 2, "the rows after the failing one are still closed");
+        assert_eq!(attempted.lock().expect("lock").len(), 3, "every row was attempted");
     }
 }
