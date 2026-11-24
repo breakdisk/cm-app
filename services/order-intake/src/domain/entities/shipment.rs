@@ -96,6 +96,10 @@ pub struct Shipment {
     pub booking_amount_cents: Option<i64>,
     #[serde(default)]
     pub booking_currency: Option<String>,
+    /// How precisely the destination was geocoded. Read by the store resolver
+    /// only; dispatch never gates on it.
+    #[serde(default)]
+    pub dest_geocoding: crate::domain::value_objects::GeocodingRecord,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -290,6 +294,7 @@ mod tests {
             cancellation_policy_version: None,
             booking_amount_cents:        None,
             booking_currency:            None,
+            dest_geocoding:              Default::default(),
         };
         assert_eq!(s.customer_name,  "Test Customer");
         assert_eq!(s.customer_phone, "+63912345678");
@@ -332,6 +337,7 @@ mod tests {
             cancellation_policy_version: None,
             booking_amount_cents:        None,
             booking_currency:            None,
+            dest_geocoding:              Default::default(),
         };
         let fee = s.compute_base_fee();
         assert_eq!(fee, logisticos_types::Money::new(8500, Currency::PHP));
@@ -403,6 +409,7 @@ mod tests {
             cancellation_policy_version: None,
             booking_amount_cents:        None,
             booking_currency:            None,
+            dest_geocoding:              Default::default(),
         };
         let fee = s.compute_base_fee_aed();
         assert_eq!(fee, ae_base_fee_for(ServiceType::Standard, 1_500));

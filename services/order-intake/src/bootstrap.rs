@@ -54,7 +54,7 @@ pub async fn run() -> anyhow::Result<()> {
     let normalizer: Arc<dyn AddressNormalizer> = match cfg.geocoder.mapbox_access_token.as_deref() {
         Some(token) if !token.is_empty() => {
             tracing::info!("address normalizer: Mapbox geocoder");
-            Arc::new(MapboxGeocoder::new(token.to_string()))
+            Arc::new(MapboxGeocoder::new(token.to_string()).with_permanent(cfg.mapbox.permanent_geocoding))
         }
         _ => {
             tracing::warn!(

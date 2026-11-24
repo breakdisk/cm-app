@@ -8,6 +8,8 @@ pub struct Config {
     pub kafka: KafkaConfig,
     #[serde(default)]
     pub geocoder: GeocoderConfig,
+    #[serde(default)]
+    pub mapbox: MapboxConfig,
     /// Cancellation fee policy. Every rate defaults to 0 bps, so a deployment
     /// without `CANCELLATION_POLICY__*` set charges nothing on cancel.
     #[serde(default)]
@@ -252,6 +254,18 @@ pub struct GeocoderConfig {
     pub mapbox_access_token: Option<String>,
 }
 
+/// Mapbox geocoding options: `MAPBOX__PERMANENT_GEOCODING` (default false).
+///
+/// `permanent=true` is Mapbox's separately-priced mode that licenses storing
+/// results. Until that is decided a forward geocode is sent without it, and
+/// only the quality and source are stored, never the provider's place id or
+/// confidence.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct MapboxConfig {
+    #[serde(default)]
+    pub permanent_geocoding: bool,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct PaymentsConfig {
     /// Base URL of the payments service, e.g. http://payments:8012
@@ -305,6 +319,7 @@ mod config_tests {
             std::env::remove_var("APP__PUBLIC_BASE_URL");
             std::env::remove_var("APP__CORS_ORIGINS");
             std::env::remove_var("GEOCODER__MAPBOX_ACCESS_TOKEN");
+            std::env::remove_var("MAPBOX__PERMANENT_GEOCODING");
         }
 
         let result = Config::load();
@@ -330,6 +345,7 @@ mod config_tests {
         assert!(cfg.payments.is_none());
         assert!(cfg.quote_token_secret.is_none());
         assert!(cfg.app.public_base_url.is_none());
+        assert!(!cfg.mapbox.permanent_geocoding, "permanent geocoding is off unless asked for");
 
         let missing = cfg.payment_config().expect_err(
             "payment_config() must report the capability disabled, not fabricate a config",
@@ -362,6 +378,7 @@ mod config_tests {
             redis: RedisConfig { url: "redis://x".into() },
             kafka: KafkaConfig { brokers: "x".into(), group_id: "x".into() },
             geocoder: GeocoderConfig::default(),
+            mapbox: MapboxConfig::default(),
             payments: Some(PaymentsConfig { url: "http://payments:8012".into() }),
             // quote_token_secret deliberately missing — two of three set.
             quote_token_secret: None,
@@ -390,6 +407,7 @@ mod config_tests {
             redis: RedisConfig { url: "redis://x".into() },
             kafka: KafkaConfig { brokers: "x".into(), group_id: "x".into() },
             geocoder: GeocoderConfig::default(),
+            mapbox: MapboxConfig::default(),
             payments: Some(PaymentsConfig { url: "http://payments:8012".into() }),
             quote_token_secret: Some("shh".into()),
         };

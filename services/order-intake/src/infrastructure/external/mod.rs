@@ -38,3 +38,26 @@ impl AddressNormalizer for PassthroughNormalizer {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use logisticos_types::GeocodeQuality;
+
+    #[tokio::test]
+    async fn a_normalizer_without_quality_records_unknown() {
+        let input = AddressInput {
+            line1: "1 Rizal St".into(),
+            line2: None,
+            barangay: None,
+            city: "Manila".into(),
+            province: "NCR".into(),
+            postal_code: "1000".into(),
+            country_code: "PH".into(),
+        };
+        let out = PassthroughNormalizer.normalize_detailed(&input).await.expect("normalizes");
+        assert_eq!(out.geocoding.quality, GeocodeQuality::Unknown);
+        assert_eq!(out.geocoding.source, None);
+        assert_eq!(out.address.line1, "1 Rizal St");
+    }
+}

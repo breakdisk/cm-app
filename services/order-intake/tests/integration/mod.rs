@@ -723,6 +723,7 @@ fn make_shipment(
         cancellation_policy_version: None,
         booking_amount_cents:        None,
         booking_currency:            None,
+        dest_geocoding:              Default::default(),
     }
 }
 

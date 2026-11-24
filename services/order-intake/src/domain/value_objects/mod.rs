@@ -7,6 +7,8 @@ pub use accessorials::{
     PricedAccessorial,
 };
 
+pub mod geocoding;
+pub use geocoding::{GeocodedAddress, GeocodingRecord};
 pub mod cancel_authority;
 pub mod cancellation_policy;
 pub mod home_move;

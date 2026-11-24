@@ -219,6 +219,22 @@ pub trait AddressNormalizer: Send + Sync {
         &'a self,
         input: &'a crate::application::commands::AddressInput,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<logisticos_types::Address>> + Send + 'a>>;
+
+    /// `normalize`, plus how precisely the address was geocoded. The default
+    /// wraps `normalize` and records `Unknown`, so a normalizer that knows
+    /// nothing about quality (a test double, the passthrough) needs no change.
+    fn normalize_detailed<'a>(
+        &'a self,
+        input: &'a crate::application::commands::AddressInput,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::domain::value_objects::GeocodedAddress>> + Send + 'a>> {
+        Box::pin(async move {
+            let address = self.normalize(input).await?;
+            Ok(crate::domain::value_objects::GeocodedAddress {
+                address,
+                geocoding: crate::domain::value_objects::GeocodingRecord::unknown(),
+            })
+        })
+    }
 }
 
 /// Threshold above which an uncategorized shipment is treated as "heavy" for
@@ -470,7 +486,9 @@ impl ShipmentService {
 
         // ── Normalize and geocode addresses ──────────────────────────────────
         let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
-        let destination = self.normalizer.normalize(&cmd.destination).await.map_err(AppError::Internal)?;
+        let destination_geocoded = self.normalizer.normalize_detailed(&cmd.destination).await.map_err(AppError::Internal)?;
+        let destination = destination_geocoded.address;
+        let dest_geocoding = destination_geocoded.geocoding;
         tracing::info!(step = "normalized", "create");
 
         // ── Dimensions (shipment-level, for Standard/Express/SameDay) ─────────
@@ -673,6 +691,7 @@ impl ShipmentService {
             cancellation_policy_version: Some(self.cancellation_policy.version.clone()),
             booking_amount_cents: verified_amount_cents,
             booking_currency: verified_currency.clone(),
+            dest_geocoding,
             created_at: now,
             updated_at: now,
         };

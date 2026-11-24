@@ -1,6 +1,8 @@
 pub mod awb;
+pub mod geocode_quality;
 pub mod invoice;
 
+pub use geocode_quality::GeocodeQuality;
 pub use awb::{Awb, ChildAwb, AwbError, ServiceCode, TenantCode};
 pub use invoice::{InvoiceNumber, InvoiceNumberError, RemittanceNumber, CreditNoteNumber};
 

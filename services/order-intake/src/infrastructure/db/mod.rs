@@ -14,7 +14,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use logisticos_types::{
-    Address, Coordinates, Currency, CustomerId, MerchantId, Money,
+    Address, Coordinates, Currency, CustomerId, GeocodeQuality, MerchantId, Money,
     PieceStatus, ShipmentId, ShipmentStatus, TenantId,
     awb::Awb,
 };
@@ -23,7 +23,7 @@ use crate::{
     application::services::shipment_service::{NewShipmentEvent, ShipmentListFilter, ShipmentRepository},
     domain::{
         entities::{shipment::{PaymentRequirement, Shipment}, piece::Piece},
-        value_objects::{ServiceType, ShipmentDimensions, ShipmentWeight},
+        value_objects::{GeocodingRecord, ServiceType, ShipmentDimensions, ShipmentWeight},
     },
 };
 
@@ -66,6 +66,12 @@ struct ShipmentRow {
     dest_country_code:    String,
     dest_lat:             Option<f64>,
     dest_lng:             Option<f64>,
+    dest_geocoding_quality:    String,
+    dest_geocoding_source:     Option<String>,
+    dest_geocoding_provider:   Option<String>,
+    dest_geocoding_place_id:   Option<String>,
+    dest_geocoding_confidence: Option<String>,
+    dest_geocoded_at:          Option<chrono::DateTime<chrono::Utc>>,
 
     weight_grams:         i32,
     length_cm:            Option<i32>,
@@ -211,6 +217,15 @@ impl ShipmentRow {
             cancellation_policy_version: self.cancellation_policy_version,
             booking_amount_cents:        self.booking_amount_cents,
             booking_currency:            self.booking_currency,
+            dest_geocoding: GeocodingRecord {
+                // Anything this build does not recognise reads as UNKNOWN.
+                quality:     GeocodeQuality::parse(&self.dest_geocoding_quality),
+                source:      self.dest_geocoding_source,
+                provider:    self.dest_geocoding_provider,
+                place_id:    self.dest_geocoding_place_id,
+                confidence:  self.dest_geocoding_confidence,
+                geocoded_at: self.dest_geocoded_at,
+            },
         })
     }
 }
@@ -243,6 +258,8 @@ const SHIPMENT_COLS: &str = r#"
     origin_postal_code, origin_country_code, origin_lat, origin_lng,
     dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
     dest_postal_code, dest_country_code, dest_lat, dest_lng,
+    dest_geocoding_quality, dest_geocoding_source, dest_geocoding_provider,
+    dest_geocoding_place_id, dest_geocoding_confidence, dest_geocoded_at,
     weight_grams, length_cm, width_cm, height_cm,
     declared_value_cents, cod_amount_cents, special_instructions,
     merchant_reference, source_platform, external_order_id,
@@ -285,6 +302,12 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         dest_country_code:    r.get("dest_country_code"),
         dest_lat:             r.get("dest_lat"),
         dest_lng:             r.get("dest_lng"),
+        dest_geocoding_quality:    r.get("dest_geocoding_quality"),
+        dest_geocoding_source:     r.get("dest_geocoding_source"),
+        dest_geocoding_provider:   r.get("dest_geocoding_provider"),
+        dest_geocoding_place_id:   r.get("dest_geocoding_place_id"),
+        dest_geocoding_confidence: r.get("dest_geocoding_confidence"),
+        dest_geocoded_at:          r.get("dest_geocoded_at"),
         weight_grams:         r.get("weight_grams"),
         length_cm:            r.get("length_cm"),
         width_cm:             r.get("width_cm"),
@@ -428,6 +451,8 @@ impl ShipmentRepository for PgShipmentRepository {
                     origin_postal_code, origin_country_code, origin_lat, origin_lng,
                     dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
                     dest_postal_code, dest_country_code, dest_lat, dest_lng,
+                    dest_geocoding_quality, dest_geocoding_source, dest_geocoding_provider,
+                    dest_geocoding_place_id, dest_geocoding_confidence, dest_geocoded_at,
                     weight_grams, length_cm, width_cm, height_cm,
                     declared_value_cents, cod_amount_cents, special_instructions,
                     merchant_reference, source_platform, external_order_id,
@@ -439,9 +464,10 @@ impl ShipmentRepository for PgShipmentRepository {
                     $10,$11,$12,$13,
                     $14,$15,$16,$17,$18,$19,$20,$21,$22,
                     $23,$24,$25,$26,$27,$28,$29,$30,$31,
-                    $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,
-                    $42,$43,$44,$45,$46,$47,
-                    $48,$49,$50,$51
+                    $32,$33,$34,$35,$36,$37,
+                    $38,$39,$40,$41,$42,$43,$44,$45,$46,$47,
+                    $48,$49,$50,$51,$52,$53,
+                    $54,$55,$56,$57
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -454,6 +480,12 @@ impl ShipmentRepository for PgShipmentRepository {
                     origin_lng           = EXCLUDED.origin_lng,
                     dest_lat             = EXCLUDED.dest_lat,
                     dest_lng             = EXCLUDED.dest_lng,
+                    dest_geocoding_quality    = EXCLUDED.dest_geocoding_quality,
+                    dest_geocoding_source     = EXCLUDED.dest_geocoding_source,
+                    dest_geocoding_provider   = EXCLUDED.dest_geocoding_provider,
+                    dest_geocoding_place_id   = EXCLUDED.dest_geocoding_place_id,
+                    dest_geocoding_confidence = EXCLUDED.dest_geocoding_confidence,
+                    dest_geocoded_at          = EXCLUDED.dest_geocoded_at,
                     special_instructions = EXCLUDED.special_instructions,
                     merchant_reference   = EXCLUDED.merchant_reference,
                     source_platform      = EXCLUDED.source_platform,
@@ -502,6 +534,12 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(&s.destination.country_code)
             .bind(s.destination.coordinates.map(|c| c.lat))
             .bind(s.destination.coordinates.map(|c| c.lng))
+            .bind(s.dest_geocoding.quality.as_str())
+            .bind(s.dest_geocoding.source.as_deref())
+            .bind(s.dest_geocoding.provider.as_deref())
+            .bind(s.dest_geocoding.place_id.as_deref())
+            .bind(s.dest_geocoding.confidence.as_deref())
+            .bind(s.dest_geocoding.geocoded_at)
             // parcel
             .bind(s.weight.grams as i32)
             .bind(s.dimensions.map(|d| d.length_cm as i32))
