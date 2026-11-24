@@ -89,11 +89,8 @@ impl PodService {
         // by the old driver and the ownership check on submit would 403.
         // Instead we error out and let an operator delete the stale draft —
         // surfacing the inconsistency rather than silently overwriting it.
-        // A shipment another tenant already holds a POD for is not this tenant's
-        // to open evidence on. Answer exactly as for a missing shipment (no oracle).
-        if self.pod_repo.exists_for_other_tenant(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
-            return Err(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() });
-        }
+        // The booking decides whose shipment this is, never who wrote a row first.
+        self.ensure_shipment_is_callers(tenant_id.inner(), cmd.shipment_id).await?;
 
         if let Some(existing) = self.pod_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
@@ -401,11 +398,6 @@ impl PodService {
         tenant_id: &TenantId,
         cmd: InitiatePickupCommand,
     ) -> AppResult<ProofOfPickup> {
-        // See `initiate`: another tenant's shipment reads as a missing one.
-        if self.pickup_repo.exists_for_other_tenant(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
-            return Err(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() });
-        }
-
         // Idempotency: return existing draft if this driver already started one.
         if let Some(existing) = self.pickup_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
@@ -447,6 +439,7 @@ impl PodService {
         // booking record before the POP is written.
         let (service_code, declared_value_cents) = self
             .resolve_billing_context(
+                tenant_id.inner(),
                 cmd.shipment_id,
                 &cmd.service_code,
                 cmd.declared_value_cents,
@@ -488,7 +481,7 @@ impl PodService {
     /// internal hop. This one cannot degrade to a caller-supplied phone without
     /// restoring the exact hole it closes: a driver pointing the delivery PIN at
     /// their own handset. An unreachable order-intake means no PIN is issued.
-    pub async fn recipient_phone_for_shipment(&self, shipment_id: Uuid) -> AppResult<String> {
+    pub async fn recipient_phone_for_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<String> {
         let source = self.shipment_ctx.as_ref().ok_or_else(|| {
             AppError::ServiceUnavailable(
                 "SERVICES__ORDER_INTAKE_URL is not set — the delivery PIN recipient \
@@ -497,10 +490,11 @@ impl PodService {
             )
         })?;
 
-        let ctx = source
-            .fetch(shipment_id)
-            .await
-            .map_err(AppError::internal)?;
+        // Blocking, unlike capture: a foreign or missing shipment is NotFound, and
+        // an unreachable order-intake (or one that cannot show ownership) issues no PIN.
+        let ctx = source.fetch(tenant_id.inner(), shipment_id).await.map_err(|e| {
+            ownership_refusal(&e, shipment_id).unwrap_or_else(|| AppError::internal(e))
+        })?;
 
         ctx.customer_phone
             .filter(|p| !p.trim().is_empty())
@@ -512,8 +506,36 @@ impl PodService {
             })
     }
 
+    /// Ownership check for opening delivery evidence: the booking's tenant must be
+    /// the caller's. Only an explicit refusal (missing or foreign) blocks; an
+    /// order-intake outage must never stop a delivery from being completed, so any
+    /// other failure is logged loudly and the request proceeds.
+    async fn ensure_shipment_is_callers(&self, tenant_id: Uuid, shipment_id: Uuid) -> AppResult<()> {
+        let Some(source) = self.shipment_ctx.as_ref() else {
+            tracing::warn!(
+                shipment_id = %shipment_id,
+                "ORDER_INTAKE_URL not configured — shipment ownership was not verified"
+            );
+            return Ok(());
+        };
+        match source.fetch(tenant_id, shipment_id).await {
+            Ok(_) => Ok(()),
+            Err(e) => match ownership_refusal(&e, shipment_id) {
+                Some(refusal) => Err(refusal),
+                None => {
+                    tracing::error!(
+                        error = %e, shipment_id = %shipment_id,
+                        "could not verify shipment ownership with order-intake; proceeding"
+                    );
+                    Ok(())
+                }
+            },
+        }
+    }
+
     async fn resolve_billing_context(
         &self,
+        tenant_id:                   Uuid,
         shipment_id:                 Uuid,
         client_service_code:         &str,
         client_declared_value_cents: Option<i64>,
@@ -527,7 +549,7 @@ impl PodService {
             return Ok((client_service_code.to_string(), client_declared_value_cents));
         };
 
-        match source.fetch(shipment_id).await {
+        match source.fetch(tenant_id, shipment_id).await {
             Ok(ctx) => {
                 if !ctx.service_code.eq_ignore_ascii_case(client_service_code) {
                     tracing::warn!(
@@ -551,10 +573,10 @@ impl PodService {
             }
             // An explicit "no such shipment" refuses; anything else is an outage,
             // and an order-intake outage must never block capture.
-            Err(e) if e.downcast_ref::<crate::domain::repositories::ShipmentNotFound>().is_some() => {
-                Err(AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })
-            }
             Err(e) => {
+                if let Some(refusal) = ownership_refusal(&e, shipment_id) {
+                    return Err(refusal);
+                }
                 tracing::error!(
                     error       = %e,
                     shipment_id = %shipment_id,
@@ -1039,6 +1061,14 @@ impl PodService {
 }
 
 /// `survey/{tenant}/{shipment}/{uuid}.{ext}`
+/// The one rule for turning a failed ownership lookup into a refusal: an explicit
+/// `ShipmentNotFound` (missing or another tenant's, indistinguishable by design)
+/// is `NotFound("Shipment")`; anything else is an outage and is not a refusal.
+fn ownership_refusal(e: &anyhow::Error, shipment_id: Uuid) -> Option<AppError> {
+    e.downcast_ref::<crate::domain::repositories::ShipmentNotFound>()
+        .map(|_| AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })
+}
+
 pub fn survey_key(tenant_id: Uuid, shipment_id: Uuid, content_type: &str) -> String {
     let ext = if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" };
     format!("survey/{tenant_id}/{shipment_id}/{}.{ext}", Uuid::new_v4())

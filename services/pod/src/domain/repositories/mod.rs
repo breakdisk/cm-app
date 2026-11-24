@@ -8,10 +8,6 @@ pub trait PodRepository: Send + Sync {
     /// Always tenant-scoped: another tenant's id reads as absent.
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
     async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
-    /// True when a POD for this shipment exists under a tenant other than
-    /// `tenant_id`. A global check, used only to refuse `initiate` for a shipment
-    /// another tenant already holds.
-    async fn exists_for_other_tenant(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<bool>;
     async fn save(&self, pod: &ProofOfDelivery) -> anyhow::Result<()>;
 }
 
@@ -39,9 +35,6 @@ pub trait PickupRepository: Send + Sync {
     /// sea-container loading until the chain of custody is open.
     /// Tenant-bound: another tenant's POP never satisfies this tenant's gate.
     async fn find_completed_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
-    /// True when a POP for this shipment exists under a tenant other than
-    /// `tenant_id` (see [`PodRepository::exists_for_other_tenant`]).
-    async fn exists_for_other_tenant(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<bool>;
     /// Upsert — idempotent; uses `ON CONFLICT (id) DO UPDATE` for draft → submitted transitions.
     async fn save(&self, pop: &ProofOfPickup) -> anyhow::Result<()>;
 }
@@ -78,6 +71,7 @@ pub trait TelemetryRepository: Send + Sync {
     /// Query recent telemetry for a shipment, ordered by device_timestamp DESC.
     async fn list_for_shipment(
         &self,
+        tenant_id:   Uuid,
         shipment_id: Uuid,
         limit:       u32,
     ) -> anyhow::Result<Vec<TelemetryEntry>>;
@@ -103,11 +97,10 @@ pub struct ShipmentBillingContext {
     pub customer_phone:       Option<String>,
 }
 
-/// Driven port — resolves a shipment's billing classification from order-intake.
-/// Implemented in `infrastructure/external/order_intake.rs`.
-/// order-intake said, explicitly, that the shipment does not exist. Carried
-/// inside the `anyhow::Error` of a failed lookup so callers can tell it from an
-/// outage, which must never block capture.
+/// order-intake said, explicitly, that the shipment is not this tenant's: it
+/// does not exist, or it belongs to another tenant (the two are deliberately
+/// indistinguishable). Carried inside the `anyhow::Error` of a failed lookup so
+/// callers can tell it from an outage, which must never block capture.
 #[derive(Debug)]
 pub struct ShipmentNotFound(pub Uuid);
 
@@ -119,7 +112,11 @@ impl std::fmt::Display for ShipmentNotFound {
 
 impl std::error::Error for ShipmentNotFound {}
 
+/// Driven port — resolves a shipment's billing classification from order-intake,
+/// for the caller's tenant. Implemented in `infrastructure/external/order_intake.rs`.
 #[async_trait]
 pub trait ShipmentBillingContextSource: Send + Sync {
-    async fn fetch(&self, shipment_id: Uuid) -> anyhow::Result<ShipmentBillingContext>;
+    /// A shipment that is missing, or belongs to a tenant other than `tenant_id`,
+    /// fails with [`ShipmentNotFound`]; every other failure is an outage.
+    async fn fetch(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<ShipmentBillingContext>;
 }

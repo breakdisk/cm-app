@@ -221,67 +221,145 @@ async fn planted_pod_from_another_tenant_is_not_returned_to_the_owner() {
     assert!(pops.find_completed_by_shipment(attacker, shipment).await.expect("query").is_some());
 }
 
-#[tokio::test]
-async fn initiate_for_a_shipment_owned_by_another_tenant_is_refused() {
-    let Some(pool) = pool().await else { return };
-    let (owner, attacker) = (Uuid::new_v4(), Uuid::new_v4());
-    let pod = pod_for(owner);
-    let pop = pop_for(owner);
-    PgPodRepository::new(pool.clone()).save(&pod).await.expect("seed pod");
-    PgPickupRepository::new(pool.clone()).save(&pop).await.expect("seed pop");
-    let svc = service(&pool);
-    let driver = logisticos_types::DriverId::from_uuid(Uuid::new_v4());
-    let attacker_t = TenantId::from_uuid(attacker);
-
-    let err = svc.initiate(&driver, &attacker_t, initiate_pod_cmd(pod.shipment_id), 14.5995, 120.9842).await
-        .expect_err("initiating a POD for another tenant's shipment");
-    assert!(matches!(&err, AppError::NotFound { resource, .. } if *resource == "Shipment"), "{err:?}");
-
-    let err = svc.initiate_pickup(&driver, &attacker_t, initiate_pop_cmd(pop.shipment_id)).await
-        .expect_err("initiating a POP for another tenant's shipment");
-    assert!(matches!(&err, AppError::NotFound { resource, .. } if *resource == "Shipment"), "{err:?}");
-
-    // Nothing was written under the attacker's tenant.
-    assert!(PgPodRepository::new(pool.clone()).find_by_shipment(attacker, pod.shipment_id).await.unwrap().is_none());
-    assert!(PgPickupRepository::new(pool.clone()).find_by_shipment(attacker, pop.shipment_id).await.unwrap().is_none());
-
-    // The owner is not refused as a stranger (its own driver gets the existing row back).
-    let own_driver = logisticos_types::DriverId::from_uuid(pod.driver_id);
-    let again = svc.initiate(&own_driver, &TenantId::from_uuid(owner), initiate_pod_cmd(pod.shipment_id), 14.5995, 120.9842)
-        .await.expect("owner initiates");
-    assert_eq!(again.id, pod.id);
+/// order-intake as pod sees it: the booking belongs to `owner`. Anyone else's
+/// lookup is `ShipmentNotFound`, exactly like a missing shipment.
+struct Booking {
+    owner: Uuid,
+    phone: Option<String>,
 }
 
-struct Missing;
 #[async_trait]
-impl logisticos_pod::domain::repositories::ShipmentBillingContextSource for Missing {
-    async fn fetch(&self, shipment_id: Uuid) -> anyhow::Result<logisticos_pod::domain::repositories::ShipmentBillingContext> {
-        Err(anyhow::Error::new(logisticos_pod::domain::repositories::ShipmentNotFound(shipment_id)))
+impl logisticos_pod::domain::repositories::ShipmentBillingContextSource for Booking {
+    async fn fetch(
+        &self,
+        tenant_id: Uuid,
+        shipment_id: Uuid,
+    ) -> anyhow::Result<logisticos_pod::domain::repositories::ShipmentBillingContext> {
+        if tenant_id != self.owner {
+            return Err(anyhow::Error::new(logisticos_pod::domain::repositories::ShipmentNotFound(shipment_id)));
+        }
+        Ok(logisticos_pod::domain::repositories::ShipmentBillingContext {
+            service_code: "standard".into(),
+            declared_value_cents: None,
+            customer_phone: self.phone.clone(),
+        })
     }
 }
+
+/// order-intake unreachable, or too old to name the tenant.
 struct Down;
+
 #[async_trait]
 impl logisticos_pod::domain::repositories::ShipmentBillingContextSource for Down {
-    async fn fetch(&self, _s: Uuid) -> anyhow::Result<logisticos_pod::domain::repositories::ShipmentBillingContext> {
+    async fn fetch(
+        &self,
+        _t: Uuid,
+        _s: Uuid,
+    ) -> anyhow::Result<logisticos_pod::domain::repositories::ShipmentBillingContext> {
         anyhow::bail!("order-intake unreachable")
     }
 }
 
+fn driver() -> logisticos_types::DriverId {
+    logisticos_types::DriverId::from_uuid(Uuid::new_v4())
+}
+
+fn is_shipment_not_found(e: &AppError) -> bool {
+    matches!(e, AppError::NotFound { resource, .. } if *resource == "Shipment")
+}
+
 #[tokio::test]
-async fn pickup_refused_when_order_intake_says_the_shipment_does_not_exist_but_not_when_it_is_down() {
+async fn a_foreign_row_on_the_shipment_does_not_block_the_owner() {
+    let Some(pool) = pool().await else { return };
+    let (owner, squatter) = (Uuid::new_v4(), Uuid::new_v4());
+
+    // The squatter got there first: a draft POD and a submitted POP on S.
+    let squat_pod = pod_for(squatter);
+    let shipment = squat_pod.shipment_id;
+    PgPodRepository::new(pool.clone()).save(&squat_pod).await.expect("squat pod");
+    let mut squat_pop = submitted(pop_for(squatter));
+    squat_pop.shipment_id = shipment;
+    PgPickupRepository::new(pool.clone()).save(&squat_pop).await.expect("squat pop");
+
+    // Who wrote first decides nothing: the owner opens its own evidence on S.
+    let svc = service(&pool);
+    let me = TenantId::from_uuid(owner);
+    let pod = svc.initiate(&driver(), &me, initiate_pod_cmd(shipment), 14.5995, 120.9842).await
+        .expect("owner's POD initiate is not blocked by the squatter's draft");
+    assert_eq!(pod.tenant_id, owner);
+    let pop = svc.initiate_pickup(&driver(), &me, initiate_pop_cmd(shipment)).await
+        .expect("owner's POP initiate");
+    assert_eq!(pop.tenant_id, owner);
+
+    // ...and can complete it: a submitted POP per tenant is allowed on the same id.
+    let mut owner_submitted = submitted(pop);
+    owner_submitted.driver_id = Uuid::new_v4();
+    PgPickupRepository::new(pool.clone()).save(&owner_submitted).await
+        .expect("owner's submitted POP is not blocked by the squatter's submitted POP");
+
+    // Each tenant sees only its own.
+    let pods = PgPodRepository::new(pool.clone());
+    assert_eq!(pods.find_by_shipment(owner, shipment).await.unwrap().unwrap().id, pod.id);
+    assert_eq!(pods.find_by_shipment(squatter, shipment).await.unwrap().unwrap().id, squat_pod.id);
+}
+
+#[tokio::test]
+async fn a_foreign_tenant_is_refused_when_the_booking_belongs_to_someone_else() {
+    let Some(pool) = pool().await else { return };
+    let (owner, attacker) = (Uuid::new_v4(), Uuid::new_v4());
+    let shipment = Uuid::new_v4();
+    let svc = service_with(&pool, Some(Arc::new(Booking { owner, phone: None })));
+
+    let err = svc.initiate(&driver(), &TenantId::from_uuid(attacker), initiate_pod_cmd(shipment), 14.5995, 120.9842).await
+        .expect_err("a POD on someone else's booking");
+    assert!(is_shipment_not_found(&err), "{err:?}");
+    let err = svc.initiate_pickup(&driver(), &TenantId::from_uuid(attacker), initiate_pop_cmd(shipment)).await
+        .expect_err("a POP on someone else's booking");
+    assert!(is_shipment_not_found(&err), "{err:?}");
+
+    // Nothing was written under the attacker's tenant.
+    assert!(PgPodRepository::new(pool.clone()).find_by_shipment(attacker, shipment).await.unwrap().is_none());
+    assert!(PgPickupRepository::new(pool.clone()).find_by_shipment(attacker, shipment).await.unwrap().is_none());
+
+    // The owner proceeds.
+    svc.initiate(&driver(), &TenantId::from_uuid(owner), initiate_pod_cmd(shipment), 14.5995, 120.9842).await
+        .expect("owner POD");
+    svc.initiate_pickup(&driver(), &TenantId::from_uuid(owner), initiate_pop_cmd(shipment)).await.expect("owner POP");
+}
+
+#[tokio::test]
+async fn an_order_intake_outage_never_blocks_capture() {
     let Some(pool) = pool().await else { return };
     let tenant = TenantId::from_uuid(Uuid::new_v4());
-    let driver = logisticos_types::DriverId::from_uuid(Uuid::new_v4());
+    let svc = service_with(&pool, Some(Arc::new(Down)));
 
-    let err = service_with(&pool, Some(Arc::new(Missing)))
-        .initiate_pickup(&driver, &tenant, initiate_pop_cmd(Uuid::new_v4())).await
-        .expect_err("an explicit NotFound refuses");
-    assert!(matches!(&err, AppError::NotFound { resource, .. } if *resource == "Shipment"), "{err:?}");
+    svc.initiate(&driver(), &tenant, initiate_pod_cmd(Uuid::new_v4()), 14.5995, 120.9842).await
+        .expect("POD capture proceeds when order-intake is down");
+    svc.initiate_pickup(&driver(), &tenant, initiate_pop_cmd(Uuid::new_v4())).await
+        .expect("POP capture proceeds when order-intake is down");
+}
 
-    // An outage never blocks capture.
-    service_with(&pool, Some(Arc::new(Down)))
-        .initiate_pickup(&driver, &tenant, initiate_pop_cmd(Uuid::new_v4())).await
-        .expect("order-intake outage must not block POP capture");
+#[tokio::test]
+async fn the_delivery_pin_recipient_comes_from_the_callers_own_booking() {
+    let Some(pool) = pool().await else { return };
+    let (owner, other) = (Uuid::new_v4(), Uuid::new_v4());
+    let shipment = Uuid::new_v4();
+    let booked = Booking { owner, phone: Some("+639171234567".into()) };
+
+    let svc = service_with(&pool, Some(Arc::new(booked)));
+    assert_eq!(
+        svc.recipient_phone_for_shipment(&TenantId::from_uuid(owner), shipment).await.expect("own booking"),
+        "+639171234567"
+    );
+
+    // Another tenant's driver cannot make pod SMS a PIN to this recipient.
+    let err = svc.recipient_phone_for_shipment(&TenantId::from_uuid(other), shipment).await
+        .expect_err("a foreign tenant must not resolve the recipient");
+    assert!(is_shipment_not_found(&err), "{err:?}");
+
+    // Unlike capture, this stays blocking: no verified ownership, no PIN.
+    let down = service_with(&pool, Some(Arc::new(Down)));
+    assert!(down.recipient_phone_for_shipment(&TenantId::from_uuid(owner), shipment).await.is_err());
 }
 
 mod http {

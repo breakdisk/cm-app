@@ -627,6 +627,9 @@ async fn get_shipment_billing(
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "shipment_id":          id,
+        // The booking's tenant. pod compares it with the caller's tenant, so a
+        // shipment that exists but belongs to someone else reads as not found.
+        "tenant_id":            shipment.tenant_id.inner(),
         "awb":                  shipment.awb.as_str(),
         "merchant_id":          shipment.merchant_id.inner(),
         "currency":             format!("{:?}", base_freight.currency),

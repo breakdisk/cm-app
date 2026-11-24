@@ -4025,3 +4025,29 @@ mod scope_over_http {
         }
     }
 }
+
+// ============================================================================
+// GET /v1/internal/shipments/:id/billing carries the owning tenant, so a
+// caller (pod) can tell "exists" from "belongs to my tenant".
+// ============================================================================
+
+mod billing_names_the_tenant {
+    use super::*;
+
+    #[tokio::test]
+    async fn billing_response_carries_the_shipments_tenant_id() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let tenant_id = uuid::Uuid::new_v4();
+        let shipment = make_shipment(tenant_id, uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let (server, _jwt) = build_test_server(Arc::clone(&repo));
+        let resp = server.get(&format!("/v1/internal/shipments/{id}/billing")).await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["tenant_id"], json!(tenant_id));
+        // Existing consumers' fields are untouched.
+        assert!(body["service_code"].is_string() && body["customer_phone"].is_string());
+    }
+}

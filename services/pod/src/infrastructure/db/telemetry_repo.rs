@@ -71,6 +71,7 @@ impl TelemetryRepository for PgTelemetryRepository {
 
     async fn list_for_shipment(
         &self,
+        tenant_id:   Uuid,
         shipment_id: Uuid,
         limit:       u32,
     ) -> anyhow::Result<Vec<TelemetryEntry>> {
@@ -79,11 +80,12 @@ impl TelemetryRepository for PgTelemetryRepository {
                       event_type, device_timestamp, server_timestamp,
                       lat, lng, metadata
                FROM pod.shipment_telemetry_logs
-               WHERE shipment_id = $1
+               WHERE shipment_id = $1 AND tenant_id = $2
                ORDER BY device_timestamp DESC
-               LIMIT $2"#
+               LIMIT $3"#
         )
         .bind(shipment_id)
+        .bind(tenant_id)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;

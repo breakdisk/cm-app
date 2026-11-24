@@ -262,7 +262,7 @@ pub async fn generate_otp(
 
     let recipient_phone = state
         .pod_service
-        .recipient_phone_for_shipment(cmd.shipment_id)
+        .recipient_phone_for_shipment(&tenant_id, cmd.shipment_id)
         .await?;
 
     let issued = state

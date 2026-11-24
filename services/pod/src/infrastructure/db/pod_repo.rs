@@ -128,17 +128,6 @@ impl PodRepository for PgPodRepository {
         Ok(row.map(ProofOfDelivery::from))
     }
 
-    async fn exists_for_other_tenant(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<bool> {
-        let found: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pod.proofs WHERE shipment_id = $1 AND tenant_id <> $2)",
-        )
-        .bind(shipment_id)
-        .bind(tenant_id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(found)
-    }
-
     async fn save(&self, pod: &ProofOfDelivery) -> anyhow::Result<()> {
         let status = status_str(pod.status);
         let photos = serde_json::to_value(&pod.photos)?;

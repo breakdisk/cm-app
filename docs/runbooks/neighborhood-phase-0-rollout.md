@@ -19,6 +19,24 @@ Every step needs the owner's go-ahead. Do them in order and do not skip ahead.
 
 1. **Deploy all images with all three flags `false`.** Nothing changes for users.
 
+   **Deploy order-intake before, or together with, pod.** pod now asks order-intake
+   who owns a shipment (the billing response carries `tenant_id`). Until
+   order-intake is up with that field, a pod that sees no `tenant_id` treats it as an
+   outage: delivery PINs are refused (no PIN without verified ownership) and POP
+   billing degrades to the device's values. POD and POP capture themselves are not
+   blocked. pod's migration `0009` (per-tenant shipment uniqueness) is safe in any
+   order: the new indexes are weaker than the old ones, and both upserts conflict on
+   `(id)`.
+
+   **Behaviour changes at deploy, not behind a flag:**
+   - The hub-ops POP gate (container/pallet loading and inbound scans) was failing
+     closed with a 500, because pod's `pop-status` answered 400 to every request
+     (repeated `shipment_ids` could not be parsed). It now evaluates for real, so a
+     shipment without a completed POP is refused with 422 where before every load
+     errored. Expect refusals to appear that were previously masked as errors.
+   - `pop-status` and `pop-evidence` require `tenant_id`; hub-ops, delivery-experience
+     and the admin portal BFF send it. All images must be deployed together.
+
 2. **Run the links backfill first.** `scripts/backfill/partner-shipment-links.sh`
    as a dry-run, review the counts with the owner, then `--apply`. Check the
    inserted row count against the dry-run's `would_insert`.
