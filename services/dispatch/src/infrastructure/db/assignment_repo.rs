@@ -291,27 +291,31 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
         Ok(close_candidates(candidates, |tenant, route| self.close_if_finished(tenant, route)).await)
     }
 
-    async fn set_expected_tasks(&self, assignment_id: Uuid, expected: i32) -> anyhow::Result<()> {
-        sqlx::query("UPDATE dispatch.driver_assignments SET expected_tasks = $2 WHERE id = $1")
-            .bind(assignment_id)
-            .bind(expected)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    async fn save(&self, a: &DriverAssignment) -> anyhow::Result<()> {
+        self.upsert(a, None).await
     }
 
-    async fn save(&self, a: &DriverAssignment) -> anyhow::Result<()> {
+    async fn save_with_expected_tasks(&self, a: &DriverAssignment, expected: i32) -> anyhow::Result<()> {
+        self.upsert(a, Some(expected)).await
+    }
+}
+
+impl PgDriverAssignmentRepository {
+    /// One statement. `expected_tasks` is written on insert; a later save with
+    /// `None` (accept, reject, cancel) keeps the stored value.
+    async fn upsert(&self, a: &DriverAssignment, expected_tasks: Option<i32>) -> anyhow::Result<()> {
         let status = status_str(a.status);
         sqlx::query(
             r#"INSERT INTO dispatch.driver_assignments
                    (id, tenant_id, driver_id, route_id, status,
-                    assigned_at, accepted_at, rejected_at, rejection_reason)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    assigned_at, accepted_at, rejected_at, rejection_reason, expected_tasks)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                ON CONFLICT (id) DO UPDATE SET
                    status           = EXCLUDED.status,
                    accepted_at      = EXCLUDED.accepted_at,
                    rejected_at      = EXCLUDED.rejected_at,
-                   rejection_reason = EXCLUDED.rejection_reason"#
+                   rejection_reason = EXCLUDED.rejection_reason,
+                   expected_tasks   = COALESCE(EXCLUDED.expected_tasks, dispatch.driver_assignments.expected_tasks)"#
         )
         .bind(a.id)
         .bind(a.tenant_id.inner())
@@ -322,6 +326,7 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
         .bind(a.accepted_at)
         .bind(a.rejected_at)
         .bind(&a.rejection_reason)
+        .bind(expected_tasks)
         .execute(&self.pool)
         .await?;
         Ok(())

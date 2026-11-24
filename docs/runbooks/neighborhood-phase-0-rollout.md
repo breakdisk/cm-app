@@ -48,6 +48,21 @@ Every step needs the owner's go-ahead. Do them in order and do not skip ahead.
    as `Pending`. **Rollback below `83045370` requires turning the flag off first**,
    then letting the sweep stop, then rolling the image back.
 
+   **Also wait for assignments created before migration `0020` to finish.** From
+   `0020` on, dispatch records `expected_tasks` in the same INSERT as the assignment.
+   An older in-flight assignment has it `NULL`, so the close falls back to counting
+   route stops, which for a quick-dispatch route (no stops) lets a completed pickup
+   close the assignment before the delivery leg exists. Turn the flag on only when
+   this returns `0` (run it in `svc_driver_ops`, the database dispatch uses):
+
+   ```sql
+   SELECT COUNT(*)
+     FROM dispatch.driver_assignments a
+    WHERE a.status IN ('pending', 'accepted')
+      AND a.expected_tasks IS NULL
+      AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = a.route_id);
+   ```
+
 8. **A partner link the consumer gave up on** (4 attempts) is not retried again. It
    is repaired by re-running `partner-shipment-links.sh --apply`, which is
    idempotent.

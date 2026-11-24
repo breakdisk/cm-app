@@ -545,13 +545,16 @@ impl DriverAssignmentService {
 
         // 5. Create assignment
         let assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
-        self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
+        // The leg count is recorded in the same INSERT as the assignment.
+        self.assignment_repo
+            .save_with_expected_tasks(&assignment, super::assignment_events::expected_leg_count(&queue_item))
+            .await
+            .map_err(AppError::Internal)?;
 
         // 6+7. Emit TASK_ASSIGNED (per leg) + DRIVER_ASSIGNED via the shared
         //      helper — the same emission the gig offer claim path uses, so
         //      the two assignment flows can never drift.
         super::assignment_events::emit_assignment_events(
-            self.assignment_repo.as_ref(),
             &self.kafka,
             &queue_item,
             tenant_id.inner(),

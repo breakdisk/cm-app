@@ -51,10 +51,12 @@ pub trait DriverAssignmentRepository: Send + Sync {
     /// ended but whose outcome event was missed. Returns the number closed.
     async fn close_finished_assignments(&self, limit: i64) -> anyhow::Result<u64>;
 
-    /// Records how many `TASK_ASSIGNED` legs dispatch is about to emit for the
-    /// assignment. Must be called BEFORE the legs are published: the close
-    /// predicate waits for this many tasks to exist.
-    async fn set_expected_tasks(&self, assignment_id: Uuid, expected: i32) -> anyhow::Result<()>;
+    /// Inserts the assignment together with the number of `TASK_ASSIGNED` legs
+    /// dispatch will emit for it, in one statement: the assignment never exists
+    /// without its leg count, so the close predicate cannot fall back to the
+    /// stop-count rule that closes a quick-dispatch route after its pickup.
+    /// Use this wherever legs are emitted for the assignment.
+    async fn save_with_expected_tasks(&self, assignment: &DriverAssignment, expected: i32) -> anyhow::Result<()>;
 }
 
 /// Read-only view of driver availability — sourced from the driver-ops service DB

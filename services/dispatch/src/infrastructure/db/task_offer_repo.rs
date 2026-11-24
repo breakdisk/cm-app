@@ -254,13 +254,20 @@ impl PgTaskOfferRepository {
         // this offer stays open for everyone else).
         let assignment_insert = sqlx::query(
             r#"INSERT INTO dispatch.driver_assignments
-                   (id, tenant_id, driver_id, route_id, status, assigned_at, accepted_at)
-               VALUES ($1,$2,$3,$4,'accepted',NOW(),NOW())"#,
+                   (id, tenant_id, driver_id, route_id, status, assigned_at, accepted_at, expected_tasks)
+               VALUES ($1,$2,$3,$4,'accepted',NOW(),NOW(),
+                       -- Same legs `emit_assignment_events` publishes: delivery, plus
+                       -- pickup when the queue row carries origin data. Recorded in this
+                       -- INSERT so the assignment never exists without its leg count.
+                       (SELECT CASE WHEN q.origin_address_line1 <> '' OR q.origin_lat IS NOT NULL
+                                    THEN 2 ELSE 1 END
+                          FROM dispatch.dispatch_queue q WHERE q.shipment_id = $5))"#,
         )
         .bind(assignment_id)
         .bind(tenant_id)
         .bind(driver_id)
         .bind(route_id)
+        .bind(shipment_id)
         .execute(&mut *tx)
         .await;
 

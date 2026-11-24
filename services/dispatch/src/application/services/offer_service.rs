@@ -19,7 +19,7 @@ use logisticos_types::{Coordinates, DriverId, TenantId};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::domain::repositories::{DriverAssignmentRepository, DriverAvailabilityRepository};
+use crate::domain::repositories::DriverAvailabilityRepository;
 use crate::domain::value_objects::vehicle_can_carry;
 use crate::infrastructure::db::{
     ClaimOutcome, ComplianceCache, DispatchQueueRepository, DispatchQueueRow,
@@ -44,7 +44,6 @@ pub const ERR_DRIVER_BUSY: &str = "DRIVER_BUSY";
 
 pub struct OfferService {
     offer_repo:        Arc<PgTaskOfferRepository>,
-    assignment_repo:   Arc<dyn DriverAssignmentRepository>,
     queue_repo:        Arc<dyn DispatchQueueRepository>,
     driver_avail_repo: Arc<dyn DriverAvailabilityRepository>,
     kafka:             Arc<KafkaProducer>,
@@ -55,13 +54,12 @@ pub struct OfferService {
 impl OfferService {
     pub fn new(
         offer_repo:        Arc<PgTaskOfferRepository>,
-        assignment_repo:   Arc<dyn DriverAssignmentRepository>,
         queue_repo:        Arc<dyn DispatchQueueRepository>,
         driver_avail_repo: Arc<dyn DriverAvailabilityRepository>,
         kafka:             Arc<KafkaProducer>,
         compliance_cache:  Option<Arc<Mutex<ComplianceCache>>>,
     ) -> Self {
-        Self { offer_repo, assignment_repo, queue_repo, driver_avail_repo, kafka, compliance_cache, home: None }
+        Self { offer_repo, queue_repo, driver_avail_repo, kafka, compliance_cache, home: None }
     }
 
     #[must_use]
@@ -404,7 +402,7 @@ impl OfferService {
                             None
                         });
                     if let Err(e) = super::assignment_events::emit_assignment_events(
-                        self.assignment_repo.as_ref(), &self.kafka, &queue_item, tenant_id, driver_id.inner(),
+                        &self.kafka, &queue_item, tenant_id, driver_id.inner(),
                         assignment_id, route_id, shipment_id, payout_cents, driver_carrier_id,
                     ).await {
                         tracing::error!(offer_id = %offer_id, err = %e,

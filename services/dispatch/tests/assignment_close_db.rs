@@ -577,25 +577,99 @@ async fn legacy_null_expected_uses_stop_count() {
 }
 
 #[tokio::test]
-async fn set_expected_tasks_is_recorded_on_the_assignment() {
+async fn quick_dispatch_assignment_is_born_with_its_leg_count() {
+    use logisticos_dispatch::domain::entities::DriverAssignment;
     let Some(url) = database_url() else { return };
     let db = Scratch::create(&url).await;
     let repo = PgDriverAssignmentRepository::new(db.pool.clone());
 
-    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
-    let id: Uuid = sqlx::query_scalar("SELECT id FROM dispatch.driver_assignments WHERE route_id = $1")
-        .bind(f.route)
-        .fetch_one(&db.pool)
-        .await
-        .expect("id");
-    repo.set_expected_tasks(id, 2).await.expect("set");
+    // The assignment row and its leg count are one INSERT: there is no moment
+    // at which the assignment exists without expected_tasks.
+    let (tenant, driver, route) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query("INSERT INTO dispatch.routes (id, tenant_id, driver_id, vehicle_id) VALUES ($1,$2,$3,$4)")
+        .bind(route).bind(tenant).bind(driver).bind(Uuid::nil())
+        .execute(&db.pool).await.expect("route");
+    let a = DriverAssignment::new(
+        TenantId::from_uuid(tenant),
+        logisticos_types::DriverId::from_uuid(driver),
+        RouteId::from_uuid(route),
+    );
+    repo.save_with_expected_tasks(&a, 2).await.expect("save");
     let n: Option<i32> = sqlx::query_scalar("SELECT expected_tasks FROM dispatch.driver_assignments WHERE id = $1")
-        .bind(id)
-        .fetch_one(&db.pool)
-        .await
-        .expect("read");
+        .bind(a.id).fetch_one(&db.pool).await.expect("read");
     assert_eq!(n, Some(2));
+
+    // A later plain save (accept, cancel, ...) must not erase it.
+    repo.save(&a).await.expect("resave");
+    let n: Option<i32> = sqlx::query_scalar("SELECT expected_tasks FROM dispatch.driver_assignments WHERE id = $1")
+        .bind(a.id).fetch_one(&db.pool).await.expect("read");
+    assert_eq!(n, Some(2), "a status save keeps the leg count");
     db.drop_db().await;
+}
+
+#[tokio::test]
+async fn a_failed_assignment_insert_leaves_neither_assignment_nor_count() {
+    use logisticos_dispatch::domain::entities::DriverAssignment;
+    let Some(url) = database_url() else { return };
+    let db = Scratch::create(&url).await;
+    let repo = PgDriverAssignmentRepository::new(db.pool.clone());
+
+    // The rider already has an active assignment: the unique index refuses the
+    // second insert, and nothing is left behind half-recorded (no NULL-count row).
+    let f = route_with_assignment(&db.pool, "in_progress", "accepted").await;
+    let route2 = Uuid::new_v4();
+    sqlx::query("INSERT INTO dispatch.routes (id, tenant_id, driver_id, vehicle_id) VALUES ($1,$2,$3,$4)")
+        .bind(route2).bind(f.tenant).bind(f.driver).bind(Uuid::nil())
+        .execute(&db.pool).await.expect("route2");
+    let a = DriverAssignment::new(
+        TenantId::from_uuid(f.tenant),
+        logisticos_types::DriverId::from_uuid(f.driver),
+        RouteId::from_uuid(route2),
+    );
+    assert!(repo.save_with_expected_tasks(&a, 2).await.is_err(), "busy rider refuses the second assignment");
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dispatch.driver_assignments WHERE route_id = $1")
+        .bind(route2).fetch_one(&db.pool).await.expect("count");
+    assert_eq!(rows, 0);
+    db.drop_db().await;
+}
+
+/// The `expected_tasks` a won claim leaves on its assignment (-1 if NULL).
+async fn claim_expected(url: &str, with_origin: bool) -> i32 {
+    use logisticos_dispatch::infrastructure::db::{ClaimOutcome, PgTaskOfferRepository};
+    let db = Scratch::create(url).await;
+    let (tenant, shipment, driver, offer, queue) =
+        (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO dispatch.dispatch_queue
+            (id, tenant_id, shipment_id, customer_name, customer_phone, dest_address_line1, dest_city,
+             origin_address_line1)
+         VALUES ($1,$2,$3,'c','p','d','x',$4)",
+    )
+    .bind(queue).bind(tenant).bind(shipment)
+    .bind(if with_origin { "1 Origin St" } else { "" })
+    .execute(&db.pool).await.expect("queue");
+    sqlx::query(
+        "INSERT INTO dispatch.task_offers (id, tenant_id, shipment_id, queue_id, expires_at)
+         VALUES ($1,$2,$3,$4, NOW() + INTERVAL '5 minutes')",
+    )
+    .bind(offer).bind(tenant).bind(shipment).bind(queue)
+    .execute(&db.pool).await.expect("offer");
+    sqlx::query("INSERT INTO dispatch.task_offer_candidates (offer_id, driver_id) VALUES ($1,$2)")
+        .bind(offer).bind(driver).execute(&db.pool).await.expect("candidate");
+
+    let outcome = PgTaskOfferRepository::new(db.pool.clone()).claim(offer, driver).await.expect("claim");
+    let ClaimOutcome::Won { assignment_id, .. } = outcome else { panic!("claim must win") };
+    let n: Option<i32> = sqlx::query_scalar("SELECT expected_tasks FROM dispatch.driver_assignments WHERE id = $1")
+        .bind(assignment_id).fetch_one(&db.pool).await.expect("read");
+    db.drop_db().await;
+    n.unwrap_or(-1)
+}
+
+#[tokio::test]
+async fn gig_claim_assignment_is_born_with_its_leg_count() {
+    let Some(url) = database_url() else { return };
+    assert_eq!(claim_expected(&url, true).await, 2, "pickup + delivery");
+    assert_eq!(claim_expected(&url, false).await, 1, "delivery only");
 }
 
 #[tokio::test]
