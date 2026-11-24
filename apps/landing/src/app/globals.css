@@ -15,7 +15,7 @@ html { scroll-behavior: smooth; }
 body {
   background-color: #050810;
   color: #e2e8f0;
-  font-family: var(--font-geist);
+  font-family: 'Space Grotesk', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
@@ -101,5 +101,5 @@ body {
 html[lang="ar"] body,
 html[lang="ar"] .font-sans,
 html[lang="ar"] .font-heading {
-  font-family: var(--font-arabic), var(--font-sans), sans-serif;
+  font-family: var(--font-arabic), 'Space Grotesk', sans-serif;
 }
