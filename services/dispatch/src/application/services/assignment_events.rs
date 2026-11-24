@@ -22,6 +22,7 @@ pub(crate) async fn emit_assignment_events(
     route_id: Uuid,
     shipment_id: Uuid,
     payout_cents: Option<i64>,
+    driver_carrier_id: Option<Uuid>,
 ) -> anyhow::Result<()> {
     // One event per leg — driver-ops creates one DriverTask row per event,
     // sequenced pickup → delivery. Both share assignment_id (same job). The
@@ -62,6 +63,7 @@ pub(crate) async fn emit_assignment_events(
             delivery_lat:         queue_item.dest_lat,
             delivery_lng:         queue_item.dest_lng,
             payout_cents,
+            driver_carrier_id,
         });
         kafka.publish_event(topics::TASK_ASSIGNED, &pickup_event).await?;
         next_sequence += 1;
@@ -97,6 +99,7 @@ pub(crate) async fn emit_assignment_events(
         delivery_lat:         queue_item.dest_lat,
         delivery_lng:         queue_item.dest_lng,
         payout_cents,
+        driver_carrier_id,
     });
     kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await?;
 

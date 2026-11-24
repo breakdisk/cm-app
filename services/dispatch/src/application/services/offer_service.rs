@@ -395,9 +395,15 @@ impl OfferService {
                 // then tell the losers. Fire-and-forget semantics on the loser
                 // fan-out — a Kafka hiccup must not undo a won claim.
                 if let Ok(Some(queue_item)) = self.queue_repo.find_by_shipment(shipment_id).await {
+                    // A failed lookup is logged, not fatal: the claim already won.
+                    let driver_carrier_id = self.driver_avail_repo.carrier_id(driver_id).await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(driver_id = %driver_id, err = %e, "carrier lookup failed; task will not link a partner");
+                            None
+                        });
                     if let Err(e) = super::assignment_events::emit_assignment_events(
                         &self.kafka, &queue_item, tenant_id, driver_id.inner(),
-                        assignment_id, route_id, shipment_id, payout_cents,
+                        assignment_id, route_id, shipment_id, payout_cents, driver_carrier_id,
                     ).await {
                         tracing::error!(offer_id = %offer_id, err = %e,
                             "claim won but assignment event emission failed — driver-ops task rows missing until replay");

@@ -517,6 +517,15 @@ impl DriverAssignmentService {
             None => self.driver_avail_repo.gig_rate_cents(&driver_id).await.unwrap_or(None),
         };
 
+        // 4c. The driver's carrier, for order-intake's shipment-to-partner link.
+        // A failed lookup is logged, not fatal: dispatch must not stop because a
+        // partner link could not be resolved, and the backfill repairs it.
+        let driver_carrier_id = self.driver_avail_repo.carrier_id(&driver_id).await
+            .unwrap_or_else(|e| {
+                tracing::warn!(driver_id = %driver_id, err = %e, "carrier lookup failed; task will not link a partner");
+                None
+            });
+
         // 4. Create a minimal single-stop route (vehicle_id = nil, stop added by driver-ops)
         let route_id = RouteId::new();
         let route = Route {
@@ -550,6 +559,7 @@ impl DriverAssignmentService {
             route_id.inner(),
             cmd.shipment_id,
             payout_cents,
+            driver_carrier_id,
         ).await.map_err(AppError::Internal)?;
 
         // 8. Mark queue item as dispatched
@@ -648,6 +658,7 @@ mod tests {
             delivery_lat:        Some(14.5995),
             delivery_lng:        Some(120.9842),
             payout_cents:        Some(15_000),
+            driver_carrier_id:   None,
         };
     }
 }

@@ -102,6 +102,22 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Which partner handles each shipment, projected from allocations and tasks.
+    let pool_for_links = pool.clone();
+    let brokers_for_links = cfg.kafka.brokers.clone();
+    let group_for_links = cfg.kafka.group_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::infrastructure::messaging::partner_link_consumer::start_partner_link_consumer(
+            &brokers_for_links,
+            &group_for_links,
+            pool_for_links,
+        )
+        .await
+        {
+            tracing::error!("Partner link consumer error: {e}");
+        }
+    });
+
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 

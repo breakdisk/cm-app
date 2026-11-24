@@ -38,3 +38,21 @@ against a **disposable** container to check the script after changing it:
 ```bash
 TEST_CONTAINER=my-disposable-postgres bash scripts/backfill/test-partner-memberships.sh
 ```
+
+## partner-shipment-links.sh
+
+Fills `order_intake.shipment_partner_links` for shipments a carrier handled before
+the link consumer existed. A partner token is scoped to linked shipments, so
+without this a partner would lose sight of its own history when scoping is
+enforced. Sources: `carrier.sla_records` (allocations) and `driver_ops.tasks`
+joined to drivers that belong to a carrier.
+
+```bash
+export PSQL="docker exec -i logisticos-postgres psql -U logisticos"
+bash scripts/backfill/partner-shipment-links.sh          # dry-run: from_sla / from_tasks / unique / would_insert
+bash scripts/backfill/partner-shipment-links.sh --apply
+```
+
+Run it **after** the new order-intake image is deployed: the consumer links new
+work, this covers the past, and they overlap harmlessly (one row per
+shipment and carrier). Test with `test-partner-shipment-links.sh` the same way.

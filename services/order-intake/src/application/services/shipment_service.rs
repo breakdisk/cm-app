@@ -132,6 +132,20 @@ pub trait ShipmentRepository: Send + Sync {
         shipment_id: uuid::Uuid,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>>;
 
+    /// Is this shipment linked to this partner? The partner-scoped read gate:
+    /// a partner token may read a shipment only if some link names its carrier.
+    ///
+    /// Defaults to `false`, so an implementor that has no link data (a test
+    /// double) refuses rather than admits.
+    fn is_linked<'a>(
+        &'a self,
+        _tenant_id: uuid::Uuid,
+        _shipment_id: uuid::Uuid,
+        _carrier_id: uuid::Uuid,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn save_pieces<'a>(
         &'a self,
         pieces: &'a [Piece],

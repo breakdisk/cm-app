@@ -516,6 +516,12 @@ pub struct TaskAssigned {
     /// record: later rate changes never alter accepted work.
     #[serde(default)]
     pub payout_cents:         Option<i64>,
+    /// The carrier (partner) the assigned driver belongs to, from
+    /// `driver_ops.drivers.carrier_id`. None for the platform's own drivers.
+    /// order-intake links the shipment to this partner so a partner token can
+    /// read exactly the shipments its own riders handle.
+    #[serde(default)]
+    pub driver_carrier_id:    Option<Uuid>,
 }
 
 /// Broadcast gig offer — fanned out to N candidate drivers simultaneously.
@@ -1042,5 +1048,43 @@ mod cross_border_tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: ContainerDeconsolidated = serde_json::from_str(&json).unwrap();
         assert_eq!(back.child_awbs.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod task_assigned_carrier_tests {
+    use super::*;
+
+    fn minimal_task_assigned(extra: serde_json::Value) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "task_id": Uuid::new_v4(), "assignment_id": Uuid::new_v4(),
+            "shipment_id": Uuid::new_v4(), "route_id": Uuid::new_v4(),
+            "driver_id": Uuid::new_v4(), "tenant_id": Uuid::new_v4(),
+            "sequence": 1,
+            "address_line1": "1 Test St", "address_city": "Abu Dhabi",
+            "address_province": "AD", "address_postal_code": "00000",
+            "customer_name": "C", "customer_phone": "+971500000000",
+        });
+        if let (Some(base), Some(add)) = (v.as_object_mut(), extra.as_object()) {
+            base.extend(add.clone());
+        }
+        v
+    }
+
+    /// Events already on the broker, and any producer not yet redeployed, carry
+    /// no carrier. They must keep decoding, as a platform driver's task.
+    #[test]
+    fn old_task_assigned_payload_without_the_field_decodes() {
+        let t: TaskAssigned = serde_json::from_value(minimal_task_assigned(serde_json::json!({}))).unwrap();
+        assert_eq!(t.driver_carrier_id, None);
+    }
+
+    #[test]
+    fn driver_carrier_id_round_trips() {
+        let carrier = Uuid::new_v4();
+        let t: TaskAssigned = serde_json::from_value(
+            minimal_task_assigned(serde_json::json!({ "driver_carrier_id": carrier })),
+        ).unwrap();
+        assert_eq!(t.driver_carrier_id, Some(carrier));
     }
 }

@@ -43,6 +43,16 @@ pub trait DriverAvailabilityRepository: Send + Sync {
     /// driver is part_time, None for full_time — the driver app must never
     /// show full-time drivers a price.
     async fn gig_rate_cents(&self, driver_id: &DriverId) -> anyhow::Result<Option<i64>>;
+
+    /// The carrier (partner) a driver belongs to, or None for the platform's
+    /// own drivers. Stamped on `TaskAssigned` so order-intake can link the
+    /// shipment to the partner that handles it.
+    ///
+    /// Defaults to None so an implementor that has no carrier data (a test
+    /// double) behaves as "platform driver", which links nothing.
+    async fn carrier_id(&self, _driver_id: &DriverId) -> anyhow::Result<Option<uuid::Uuid>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone)]

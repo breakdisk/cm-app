@@ -309,6 +309,26 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
 }
 
 impl ShipmentRepository for PgShipmentRepository {
+    fn is_linked<'a>(
+        &'a self,
+        tenant_id: Uuid,
+        shipment_id: Uuid,
+        carrier_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let linked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM order_intake.shipment_partner_links \
+                  WHERE tenant_id = $1 AND shipment_id = $2 AND carrier_id = $3)",
+            )
+            .bind(tenant_id)
+            .bind(shipment_id)
+            .bind(carrier_id)
+            .fetch_one(&self.pool)
+            .await?;
+            Ok(linked)
+        })
+    }
+
     fn list<'a>(
         &'a self,
         filter: &'a ShipmentListFilter,

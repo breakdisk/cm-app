@@ -121,4 +121,15 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
         .await?;
         Ok(row.and_then(|(t, rate)| (t == "part_time").then_some(i64::from(rate))))
     }
+
+    async fn carrier_id(&self, driver_id: &DriverId) -> anyhow::Result<Option<uuid::Uuid>> {
+        // Keyed on user_id, which is what dispatch holds as a driver id (ADR-0015).
+        let carrier: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
+            "SELECT carrier_id FROM driver_ops.drivers WHERE user_id = $1",
+        )
+        .bind(driver_id.inner())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(carrier.flatten())
+    }
 }

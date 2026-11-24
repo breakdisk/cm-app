@@ -1,3 +1,4 @@
+pub mod partner_link_consumer;
 pub mod payment_consumer;
 pub mod status_consumer;
 
