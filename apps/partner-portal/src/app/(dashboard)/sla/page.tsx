@@ -18,10 +18,15 @@ import {
 import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch, Download, ChevronLeft, ChevronRight } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { carriersApi, carrierIdOf, type ZoneSlaRow, type SlaRecord } from "@/lib/api/carriers";
+import { dailyOnTimeRate, totalsFromZones, type TrendPoint } from "@/lib/sla-trend";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
+//
+// Every figure on this page is the signed-in partner's OWN carrier data
+// (`/v1/carriers/:id/sla-summary` and `/sla-history`). It used to read the
+// tenant-wide analytics endpoints, which count every carrier's and merchant's
+// shipments, and which a partner token is no longer allowed to call.
 
-const ANALYTICS_URL  = process.env.NEXT_PUBLIC_ANALYTICS_URL ?? "http://localhost:8013";
 const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL   ?? "http://localhost:8010";
 
 function todayStr()     { return new Date().toISOString().slice(0, 10); }
@@ -31,30 +36,12 @@ function daysAgoStr(n: number) {
   return d.toISOString().slice(0, 10);
 }
 
-async function fetchKpis() {
-  try {
-    const res = await authFetch(
-      `${ANALYTICS_URL}/v1/analytics/kpis?from=${daysAgoStr(30)}&to=${todayStr()}`,
-    );
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json.data ?? json;
-  } catch {
-    return null;
-  }
-}
+/** How many recent delivery records to fold into the trend chart. */
+const TREND_HISTORY_LIMIT = 500;
 
-async function fetchTimeseries() {
-  try {
-    const res = await authFetch(
-      `${ANALYTICS_URL}/v1/analytics/timeseries?from=${daysAgoStr(30)}&to=${todayStr()}`,
-    );
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json.data?.buckets ?? json.data ?? null;
-  } catch {
-    return null;
-  }
+/** `2026-11-02` → `Nov 2`, in UTC so the label matches the day it was bucketed under. */
+function dayLabel(isoDate: string) {
+  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 // ── Constants / fallbacks ──────────────────────────────────────────────────────
@@ -89,14 +76,6 @@ async function fetchBreachReasons(
     return BREACH_REASONS_FALLBACK;
   }
 }
-
-const DAILY_SLA_TREND_DEFAULT = [
-  { date: "Mar 1",  rate: 93.2 }, { date: "Mar 3",  rate: 94.1 },
-  { date: "Mar 5",  rate: 92.8 }, { date: "Mar 7",  rate: 95.4 },
-  { date: "Mar 9",  rate: 93.7 }, { date: "Mar 11", rate: 94.8 },
-  { date: "Mar 13", rate: 96.1 }, { date: "Mar 15", rate: 95.2 },
-  { date: "Mar 17", rate: 94.8 },
-];
 
 /**
  * Trigger a client-side CSV download of the current SLA trend. No server
@@ -141,11 +120,14 @@ function SLADashboardPageInner() {
   const focusZone       = searchParams.get("zone");
   const focusRowRef     = useRef<HTMLDivElement | null>(null);
 
-  const [overallSla, setOverallSla]       = useState<number>(94.8);
-  const [onTimeCount, setOnTimeCount]     = useState<number>(8412);
-  const [breachCount, setBreachCount]     = useState<number>(462);
-  const [avgDays, setAvgDays]             = useState<number>(1.8);
-  const [trendData, setTrendData]         = useState(DAILY_SLA_TREND_DEFAULT);
+  // Start empty, not with sample numbers: a figure on this page is either the
+  // partner's real one or absent.
+  const [overallSla, setOverallSla]       = useState<number | null>(null);
+  const [onTimeCount, setOnTimeCount]     = useState<number>(0);
+  const [breachCount, setBreachCount]     = useState<number>(0);
+  const [trackedCount, setTrackedCount]   = useState<number>(0);
+  const [trendData, setTrendData]         = useState<Array<{ date: string; rate: number }>>([]);
+  const [loaded, setLoaded]               = useState<boolean>(false);
   const [zoneSla, setZoneSla]             = useState<ZoneSlaRow[]>([]);
   const [slaTarget, setSlaTarget]         = useState<number>(DEFAULT_ZONE_TARGET);
   const [carrierName, setCarrierName]     = useState<string | null>(null);
@@ -166,30 +148,8 @@ function SLADashboardPageInner() {
   }, [focusZone]);
 
   const loadData = useCallback(async () => {
-    // Fetch analytics KPIs + timeseries in parallel; breach reasons need carrier
-    // ID first so they are fetched in the carrier block below.
-    const [kpis, timeseries] = await Promise.all([
-      fetchKpis(),
-      fetchTimeseries(),
-    ]);
-
-    if (kpis) {
-      if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
-      if (kpis.delivered != null)              setOnTimeCount(Number(kpis.delivered));
-      if (kpis.failed != null)                 setBreachCount(Number(kpis.failed));
-      if (kpis.avg_delivery_hours != null)     setAvgDays(Number(kpis.avg_delivery_hours) / 24);
-    }
-
-    if (timeseries && Array.isArray(timeseries) && timeseries.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const trend = timeseries.map((b: any) => ({
-        date: b.date,
-        rate: b.delivered > 0 ? Math.round((b.delivered / (b.delivered + b.failed)) * 100) : 100,
-      }));
-      setTrendData(trend);
-    }
-
-    // Zone SLA — resolve carrier ID from /me then fetch summary for last 30 days.
+    // Resolve the partner's own carrier, then read its SLA summary (30 days),
+    // its recent delivery history (the trend) and its breach reasons.
     try {
       const carrier = await carriersApi.me();
       const cid = carrierIdOf(carrier);
@@ -199,16 +159,30 @@ function SLADashboardPageInner() {
       if (cid) {
         const from = new Date();
         from.setDate(from.getDate() - 30);
-        const [zones, breachData] = await Promise.all([
+        const since = from.toISOString().slice(0, 10);
+        const [zones, breachData, trendHistory] = await Promise.all([
           carriersApi.slaSummary(cid, from.toISOString(), new Date().toISOString()),
           fetchBreachReasons(cid, daysAgoStr(30), todayStr()),
+          carriersApi.slaHistory(cid, TREND_HISTORY_LIMIT, 0),
         ]);
-        if (zones.length > 0) setZoneSla(zones);
+        setZoneSla(zones);
         setBreachReasons(breachData);
+
+        const totals = totalsFromZones(zones);
+        setOverallSla(totals.ratePct);
+        setOnTimeCount(totals.onTime);
+        setBreachCount(totals.failed);
+        setTrackedCount(totals.total);
+
+        // Only the last 30 days, to match the summary the figures above use.
+        const recent = trendHistory.records.filter((r) => (r.delivered_at ?? r.created_at).slice(0, 10) >= since);
+        setTrendData(dailyOnTimeRate(recent).map((p: TrendPoint) => ({ date: dayLabel(p.date), rate: p.rate })));
       }
     } catch (e) {
-      // Non-fatal — zone table will show empty state or retain previous data.
-      console.warn("Failed to load zone SLA data:", e);
+      // Non-fatal — the page keeps its empty state rather than invented numbers.
+      console.warn("Failed to load SLA data:", e);
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -238,12 +212,16 @@ function SLADashboardPageInner() {
     return () => clearInterval(id);
   }, [loadData]);
 
+  // No trend arrows: there is no prior-period figure to compare against, and a
+  // made-up percentage change is worse than none.
   const KPI = [
-    { label: "Overall SLA",        value: overallSla,  trend: +1.2,  color: "green"  as const, format: "percent" as const },
-    { label: "On-Time Deliveries", value: onTimeCount, trend: +8.4,  color: "cyan"   as const, format: "number"  as const },
-    { label: "SLA Breaches MTD",   value: breachCount, trend: -18.2, color: "red"    as const, format: "number"  as const },
-    { label: "Avg Days to Deliver",value: avgDays,     trend: -0.2,  color: "purple" as const, format: "number"  as const },
+    // null (nothing decided yet) shows a dash, never a 0% that reads as a result.
+    { label: "Overall SLA",         value: overallSla,      color: "green"  as const, format: "percent" as const },
+    { label: "On-Time Deliveries",  value: onTimeCount,     color: "cyan"   as const, format: "number"  as const },
+    { label: "SLA Breaches (30d)",  value: breachCount,     color: "red"    as const, format: "number"  as const },
+    { label: "Shipments Tracked",   value: trackedCount,    color: "purple" as const, format: "number"  as const },
   ];
+  const nothingTracked = loaded && trackedCount === 0;
 
   return (
     <motion.div
@@ -280,10 +258,22 @@ function SLADashboardPageInner() {
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {KPI.map((m) => (
           <GlassCard key={m.label} size="sm" glow={m.color} accent>
-            <LiveMetric label={m.label} value={m.value} trend={m.trend} color={m.color} format={m.format} />
+            {m.value === null ? (
+              <div className="flex flex-col gap-1">
+                <span className="text-2xs font-mono uppercase tracking-wider text-white/40">{m.label}</span>
+                <span className="font-heading text-3xl font-bold text-white/30" aria-label="no data yet">—</span>
+              </div>
+            ) : (
+              <LiveMetric label={m.label} value={m.value} color={m.color} format={m.format} />
+            )}
           </GlassCard>
         ))}
       </motion.div>
+      {nothingTracked && (
+        <p className="-mt-2 text-xs font-mono text-white/40" role="status">
+          No shipments tracked for your carrier in the last 30 days yet. Figures appear here as deliveries complete.
+        </p>
+      )}
 
       {/* SLA trend */}
       <motion.div variants={variants.fadeInUp}>
@@ -297,11 +287,18 @@ function SLADashboardPageInner() {
             </div>
             <CheckCircle2 size={15} className="text-green-signal" />
           </div>
+          {trendData.length === 0 ? (
+            <div className="flex h-[180px] items-center justify-center">
+              <p className="text-xs font-mono text-white/30">
+                {loaded ? "No completed deliveries in the last 30 days." : "loading…"}
+              </p>
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={trendData} margin={{ top: 10, right: 10, bottom: 0, left: -24 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
               <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-              <YAxis domain={[85, 100]} tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
+              <YAxis domain={[Math.max(0, Math.min(slaTarget, ...trendData.map((d) => d.rate)) - 5), 100]} tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
                 formatter={(v) => [`${v}%`, "SLA Rate"]}
@@ -310,6 +307,7 @@ function SLADashboardPageInner() {
               <Line type="monotone" dataKey="rate" stroke="#00FF88" strokeWidth={2} dot={{ fill: "#00FF88", r: 3 }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
+          )}
         </GlassCard>
       </motion.div>
 
