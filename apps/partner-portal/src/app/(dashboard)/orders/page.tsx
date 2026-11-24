@@ -15,10 +15,10 @@ import { variants } from "@/lib/design-system/tokens";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
+import { shipmentsApi, type Shipment } from "@/lib/api/shipments";
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_ORDER_INTAKE_URL ?? "http://localhost:8004";
 const DISPATCH_URL     = process.env.NEXT_PUBLIC_DISPATCH_URL     ?? "http://localhost:8005";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -171,82 +171,48 @@ const MOCK_DRIVERS: Driver[] = [
 
 // ── API fetch functions ───────────────────────────────────────────────────────
 
-// Source the orders page from the dispatch queue (`/v1/queue?status=all`) —
-// the same operational source the Admin Dispatch Console reads. /v1/shipments
-// is order-intake's view of the whole shipment lifecycle (including completed
-// and cancelled), which is too broad for what a partner actually acts on.
-// The queue gives us pending + dispatched in one call, dedup'd by shipment.
+// Orders come from order-intake's partner-scoped `GET /v1/shipments`. The
+// dispatch queue (`/v1/queue`) is a tenant operation that partners are refused,
+// so reading it left this page permanently empty. The server narrows the list
+// to the partner the token is bound to; nothing here names a partner.
+const ORDERS_PAGE_SIZE = 100;  // the server's per_page ceiling
+const ORDERS_MAX_PAGES = 5;    // 500 orders is far past what a partner acts on
+
+// Throws when the list cannot be read, so the page can say so instead of
+// showing an empty queue that looks like "no orders".
 async function fetchOrders(): Promise<IncomingOrder[]> {
-  const res = await authFetch(`${DISPATCH_URL}/v1/queue?status=all`);
-  if (!res.ok) {
-    // Graceful degradation: try order-intake as a secondary source.
-    const fallback = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
-    if (!fallback.ok) return [];
-    const j = await fallback.json();
-    const items = j.data?.items ?? j.data ?? [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return items.map(mapShipmentRow);
+  const rows: Shipment[] = [];
+  for (let page = 1; page <= ORDERS_MAX_PAGES; page++) {
+    const { shipments, total } = await shipmentsApi.list({ page, perPage: ORDERS_PAGE_SIZE });
+    rows.push(...shipments);
+    if (shipments.length < ORDERS_PAGE_SIZE || rows.length >= total) break;
   }
-  const json = await res.json();
-  const items = json.data ?? [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return items.map(mapQueueRow);
+  return rows.filter(s => s.status !== "cancelled").map(mapShipmentRow);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapQueueRow(q: any): IncomingOrder {
-  // Queue → page model. dispatch.dispatch_queue carries origin (pickup)
-  // and dest (delivery) but not sender_name or description — those live
-  // on order_intake.shipments. Partners typically care about the AWB,
-  // pickup/drop, COD, and current status, all of which are present.
-  const codCents = q.cod_amount_cents ?? null;
+function mapShipmentRow(s: Shipment): IncomingOrder {
   const status: OrderStatus =
-    q.status === "dispatched" ? "assigned" :
-    q.status === "pending"    ? "unassigned" :
-                                "unassigned";
-  return {
-    id:           q.shipment_id ?? q.id,
-    awb:          q.tracking_number ?? q.shipment_id ?? q.id,
-    type:         q.service_type === "international" ? "balikbayan" : "local",
-    status,
-    senderName:   q.origin_address_line1 ? "Merchant" : "—",
-    pickupAddr:   q.origin_address_line1 ?? "—",
-    pickupCity:   q.origin_city ?? "—",
-    receiverName: q.customer_name ?? "—",
-    destAddr:     q.dest_address_line1 ?? "—",
-    destCity:     q.dest_city ?? "—",
-    description:  q.special_instructions ?? "—",
-    weight:       "—",
-    isCOD:        !!codCents,
-    codAmount:    codCents ? codCents / 100 : undefined,
-    totalFee:     0,
-    bookedAt:     q.queued_at
-                    ? new Date(q.queued_at).toLocaleString()
-                    : (q.dispatched_at ? new Date(q.dispatched_at).toLocaleString() : "—"),
-  };
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapShipmentRow(s: any): IncomingOrder {
+    s.status === "pending" || s.status === "confirmed" ? "unassigned" :
+    s.status === "pickup_assigned"                     ? "assigned"   :
+                                                         "picked_up";
+  const codCents = s.cod_amount?.amount ?? 0;
   return {
     id:           s.id,
-    awb:          s.awb ?? s.tracking_number ?? s.id,
-    type:         s.shipment_type === "international" ? "balikbayan" : "local",
-    freightMode:  s.freight_mode ?? undefined,
-    status:       s.status === "pending" ? "unassigned" : s.status,
-    assignedTo:   s.assigned_driver_name ?? undefined,
-    senderName:   s.sender_name ?? s.sender?.name ?? "—",
-    pickupAddr:   s.pickup_address?.line1 ?? s.pickup_address ?? "—",
-    pickupCity:   s.pickup_address?.city  ?? "—",
-    receiverName: s.recipient_name ?? s.recipient?.name ?? "—",
-    destAddr:     s.delivery_address?.line1 ?? s.delivery_address ?? "—",
-    destCity:     s.delivery_address?.city  ?? "—",
-    destCountry:  s.delivery_address?.country ?? undefined,
-    description:  s.description ?? "—",
-    weight:       String(s.weight_kg ?? s.weight ?? "—"),
-    isCOD:        !!s.cod_amount,
-    codAmount:    s.cod_amount ?? undefined,
-    totalFee:     s.total_fee ?? s.base_rate ?? 0,
+    awb:          s.awb,
+    type:         s.service_type === "Balikbayan" || s.service_type === "International" ? "balikbayan" : "local",
+    status,
+    senderName:   "—",
+    pickupAddr:   s.origin?.line1 ?? "—",
+    pickupCity:   s.origin?.city ?? "—",
+    receiverName: s.customer_name || "—",
+    destAddr:     s.destination?.line1 ?? "—",
+    destCity:     s.destination?.city ?? "—",
+    destCountry:  s.destination?.country_code || undefined,
+    description:  s.special_instructions || "—",
+    weight:       s.weight ? String(s.weight.grams / 1000) : "—",
+    isCOD:        codCents > 0,
+    codAmount:    codCents > 0 ? codCents / 100 : undefined,
+    totalFee:     0,
     bookedAt:     s.created_at ? new Date(s.created_at).toLocaleString() : "—",
   };
 }
@@ -692,9 +658,22 @@ function OrdersPageInner() {
   const assignToParam   = searchParams.get("assignTo");
   const didAutoOpen     = useRef(false);
 
+  const [loadError,    setLoadError]    = useState<string | null>(null);
+
   const loadData = useCallback(async () => {
-    const [apiOrders, apiDrivers] = await Promise.all([fetchOrders(), fetchAvailableDrivers()]);
-    setOrders(apiOrders);
+    const [ordersResult, apiDrivers] = await Promise.all([
+      fetchOrders().then(
+        (rows): { rows: IncomingOrder[] | null; error: string | null } => ({ rows, error: null }),
+        (e: unknown) => ({
+          rows: null,
+          error: (e as { message?: string } | null)?.message ?? "Could not load orders",
+        }),
+      ),
+      fetchAvailableDrivers(),
+    ]);
+    // A failed refresh keeps the last good list on screen and says why.
+    if (ordersResult.rows) setOrders(ordersResult.rows);
+    setLoadError(ordersResult.error);
     setDrivers(apiDrivers);
   }, []);
 
@@ -861,6 +840,14 @@ function OrdersPageInner() {
                 ))}
               </div>
             </div>
+
+            {loadError && (
+              <div role="alert" className="flex items-center gap-2 border-b border-glass-border px-4 py-3 text-xs text-red-400">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 flex-1">Could not load orders: {loadError}</span>
+                <button onClick={loadData} className="shrink-0 underline underline-offset-2 hover:text-white">Retry</button>
+              </div>
+            )}
 
             {/* Table */}
             <div className="overflow-x-auto">
