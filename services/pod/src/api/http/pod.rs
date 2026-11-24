@@ -2,6 +2,7 @@ use axum::{extract::{Path, Query, State}, Json};
 use std::sync::Arc;
 use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::partner::{partner_access, PartnerAccess};
 use logisticos_errors::AppError;
 use logisticos_types::{DriverId, TenantId};
 use logisticos_types::awb::TenantCode;
@@ -192,6 +193,20 @@ pub async fn submit(
     Ok(Json(serde_json::json!({ "data": { "pod_id": pod_id, "status": "submitted" } })))
 }
 
+/// May this caller read evidence that `recorded_driver` captured?
+///
+/// The Phase 0 gate says a partner token cannot read another partner's shipment
+/// data, and POD/POP evidence is exactly that: recipient photos, signature and
+/// GPS. Neither record carries a partner id, so a pid-bound caller is limited
+/// to what it captured itself (`driver_id` is set from `claims.user_id` at
+/// capture). Everyone else keeps the ordinary tenant-level rule.
+fn evidence_visible_to(access: PartnerAccess, caller: Uuid, recorded_driver: Uuid) -> bool {
+    match access {
+        PartnerAccess::Unscoped => true,
+        PartnerAccess::Scoped(_) => caller == recorded_driver,
+    }
+}
+
 /// GET /v1/pods?shipment_id=<uuid> — fetch POD for the admin portal panel.
 /// Returns the most recent POD for the shipment with presigned photo/signature URLs.
 pub async fn list_pods(
@@ -202,12 +217,13 @@ pub async fn list_pods(
     let shipment_id = q.shipment_id
         .ok_or_else(|| AppError::Validation("shipment_id query param required".into()))?;
 
+    let access = partner_access(&claims)?;
     match state.pod_service.get_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
-        Some(pod) => {
+        Some(pod) if evidence_visible_to(access, claims.user_id, pod.driver_id) => {
             let view = state.pod_service.pod_to_view(&pod).await;
             Ok(Json(serde_json::json!({ "data": [view] })))
         }
-        None => Ok(Json(serde_json::json!({ "data": [] }))),
+        _ => Ok(Json(serde_json::json!({ "data": [] }))),
     }
 }
 
@@ -216,7 +232,12 @@ pub async fn get_pod(
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let access = partner_access(&claims)?;
     let pod = state.pod_service.get_by_id(&TenantId::from_uuid(claims.tenant_id), pod_id).await?;
+    if !evidence_visible_to(access, claims.user_id, pod.driver_id) {
+        // Indistinguishable from a missing id, so ids cannot be probed.
+        return Err(AppError::NotFound { resource: "POD", id: pod_id.to_string() });
+    }
     let view = state.pod_service.pod_to_view(&pod).await;
     Ok(Json(serde_json::json!({ "data": view })))
 }
@@ -377,7 +398,11 @@ pub async fn get_pop(
     Path(pop_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let access = partner_access(&claims)?;
     let pop = state.pod_service.get_pop_by_id(&TenantId::from_uuid(claims.tenant_id), pop_id).await?;
+    if !evidence_visible_to(access, claims.user_id, pop.driver_id) {
+        return Err(AppError::NotFound { resource: "POP", id: pop_id.to_string() });
+    }
     let view = state.pod_service.pop_to_view(&pop).await;
     Ok(Json(serde_json::json!({ "data": view })))
 }
@@ -392,12 +417,13 @@ pub async fn list_pops(
     let shipment_id = q.shipment_id
         .ok_or_else(|| AppError::Validation("shipment_id query parameter is required".into()))?;
 
+    let access = partner_access(&claims)?;
     match state.pod_service.get_pop_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
-        Some(pop) => {
+        Some(pop) if evidence_visible_to(access, claims.user_id, pop.driver_id) => {
             let view = state.pod_service.pop_to_view(&pop).await;
             Ok(Json(serde_json::json!({ "data": view })))
         }
-        None => Ok(Json(serde_json::json!({ "data": [] }))),
+        _ => Ok(Json(serde_json::json!({ "data": [] }))),
     }
 }
 

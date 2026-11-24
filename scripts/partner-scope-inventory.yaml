@@ -97,6 +97,12 @@ services/order-intake/src/api/http/mod.rs::get_shipment: scoped  # get_for: tena
 services/order-intake/src/api/http/mod.rs::list_shipment_events: scoped  # get_for first: tenant, booker, and linked partner
 services/order-intake/src/api/http/mod.rs::list_shipments: scoped  # owner filter for merchants, link filter for partners
 
+# ── pod: evidence is recipient photos, signature and GPS ─────────────────────
+services/pod/src/api/http/pod.rs::get_pod: scoped  # a pid-bound caller reads only POD it captured itself (driver_id); else NotFound
+services/pod/src/api/http/pod.rs::get_pop: scoped  # a pid-bound caller reads only POP it captured itself (driver_id); else NotFound
+services/pod/src/api/http/pod.rs::list_pods: scoped  # a pid-bound caller sees only POD it captured itself; else empty
+services/pod/src/api/http/pod.rs::list_pops: scoped  # a pid-bound caller sees only POP it captured itself; else empty
+
 # ── payments: the tenant's own money ─────────────────────────────────────────
 services/payments/src/api/http/invoices.rs::list_invoices: denied  # the tenant's invoices
 services/payments/src/api/http/wallet.rs::get_cod_balance: denied  # tenant COD balance
