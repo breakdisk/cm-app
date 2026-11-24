@@ -37,6 +37,8 @@ async fn sla_trend(
     Query(q): Query<SlaTrendQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::ANALYTICS_VIEW)?;
+    // Tenant-wide KPIs; a partner-bound token never reads them.
+    logisticos_auth::partner::require_unscoped(&claims, "tenant analytics")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let series = state.query_svc.sla_trend(&tenant_id, q.days.unwrap_or(30)).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "data": series, "count": series.len() }))))
@@ -55,6 +57,8 @@ async fn delivery_kpis(
     Query(q): Query<DateRangeQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::ANALYTICS_VIEW)?;
+    // Tenant-wide KPIs; a partner-bound token never reads them.
+    logisticos_auth::partner::require_unscoped(&claims, "tenant analytics")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let kpis = state.query_svc.delivery_kpis(&tenant_id, q.from, q.to).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(kpis)))
@@ -66,6 +70,8 @@ async fn daily_timeseries(
     Query(q): Query<DateRangeQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::ANALYTICS_VIEW)?;
+    // Tenant-wide KPIs; a partner-bound token never reads them.
+    logisticos_auth::partner::require_unscoped(&claims, "tenant analytics")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let buckets = state.query_svc.daily_timeseries(&tenant_id, q.from, q.to).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"data": buckets, "count": buckets.len()}))))
@@ -77,6 +83,8 @@ async fn driver_performance(
     Query(q): Query<DateRangeQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::ANALYTICS_VIEW)?;
+    // Tenant-wide KPIs; a partner-bound token never reads them.
+    logisticos_auth::partner::require_unscoped(&claims, "tenant analytics")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let perf = state
         .query_svc
@@ -91,6 +99,10 @@ async fn get_dashboard(
 ) -> impl IntoResponse {
     if let Err(e) = claims.require_permission(permissions::ANALYTICS_VIEW) {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    }
+    // Tenant-wide KPIs; a partner-bound token never reads them.
+    if let Err(e) = logisticos_auth::partner::require_unscoped(&claims, "tenant analytics") {
+        return e.into_response();
     }
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     match state.query_svc.dashboard(&tenant_id).await {

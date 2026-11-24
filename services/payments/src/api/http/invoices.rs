@@ -12,6 +12,7 @@ pub async fn list_invoices(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    logisticos_auth::partner::require_unscoped(&claims, "tenant invoices")?;
     // Merchant ID == tenant's primary merchant (1:1 in simple case)
     let merchant_id = MerchantId::from_uuid(claims.tenant_id);
     let invoices = state.invoice_service.list(&merchant_id).await?;

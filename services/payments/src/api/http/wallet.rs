@@ -17,6 +17,9 @@ pub async fn get_wallet(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    // The tenant's own money. A partner-bound token never reads it, whatever
+    // permission strings an older token still carries.
+    logisticos_auth::partner::require_unscoped(&claims, "tenant wallet")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let summary = state.wallet_service.summary(&tenant_id).await?;
     Ok(Json(serde_json::json!({ "data": summary })))
@@ -31,6 +34,7 @@ pub async fn list_transactions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    logisticos_auth::partner::require_unscoped(&claims, "tenant wallet transactions")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let limit = q.limit.unwrap_or(50).min(200);
     let txns = state.wallet_service.list_transactions(&tenant_id, limit).await?;
@@ -76,6 +80,7 @@ pub async fn request_withdrawal(
     Json(cmd): Json<RequestWithdrawalCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    logisticos_auth::partner::require_unscoped(&claims, "tenant wallet withdrawal")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     state.withdrawal_service
         .request(&tenant_id, cmd.amount_cents, claims.user_id, cmd.carrier_email).await?;
@@ -89,6 +94,7 @@ pub async fn list_withdrawal_requests(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    logisticos_auth::partner::require_unscoped(&claims, "tenant withdrawal requests")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let requests = state.withdrawal_service.list_for_tenant(&tenant_id).await?;
     let dtos: Vec<WithdrawalRequestDto> = requests.into_iter().map(|r| WithdrawalRequestDto {
@@ -113,6 +119,7 @@ pub async fn get_cod_balance(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    logisticos_auth::partner::require_unscoped(&claims, "tenant COD balance")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let balance = state.cod_service.cod_balance(&tenant_id, merchant_id).await?;
     Ok(Json(serde_json::json!({

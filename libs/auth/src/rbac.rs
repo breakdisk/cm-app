@@ -238,8 +238,12 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::CARRIERS_READ,
             permissions::CARRIERS_MANAGE_OWN,
             permissions::SHIPMENT_READ,
-            permissions::PAYMENTS_READ,
-            permissions::ANALYTICS_VIEW,
+            // Deliberately no payments:read (the tenant's own wallet, invoices
+            // and COD balances) and no analytics:view (tenant-wide KPIs): a
+            // partner reads its own SLA from carrier and its own statements
+            // from the partner ledger. Tokens minted before this change keep
+            // the strings until they expire, which is why the handlers also
+            // refuse a partner-bound token.
         ],
         "tenant_admin" => vec![
             permissions::SHIPMENT_CREATE, permissions::SHIPMENT_READ,
@@ -538,6 +542,31 @@ mod grant_tests {
         assert!(p.contains(&permissions::CARRIERS_MANAGE_OWN), "needs own-manage");
         assert!(!p.contains(&permissions::CARRIERS_MANAGE), "must NOT be tenant-wide");
         assert!(p.contains(&permissions::CARRIERS_READ));
+    }
+
+    /// `payments:read` opens the tenant wallet, its transactions, withdrawals,
+    /// invoices and COD balances: the company's own money. `analytics:view`
+    /// opens tenant-wide KPIs. A partner had both, so it could read them across
+    /// every carrier and merchant. A partner reads its own SLA from carrier and
+    /// will read its own statements from the partner ledger instead.
+    #[test]
+    fn a_partner_holds_neither_tenant_money_nor_tenant_kpis() {
+        let p = perms("partner");
+        assert!(!p.contains(&permissions::PAYMENTS_READ), "tenant wallet and invoices");
+        assert!(!p.contains(&permissions::ANALYTICS_VIEW), "tenant-wide KPIs");
+    }
+
+    /// Removing them from the partner must not touch anyone who legitimately
+    /// reads them.
+    #[test]
+    fn finance_merchants_and_operators_keep_money_and_kpis() {
+        for role in ["finance", "admin", "tenant_admin"] {
+            assert!(perms(role).contains(&permissions::PAYMENTS_READ), "{role} lost payments:read");
+            assert!(perms(role).contains(&permissions::ANALYTICS_VIEW), "{role} lost analytics:view");
+        }
+        for role in ["merchant", "readonly"] {
+            assert!(perms(role).contains(&permissions::ANALYTICS_VIEW), "{role} lost analytics:view");
+        }
     }
 
     /// The narrow permission belongs to the partner alone -- handing it to an
