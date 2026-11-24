@@ -44,7 +44,14 @@ def served_routes(service: str):
     for rs in src.rglob("*.rs"):
         text = rs.read_text(encoding="utf-8", errors="replace")
         for match in ROUTE_RE.finditer(text):
-            found.add(normalise(match.group(1)))
+            path = match.group(1)
+            found.add(normalise(path))
+            # Several services declare protected routes relative to a nested
+            # `/v1` (identity's `/partner-memberships/me`). Treating every
+            # relative route as also living under /v1 over-approximates, which
+            # is the safe direction for a check that must not miss one.
+            if not path.startswith("/v1"):
+                found.add(normalise("/v1" + path))
     return found
 
 

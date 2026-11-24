@@ -1,6 +1,27 @@
 use async_trait::async_trait;
 use logisticos_types::{TenantId, UserId};
-use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress, Branding, PricingFeature};
+use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress, Branding, PricingFeature, PartnerMembership, NewPartnerMembership};
+
+/// What `PartnerMembershipRepository::upsert_active` found or did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpsertOutcome {
+    /// The user now has this active membership, newly created or already there.
+    Active(PartnerMembership),
+    /// A membership for this partner exists but is suspended. Returned as it is:
+    /// a retried approval must not undo a suspension.
+    Suspended(PartnerMembership),
+    /// The user already acts for a different partner (its carrier id).
+    ConflictsWith(uuid::Uuid),
+}
+
+#[async_trait]
+pub trait PartnerMembershipRepository: Send + Sync {
+    /// The user's active membership, if any. At most one can exist.
+    async fn find_active(&self, tenant_id: uuid::Uuid, user_id: uuid::Uuid) -> anyhow::Result<Option<PartnerMembership>>;
+    /// Create the membership if it does not exist. Idempotent on
+    /// `(tenant_id, user_id, carrier_id)` and never reactivates a suspended row.
+    async fn upsert_active(&self, new: &NewPartnerMembership) -> anyhow::Result<UpsertOutcome>;
+}
 
 #[async_trait]
 pub trait TenantRepository: Send + Sync {

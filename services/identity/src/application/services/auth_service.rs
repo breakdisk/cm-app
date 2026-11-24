@@ -10,7 +10,7 @@ use crate::{
     },
     domain::{
         entities::{AuthIdentity, AuthProvider, Tenant},
-        repositories::{TenantRepository, UserRepository, AuthIdentityRepository, PricingFeatureRepository},
+        repositories::{TenantRepository, UserRepository, AuthIdentityRepository, PricingFeatureRepository, PartnerMembershipRepository},
     },
     infrastructure::db::user_repo::{PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository},
     infrastructure::cache::RedisCache,
@@ -67,6 +67,7 @@ pub struct AuthService {
     user_repo: Arc<dyn UserRepository>,
     auth_identity_repo: Arc<dyn AuthIdentityRepository>,
     pricing_feature_repo: Arc<dyn PricingFeatureRepository>,
+    partner_membership_repo: Arc<dyn PartnerMembershipRepository>,
     jwt: Arc<JwtService>,
     reset_token_repo: Arc<PgPasswordResetTokenRepository>,
     email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
@@ -83,6 +84,7 @@ impl AuthService {
         user_repo: Arc<dyn UserRepository>,
         auth_identity_repo: Arc<dyn AuthIdentityRepository>,
         pricing_feature_repo: Arc<dyn PricingFeatureRepository>,
+        partner_membership_repo: Arc<dyn PartnerMembershipRepository>,
         jwt: Arc<JwtService>,
         reset_token_repo: Arc<PgPasswordResetTokenRepository>,
         email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
@@ -91,7 +93,23 @@ impl AuthService {
         app_base_url: String,
         kafka: Arc<KafkaProducer>,
     ) -> Self {
-        Self { tenant_repo, user_repo, auth_identity_repo, pricing_feature_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache, email, app_base_url, kafka }
+        Self { tenant_repo, user_repo, auth_identity_repo, pricing_feature_repo, partner_membership_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache, email, app_base_url, kafka }
+    }
+
+    /// The partner this user acts for, from their active membership, or `None`
+    /// for anyone who is not a partner's person.
+    ///
+    /// A lookup failure fails the login rather than minting a token with no
+    /// partner binding. The two outcomes look the same to a partner user who is
+    /// then scoped to nothing (or, before enforcement, to everything), and a
+    /// transient database error is not a reason to hand out the wider token.
+    async fn partner_id_for(&self, tenant_id: uuid::Uuid, user_id: uuid::Uuid) -> AppResult<Option<uuid::Uuid>> {
+        let membership = self
+            .partner_membership_repo
+            .find_active(tenant_id, user_id)
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(membership.map(|m| m.carrier_id))
     }
 
     /// Resolve feature keys enabled for the given tier from the pricing matrix.
@@ -138,6 +156,7 @@ impl AuthService {
 
         let tier_str = format!("{:?}", tenant.subscription_tier).to_lowercase();
         let enabled_features = self.features_for_tier(&tier_str).await;
+        let pid = self.partner_id_for(tenant.id.inner(), user.id.inner()).await?;
         let claims = Claims::new(
             user.id.inner(), tenant.id.inner(),
             tenant.slug.clone(),
@@ -147,7 +166,8 @@ impl AuthService {
         )
         .with_features(enabled_features)
         .with_phone(user.phone_number.clone())
-        .with_currency(tenant.currency.clone());
+        .with_currency(tenant.currency.clone())
+        .with_partner(pid);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds(),
         );
@@ -202,13 +222,15 @@ impl AuthService {
         } else {
             self.features_for_tier(&tier_str).await
         };
+        let pid = self.partner_id_for(tenant.id.inner(), user.id.inner()).await?;
         let claims = Claims::new(user.id.inner(), tenant.id.inner(), tenant.slug.clone(),
             tier_str,
             user.email.clone(), user.roles.clone(), permissions, self.jwt.access_expiry_seconds())
             .with_onboarding(onboarding_required)
             .with_features(enabled_features)
             .with_phone(user.phone_number.clone())
-            .with_currency(tenant.currency.clone());
+            .with_currency(tenant.currency.clone())
+        .with_partner(pid);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds());
 
         Ok(LoginResult {
@@ -602,6 +624,7 @@ impl AuthService {
 
         let tier_str = format!("{:?}", tenant.subscription_tier).to_lowercase();
         let enabled_features = self.features_for_tier(&tier_str).await;
+        let pid = self.partner_id_for(tenant.id.inner(), user.id.inner()).await?;
         let claims = Claims::new(
             user.id.inner(), tenant.id.inner(),
             tenant.slug.clone(),
@@ -611,7 +634,8 @@ impl AuthService {
         )
         .with_features(enabled_features)
         .with_phone(user.phone_number.clone())
-        .with_currency(tenant.currency.clone());
+        .with_currency(tenant.currency.clone())
+        .with_partner(pid);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds(),
         );
@@ -913,6 +937,7 @@ impl AuthService {
         } else {
             self.features_for_tier(&tier_str).await
         };
+        let pid = self.partner_id_for(tenant.id.inner(), user.id.inner()).await?;
         let claims = Claims::new(
             user.id.inner(),
             tenant.id.inner(),
@@ -926,7 +951,8 @@ impl AuthService {
         .with_onboarding(onboarding_required)
         .with_features(enabled_features)
         .with_phone(user.phone_number.clone())
-        .with_currency(tenant.currency.clone());
+        .with_currency(tenant.currency.clone())
+        .with_partner(pid);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(),
             tenant.id.inner(),
@@ -1074,5 +1100,22 @@ mod synthesized_email_tests {
         // some other host that merely starts the same way.
         assert!(!is_synthesized_login_email("x@customer.logisticos.app.evil.com"));
         assert!(!is_synthesized_login_email("x@notcustomer.logisticos.app.co"));
+    }
+}
+
+#[cfg(test)]
+mod partner_context_tests {
+    /// Every place that mints an access token must bind it to the user's partner.
+    /// A fifth token site added without `.with_partner(` would hand a store user
+    /// an unscoped token. Counts only production code: this module's own text
+    /// would otherwise match the patterns it searches for.
+    #[test]
+    fn every_token_site_sets_partner_context() {
+        let src = include_str!("auth_service.rs");
+        let production = src.split("#[cfg(test)]").next().expect("source has a production part");
+        let sites = production.matches("let claims = Claims::new(").count();
+        let bound = production.matches(".with_partner(").count();
+        assert!(sites >= 4, "expected the four known token sites, found {sites}");
+        assert_eq!(sites, bound, "{sites} token sites but {bound} bind a partner");
     }
 }

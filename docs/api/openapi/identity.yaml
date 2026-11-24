@@ -345,7 +345,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PartnerMembership"
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PartnerMembership"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -359,12 +362,15 @@ paths:
     post:
       operationId: upsertPartnerMembership
       tags: [Partner Memberships]
-      summary: Create or reactivate a partner membership (service to service)
+      summary: Create a partner membership (service to service)
       description: |
         Internal. Blocked at the API gateway, reachable only inside the mesh.
         Idempotent on `(tenant_id, user_id, carrier_id)`: repeating the call
-        returns the existing membership. Refused with 409 when the user already
-        has an active membership for a different carrier.
+        returns the existing active membership. Never reactivates: a suspended
+        membership answers 409, so a retried approval cannot undo a suspension.
+        Also 409 when the user already has an active membership for a different
+        carrier. `role` is one of `partner`, `store_manager`, `store_clerk`,
+        `store_rider`.
       security: []
       requestBody:
         required: true
@@ -374,13 +380,16 @@ paths:
               $ref: "#/components/schemas/UpsertPartnerMembershipRequest"
       responses:
         "200":
-          description: Membership exists (created or already present)
+          description: Active membership exists (created or already present)
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PartnerMembership"
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PartnerMembership"
         "409":
-          description: The user is already an active member of another carrier
+          description: The membership is suspended, or the user already acts for another carrier
           content:
             application/json:
               schema:
