@@ -35,19 +35,24 @@ const INTERNAL_GATEWAY_URL =
   process.env.INTERNAL_GATEWAY_URL ?? "http://logisticos-api-gateway:8000";
 
 /**
- * The tenant the signed-in user belongs to, from the access cookie. The pod
- * service requires it and answers only for that tenant's shipments. The
- * payload is read, not verified, here (same as /api/auth/me): this route
- * returns completion booleans only, and the pod service never widens beyond
- * the tenant it is told.
+ * The signed-in user's tenant, verified. The pod service answers only for the
+ * tenant this route names, so the name must not come from an unchecked cookie:
+ * anyone can hand-craft an unsigned token that claims another tenant. The
+ * access token is checked by identity's JWT-protected `GET /v1/users/me`
+ * (through the gateway). Only a 2xx answer counts, and the tenant is taken
+ * from that answer, never from the cookie's own payload.
  */
-function tenantFromCookie(request: NextRequest): string | null {
+async function verifiedTenant(request: NextRequest): Promise<string | null> {
   const token = request.cookies.get(COOKIE_LOS_ACCESS)?.value;
-  const part = token?.split(".")[1];
-  if (!part) return null;
+  if (!token) return null;
   try {
-    const json = Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
-    const tenant = (JSON.parse(json) as { tenant_id?: unknown }).tenant_id;
+    const res = await fetch(`${INTERNAL_GATEWAY_URL}/v1/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: { tenant_id?: unknown } };
+    const tenant = body.data?.tenant_id;
     return typeof tenant === "string" ? tenant : null;
   } catch {
     return null;
@@ -69,7 +74,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ statuses: [], all_completed: true });
   }
 
-  const tenantId = tenantFromCookie(request);
+  const tenantId = await verifiedTenant(request);
   if (!tenantId) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
