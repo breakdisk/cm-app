@@ -68,7 +68,7 @@ function orderStatusOf(status: Shipment["status"]): OrderStatus {
       return "in_transit";
     case "delivered":
       return "delivered";
-    case "failed": case "returned":
+    case "failed": case "returned": case "delivery_attempted": case "partial_delivery": case "piece_exception":
       return "exception";
     default:
       // An unrecognised status must not pass for a real state.
