@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
-use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_job_dropped_consumer, start_shipment_cancelled_consumer, start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_job_dropped_consumer, start_shipment_cancelled_consumer, start_shipment_consumer, start_task_outcome_consumer, start_user_consumer};
 use crate::application::commands::QuickDispatchCommand;
 use crate::api::http::{router, AppState};
 use logisticos_types::TenantId;
@@ -266,6 +266,26 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn task-outcome consumer — a finished task may end the rider's work;
+    // closes the assignment and route. Writes nothing unless
+    // DISPATCH__CLOSE_ASSIGNMENTS is on.
+    let close_assignments   = cfg.dispatch.close_assignments;
+    let assignment_repo_out = Arc::clone(&assignment_repo);
+    let brokers_outcome     = cfg.kafka.brokers.clone();
+    let group_outcome       = cfg.kafka.group_id.clone();
+    let shutdown_rx_outcome = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_task_outcome_consumer(
+            &brokers_outcome,
+            &group_outcome,
+            assignment_repo_out,
+            close_assignments,
+            shutdown_rx_outcome,
+        ).await {
+            tracing::error!("Task-outcome consumer crashed: {e}");
+        }
+    });
+
     // Spawn shipment-cancelled consumer — a cancelled shipment leaves the
     // queue, its offers, a home reservation and any route carrying it.
     let pool_for_cancels    = pool.clone();
@@ -340,11 +360,21 @@ pub async fn run() -> anyhow::Result<()> {
     // before any mutation, so dispatched rows are skipped without side effects.
     let pool_for_sweep        = pool.clone();
     let dispatch_svc_sweep    = Arc::clone(&dispatch_service);
+    let assignment_repo_sweep = Arc::clone(&assignment_repo);
+    let close_assignments_sweep = cfg.dispatch.close_assignments;
     tokio::spawn(async move {
         let sweep_repo = PgDispatchQueueRepository::new(pool_for_sweep);
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(90));
         loop {
             tick.tick().await;
+            // Repair pass: free riders whose outcome event was missed.
+            if close_assignments_sweep {
+                match crate::domain::repositories::DriverAssignmentRepository::close_finished_assignments(assignment_repo_sweep.as_ref(), 100).await {
+                    Ok(n) if n > 0 => tracing::info!(closed = n, "dispatch-sweep: closed finished assignments"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(err = %e, "dispatch-sweep: close_finished_assignments failed"),
+                }
+            }
             let pending = match sweep_repo.list_all_pending().await {
                 Ok(rows) => rows,
                 Err(e) => {

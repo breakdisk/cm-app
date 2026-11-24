@@ -170,6 +170,27 @@ impl DriverAssignmentRepository for MockAssignmentRepo {
             Ok(false)
         }
     }
+
+    async fn cancel_active_for_route(&self, _tenant_id: Uuid, _route_id: Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn find_route_for_outcome(
+        &self,
+        _tenant_id: Uuid,
+        _task_id: Option<Uuid>,
+        _shipment_id: Option<Uuid>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        Ok(None)
+    }
+
+    async fn close_if_finished(&self, _tenant_id: Uuid, _route_id: Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn close_finished_assignments(&self, _limit: i64) -> anyhow::Result<u64> {
+        Ok(0)
+    }
 }
 
 /// In-memory driver availability repository.

@@ -588,10 +588,20 @@ impl DriverAssignmentService {
             .await
             .map_err(AppError::Internal)?;
 
+        // Always attempted, not only when this call flipped the route: if an
+        // earlier attempt cancelled the route and then failed here, the retry
+        // sees `cancelled == false` and must still free the rider. The
+        // repository only touches a route that is already cancelled (G16).
+        let freed = self.assignment_repo
+            .cancel_active_for_route(tenant_id.inner(), route_id.inner())
+            .await
+            .map_err(AppError::Internal)?;
+
         if cancelled {
             tracing::info!(
                 route_id = %route_id,
                 tenant_id = %tenant_id,
+                assignment_closed = freed,
                 "Route cancelled by admin"
             );
         }

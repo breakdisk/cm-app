@@ -70,6 +70,21 @@ impl From<AssignmentRow> for DriverAssignment {
     }
 }
 
+/// "The work on this route has ended": at least one task, none open, and
+/// every route stop has a task. Quick-dispatch and gig-claim routes have no
+/// route stops, so the EXISTS clause is what keeps an accepted assignment
+/// open until its tasks exist. Only `pending`/`in_progress` are open; every
+/// other task status counts as finished.
+fn finished_predicate(route: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM driver_ops.tasks t WHERE t.route_id = {route})
+         AND NOT EXISTS (SELECT 1 FROM driver_ops.tasks t
+                          WHERE t.route_id = {route} AND t.status IN ('pending','in_progress'))
+         AND (SELECT COUNT(*) FROM driver_ops.tasks t WHERE t.route_id = {route})
+             >= (SELECT COUNT(*) FROM dispatch.route_stops s WHERE s.route_id = {route})"
+    )
+}
+
 #[async_trait]
 impl DriverAssignmentRepository for PgDriverAssignmentRepository {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverAssignment>> {
@@ -110,6 +125,117 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn cancel_active_for_route(&self, tenant_id: Uuid, route_id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE dispatch.driver_assignments a
+               SET status = 'cancelled'
+               WHERE a.route_id = $1
+                 AND a.tenant_id = $2
+                 AND a.status IN ('pending', 'accepted')
+                 AND EXISTS (SELECT 1 FROM dispatch.routes r
+                              WHERE r.id = a.route_id AND r.status = 'cancelled')"#,
+        )
+        .bind(route_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn find_route_for_outcome(
+        &self,
+        tenant_id: Uuid,
+        task_id: Option<Uuid>,
+        shipment_id: Option<Uuid>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        if let Some(task_id) = task_id {
+            let by_task: Option<Uuid> = sqlx::query_scalar(
+                r#"SELECT r.id FROM driver_ops.tasks t
+                     JOIN dispatch.routes r ON r.id = t.route_id
+                    WHERE t.id = $1 AND r.tenant_id = $2"#,
+            )
+            .bind(task_id)
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            if by_task.is_some() {
+                return Ok(by_task);
+            }
+        }
+        let Some(shipment_id) = shipment_id else { return Ok(None) };
+        let by_shipment: Option<Uuid> = sqlx::query_scalar(
+            r#"SELECT r.id FROM dispatch.routes r
+                WHERE r.tenant_id = $2
+                  AND (EXISTS (SELECT 1 FROM dispatch.route_stops s
+                                WHERE s.route_id = r.id AND s.shipment_id = $1)
+                       OR EXISTS (SELECT 1 FROM driver_ops.tasks t
+                                   WHERE t.route_id = r.id AND t.shipment_id = $1))
+                  AND (r.status IN ('planned', 'in_progress')
+                       OR EXISTS (SELECT 1 FROM dispatch.driver_assignments a
+                                   WHERE a.route_id = r.id AND a.status IN ('pending', 'accepted')))
+                ORDER BY r.created_at DESC
+                LIMIT 1"#,
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(by_shipment)
+    }
+
+    async fn close_if_finished(&self, tenant_id: Uuid, route_id: Uuid) -> anyhow::Result<bool> {
+        // One statement = one transaction. Two replicas racing on the same
+        // route both pass the predicate on their snapshot, but each UPDATE
+        // re-checks its status filter after waiting on the row lock, so the
+        // loser matches nothing. A replay matches nothing either.
+        let sql = format!(
+            r#"WITH done AS (SELECT 1 AS ok WHERE {pred}),
+                    closed AS (
+                        UPDATE dispatch.driver_assignments a
+                           SET status = 'completed'
+                         WHERE a.route_id = $1 AND a.tenant_id = $2
+                           AND a.status IN ('pending', 'accepted')
+                           AND EXISTS (SELECT 1 FROM done)
+                        RETURNING a.id),
+                    rt AS (
+                        UPDATE dispatch.routes r
+                           SET status = 'completed', completed_at = NOW(), updated_at = NOW()
+                         WHERE r.id = $1 AND r.tenant_id = $2
+                           AND r.status IN ('planned', 'in_progress')
+                           AND EXISTS (SELECT 1 FROM done)
+                        RETURNING r.id)
+               SELECT (SELECT COUNT(*) FROM closed) + (SELECT COUNT(*) FROM rt)"#,
+            pred = finished_predicate("$1::uuid"),
+        );
+        let changed: i64 = sqlx::query_scalar(&sql)
+            .bind(route_id)
+            .bind(tenant_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(changed > 0)
+    }
+
+    async fn close_finished_assignments(&self, limit: i64) -> anyhow::Result<u64> {
+        let sql = format!(
+            r#"SELECT DISTINCT a.route_id, a.tenant_id
+                 FROM dispatch.driver_assignments a
+                WHERE a.status = 'accepted' AND {pred}
+                LIMIT $1"#,
+            pred = finished_predicate("a.route_id"),
+        );
+        let candidates: Vec<(Uuid, Uuid)> = sqlx::query_as(&sql)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut closed = 0u64;
+        for (route_id, tenant_id) in candidates {
+            if self.close_if_finished(tenant_id, route_id).await? {
+                closed += 1;
+            }
+        }
+        Ok(closed)
     }
 
     async fn save(&self, a: &DriverAssignment) -> anyhow::Result<()> {
