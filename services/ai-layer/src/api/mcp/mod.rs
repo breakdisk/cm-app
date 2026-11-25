@@ -30,7 +30,8 @@ use rmcp::{
 };
 use serde_json::{json, Value};
 
-use logisticos_auth::claims::Claims;
+use logisticos_agent_runtime::tools::ToolDefinition;
+use logisticos_auth::{claims::Claims, rbac::permissions};
 use logisticos_types::TenantId;
 
 use crate::{
@@ -45,6 +46,103 @@ use crate::{
 /// `Claims::has_feature` / `identity` migration `0016_pricing_feature_matrix.sql`;
 /// this is the first consumer of it).
 const ENTERPRISE_MCP_FEATURE: &str = "enterprise_mcp";
+
+// ── Per-tool access control ────────────────────────────────────────────────
+//
+// The `enterprise_mcp` feature only says the *tenant* may use MCP. What a given
+// caller may do is decided per tool by the permissions on their own token, the
+// same permissions the downstream service would demand. One table, one
+// function (`mcp_tool_access`), used by both `list_tools` and `call_tool`.
+
+/// Who may call one tool over MCP.
+pub struct McpToolRule {
+    pub tool: &'static str,
+    /// The caller needs at least one of these (`*` satisfies any).
+    pub any_of: &'static [&'static str],
+    /// The tool reaches an unauthenticated `/v1/internal/*` route that cannot
+    /// tell callers apart, so a partner-scoped token must never get there.
+    pub internal_route: bool,
+}
+
+pub const MCP_TOOL_RULES: &[McpToolRule] = &[
+    McpToolRule { tool: "get_shipment",             any_of: &[permissions::SHIPMENT_READ],      internal_route: false },
+    McpToolRule { tool: "reschedule_delivery",      any_of: &[permissions::SHIPMENT_UPDATE],    internal_route: false },
+    McpToolRule { tool: "get_available_drivers",    any_of: &[permissions::DISPATCH_VIEW],      internal_route: true  },
+    McpToolRule { tool: "assign_driver",            any_of: &[permissions::DISPATCH_ASSIGN],    internal_route: true  },
+    McpToolRule { tool: "send_notification",        any_of: &[permissions::ENGAGEMENT_SEND],    internal_route: false },
+    McpToolRule { tool: "get_delivery_metrics",     any_of: &[permissions::ANALYTICS_VIEW],     internal_route: false },
+    McpToolRule { tool: "get_driver_performance",   any_of: &[permissions::ANALYTICS_VIEW],     internal_route: false },
+    McpToolRule { tool: "reconcile_cod",            any_of: &[permissions::PAYMENTS_RECONCILE], internal_route: false },
+    // payments' `generate_invoice` handler requires BILLING_MANAGE.
+    McpToolRule { tool: "generate_invoice",         any_of: &[permissions::BILLING_MANAGE],     internal_route: false },
+    McpToolRule { tool: "get_cod_balance",          any_of: &[permissions::PAYMENTS_READ],      internal_route: true  },
+    McpToolRule { tool: "get_customer_profile",     any_of: &[permissions::CUSTOMERS_VIEW],     internal_route: false },
+    McpToolRule { tool: "get_churn_score",          any_of: &[permissions::CUSTOMERS_VIEW],     internal_route: false },
+    McpToolRule { tool: "get_customer_preferences", any_of: &[permissions::CUSTOMERS_VIEW],     internal_route: false },
+    McpToolRule { tool: "get_hub_capacity",         any_of: &[permissions::FLEET_READ],         internal_route: false },
+    McpToolRule { tool: "get_driver_location",      any_of: &[permissions::FLEET_READ],         internal_route: false },
+    McpToolRule { tool: "send_driver_instruction",  any_of: &[permissions::FLEET_MANAGE],       internal_route: false },
+    McpToolRule { tool: "get_vehicle_status",       any_of: &[permissions::FLEET_READ],         internal_route: false },
+    McpToolRule { tool: "get_fleet_availability",   any_of: &[permissions::FLEET_READ],         internal_route: false },
+];
+
+/// Registered tools deliberately NOT exposed over MCP. Every registry tool must
+/// be in `MCP_TOOL_RULES` or here (enforced by a test), so adding a tool forces
+/// a decision. Anything in neither is fail-closed: unlisted and uncallable.
+pub const MCP_HIDDEN: &[&str] = &[
+    // No downstream route exists.
+    "get_zone_demand_forecast",
+    "schedule_dock",
+    // Support-agent loop marker; meaningless to a remote caller.
+    "escalate_to_human",
+];
+
+/// Why a caller may not use a tool.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Denied {
+    /// Not in the table (hidden, unknown, or newly added without a decision).
+    NotExposed { tool: String },
+    /// Lacks every permission in `any_of`.
+    MissingPermission { tool: &'static str, any_of: &'static [&'static str] },
+    /// Partner-scoped token against a tool that reaches an unscoped internal route.
+    PartnerScoped { tool: &'static str },
+}
+
+impl Denied {
+    pub fn message(&self) -> String {
+        match self {
+            Denied::NotExposed { tool } => format!("Tool '{tool}' is not available over MCP"),
+            Denied::MissingPermission { tool, any_of } => format!(
+                "Tool '{tool}' requires one of the permissions: {}",
+                any_of.join(", ")
+            ),
+            Denied::PartnerScoped { tool } => {
+                format!("Tool '{tool}' is not available to partner-scoped tokens")
+            }
+        }
+    }
+}
+
+/// The single access decision for `tool`. Used by `list_tools` and `call_tool`.
+pub fn mcp_tool_access(claims: &Claims, tool: &str) -> Result<(), Denied> {
+    let rule = MCP_TOOL_RULES
+        .iter()
+        .find(|r| r.tool == tool)
+        .ok_or_else(|| Denied::NotExposed { tool: tool.to_string() })?;
+
+    if !rule.any_of.iter().any(|p| claims.has_permission(p)) {
+        return Err(Denied::MissingPermission { tool: rule.tool, any_of: rule.any_of });
+    }
+    if rule.internal_route && claims.pid.is_some() {
+        return Err(Denied::PartnerScoped { tool: rule.tool });
+    }
+    Ok(())
+}
+
+/// The definitions this caller may see: exactly those `mcp_tool_access` allows.
+fn accessible_definitions<'a>(claims: &Claims, defs: &'a [ToolDefinition]) -> Vec<&'a ToolDefinition> {
+    defs.iter().filter(|d| mcp_tool_access(claims, &d.name).is_ok()).collect()
+}
 
 #[derive(Clone)]
 pub struct LogisticOsMcpServer {
@@ -175,12 +273,10 @@ impl ServerHandler for LogisticOsMcpServer {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Self::require_enterprise_mcp(&context)?;
+        let claims = Self::require_enterprise_mcp(&context)?;
 
-        let tools = self
-            .tools
-            .definitions()
-            .iter()
+        let tools = accessible_definitions(&claims, self.tools.definitions())
+            .into_iter()
             .map(|def| {
                 let schema = def.input_schema.as_object().cloned().unwrap_or_default();
                 Tool::new(def.name.clone(), def.description.clone(), schema)
@@ -197,6 +293,25 @@ impl ServerHandler for LogisticOsMcpServer {
     ) -> Result<CallToolResponse, McpError> {
         let claims = Self::require_enterprise_mcp(&context)?;
         let client_ip = Self::client_ip_from(&context);
+
+        // Per-tool authorisation, before anything executes. A refusal is
+        // audited as a failed action so probing shows up in session history.
+        if let Err(denied) = mcp_tool_access(&claims, &request.name) {
+            let message = denied.message();
+            let refusal = ToolResult {
+                tool_use_id: uuid::Uuid::new_v4().to_string(),
+                content:     json!({ "error": message, "denied": true }),
+                is_error:    true,
+            };
+            let attempted = request
+                .arguments
+                .clone()
+                .map(Value::Object)
+                .unwrap_or_else(|| Value::Object(Default::default()));
+            self.record_audit(&claims, client_ip.as_deref(), &request.name, &attempted, &refusal)
+                .await;
+            return Err(McpError::invalid_request(message, None));
+        }
 
         // Tenant scoping always comes from the validated JWT, never from
         // caller-supplied arguments — a remote MCP client must not be able to
@@ -250,4 +365,124 @@ pub fn streamable_http_service(
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::tools::ServiceUrls;
+    use logisticos_auth::rbac::default_permissions_for_role;
+    use uuid::Uuid;
+
+    const ROLES: &[&str] = &[
+        "admin", "dispatcher", "merchant", "driver", "finance", "readonly", "customer",
+        "partner", "tenant_admin", "hub_scanner", "store_manager", "store_clerk",
+        "no_such_role",
+    ];
+
+    fn claims(perms: Vec<String>) -> Claims {
+        Claims::new(
+            Uuid::new_v4(), Uuid::new_v4(), "t".into(), "enterprise".into(),
+            "u@example.com".into(), vec![], perms, 60,
+        )
+    }
+
+    fn role_claims(role: &str) -> Claims {
+        claims(default_permissions_for_role(role).iter().map(|p| p.to_string()).collect())
+    }
+
+    fn registry() -> ToolRegistry {
+        let u = || "http://localhost".to_string();
+        ToolRegistry::new(ServiceUrls {
+            dispatch: u(), order_intake: u(), driver_ops: u(), payments: u(),
+            engagement: u(), analytics: u(), cdp: u(), hub_ops: u(), fleet: u(),
+        })
+    }
+
+    #[test]
+    fn every_registered_tool_is_either_ruled_or_hidden() {
+        let reg = registry();
+        for def in reg.definitions() {
+            let ruled = MCP_TOOL_RULES.iter().any(|r| r.tool == def.name);
+            let hidden = MCP_HIDDEN.contains(&def.name.as_str());
+            assert!(
+                ruled ^ hidden,
+                "tool '{}' must be in exactly one of MCP_TOOL_RULES / MCP_HIDDEN",
+                def.name
+            );
+        }
+        for r in MCP_TOOL_RULES {
+            assert!(reg.definitions().iter().any(|d| d.name == r.tool), "{} not registered", r.tool);
+        }
+        for h in MCP_HIDDEN {
+            assert!(reg.definitions().iter().any(|d| d.name == *h), "{h} not registered");
+        }
+    }
+
+    #[test]
+    fn merchant_cannot_assign_invoice_or_reconcile() {
+        let c = role_claims("merchant");
+        for t in ["assign_driver", "generate_invoice", "reconcile_cod"] {
+            assert!(mcp_tool_access(&c, t).is_err(), "merchant reached {t}");
+        }
+    }
+
+    #[test]
+    fn partner_scoped_admin_is_refused_internal_route_tools_only() {
+        let c = role_claims("admin").with_partner(Some(Uuid::new_v4()));
+        let internal: Vec<&McpToolRule> = MCP_TOOL_RULES.iter().filter(|r| r.internal_route).collect();
+        assert_eq!(internal.len(), 3);
+        for r in internal {
+            assert_eq!(mcp_tool_access(&c, r.tool), Err(Denied::PartnerScoped { tool: r.tool }));
+        }
+        assert!(mcp_tool_access(&c, "get_shipment").is_ok());
+    }
+
+    #[test]
+    fn wildcard_reaches_every_ruled_tool_and_no_hidden_one() {
+        let c = claims(vec!["*".into()]);
+        for r in MCP_TOOL_RULES {
+            assert!(mcp_tool_access(&c, r.tool).is_ok(), "* refused {}", r.tool);
+        }
+        for h in MCP_HIDDEN {
+            assert_eq!(mcp_tool_access(&c, h), Err(Denied::NotExposed { tool: h.to_string() }));
+        }
+        assert!(mcp_tool_access(&c, "no_such_tool").is_err());
+    }
+
+    #[test]
+    fn no_permissions_reaches_nothing() {
+        let c = claims(vec![]);
+        for r in MCP_TOOL_RULES {
+            assert!(mcp_tool_access(&c, r.tool).is_err());
+        }
+    }
+
+    #[test]
+    fn refusal_message_names_tool_and_permission() {
+        let c = role_claims("merchant");
+        let msg = mcp_tool_access(&c, "assign_driver").unwrap_err().message();
+        assert!(msg.contains("assign_driver") && msg.contains("dispatch:assign"), "{msg}");
+    }
+
+    #[test]
+    fn list_and_call_agree_for_every_role_and_tool() {
+        let reg = registry();
+        let defs = reg.definitions();
+        for role in ROLES {
+            for pid in [None, Some(Uuid::new_v4())] {
+                let c = role_claims(role).with_partner(pid);
+                let listed: Vec<&str> =
+                    accessible_definitions(&c, defs).iter().map(|d| d.name.as_str()).collect();
+                for def in defs {
+                    assert_eq!(
+                        listed.contains(&def.name.as_str()),
+                        mcp_tool_access(&c, &def.name).is_ok(),
+                        "list/call disagree for role {role} tool {}",
+                        def.name
+                    );
+                }
+            }
+        }
+    }
 }
