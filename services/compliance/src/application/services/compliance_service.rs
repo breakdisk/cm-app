@@ -15,6 +15,50 @@ use crate::domain::{
 };
 use crate::infrastructure::messaging::ComplianceProducer;
 
+/// Who is putting a document on a profile. Recorded on the audit row, so a
+/// document an admin submitted for a courier with no app is never attributed to
+/// the courier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentActor {
+    Driver(Uuid),
+    Admin(Uuid),
+}
+
+impl DocumentActor {
+    pub fn id(self) -> Uuid {
+        match self {
+            Self::Driver(id) | Self::Admin(id) => id,
+        }
+    }
+
+    pub fn actor_type(self) -> &'static str {
+        match self {
+            Self::Driver(_) => "driver",
+            Self::Admin(_)  => "admin",
+        }
+    }
+}
+
+/// The `doc_submitted` audit row for one submission.
+fn submission_audit_entry(
+    tenant_id:  Uuid,
+    profile_id: Uuid,
+    doc_id:     Uuid,
+    actor:      DocumentActor,
+) -> ComplianceAuditLog {
+    ComplianceAuditLog {
+        id:                    Uuid::new_v4(),
+        tenant_id,
+        compliance_profile_id: profile_id,
+        document_id:           Some(doc_id),
+        event_type:            "doc_submitted".into(),
+        actor_id:              actor.id(),
+        actor_type:            actor.actor_type().into(),
+        notes:                 None,
+        created_at:            Utc::now(),
+    }
+}
+
 pub struct ComplianceService {
     pub profiles:  Arc<dyn ComplianceProfileRepository>,
     pub documents: Arc<dyn DriverDocumentRepository>,
@@ -187,7 +231,7 @@ impl ComplianceService {
         issue_date:       Option<chrono::NaiveDate>,
         expiry_date:      Option<chrono::NaiveDate>,
         file_url:         String,
-        actor_id:         Uuid,
+        actor:            DocumentActor,
     ) -> anyhow::Result<DriverDocument> {
         let profile = self.profiles.find_by_id(profile_id).await?
             .context("Profile not found")?;
@@ -220,17 +264,9 @@ impl ComplianceService {
         };
         self.documents.save(&doc).await?;
 
-        self.audit.append(&ComplianceAuditLog {
-            id:                    Uuid::new_v4(),
-            tenant_id:             profile.tenant_id,
-            compliance_profile_id: profile_id,
-            document_id:           Some(doc.id),
-            event_type:            "doc_submitted".into(),
-            actor_id,
-            actor_type:            "driver".into(),
-            notes:                 None,
-            created_at:            Utc::now(),
-        }).await?;
+        self.audit.append(&submission_audit_entry(
+            profile.tenant_id, profile_id, doc.id, actor,
+        )).await?;
 
         self.recompute_and_publish(&profile).await?;
         Ok(doc)
@@ -484,6 +520,24 @@ mod tests {
             created_at:       Utc::now(),
             updated_at:       Utc::now(),
         }
+    }
+
+    #[test]
+    fn a_courier_submission_is_audited_as_a_driver() {
+        let (t, p, d, u) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let e = submission_audit_entry(t, p, d, DocumentActor::Driver(u));
+        assert_eq!(e.actor_type, "driver");
+        assert_eq!(e.actor_id, u);
+        assert_eq!((e.tenant_id, e.compliance_profile_id, e.document_id), (t, p, Some(d)));
+        assert_eq!(e.event_type, "doc_submitted");
+    }
+
+    #[test]
+    fn an_on_behalf_submission_is_audited_as_the_admin() {
+        let (t, p, d, a) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let e = submission_audit_entry(t, p, d, DocumentActor::Admin(a));
+        assert_eq!(e.actor_type, "admin");
+        assert_eq!(e.actor_id, a);
     }
 
     #[test]
