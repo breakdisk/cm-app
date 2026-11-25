@@ -1277,7 +1277,8 @@ async fn get_hub_by_id(State(s): State<AppState>, claims: AuthClaims, Path(id): 
 
 async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<InductParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.induct_parcel(cmd).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.induct_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(induction)))
 }
 
@@ -1289,7 +1290,8 @@ async fn sort(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<Sor
 
 async fn dispatch(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<Uuid>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.dispatch_parcel(id).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.dispatch_parcel(&tenant_id, id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }
 

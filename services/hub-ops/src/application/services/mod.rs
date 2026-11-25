@@ -147,16 +147,17 @@ impl HubService {
             .ok_or_else(|| AppError::NotFound { resource: "Hub", id: hub_id.to_string() })
     }
 
-    pub async fn induct_parcel(&self, cmd: InductParcelCommand) -> AppResult<ParcelInduction> {
+    pub async fn induct_parcel(&self, tenant_id: &TenantId, cmd: InductParcelCommand) -> AppResult<ParcelInduction> {
         let hub_id = HubId::from_uuid(cmd.hub_id);
         let mut hub = self.hub_repo
             .find_by_id(&hub_id)
             .await
             .map_err(AppError::internal)?
+            .filter(|h| h.tenant_id == *tenant_id)
             .ok_or_else(|| AppError::NotFound { resource: "Hub", id: cmd.hub_id.to_string() })?;
 
         if let Some(existing) = self.induction_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::internal)? {
-            if existing.hub_id == hub_id {
+            if existing.hub_id == hub_id && existing.tenant_id == *tenant_id {
                 return Ok(existing);
             }
         }
@@ -189,17 +190,19 @@ impl HubService {
         Ok(induction)
     }
 
-    pub async fn dispatch_parcel(&self, induction_id: Uuid) -> AppResult<ParcelInduction> {
+    pub async fn dispatch_parcel(&self, tenant_id: &TenantId, induction_id: Uuid) -> AppResult<ParcelInduction> {
         let mut induction = self.induction_repo
             .find_by_id(&InductionId::from_uuid(induction_id))
             .await
             .map_err(AppError::internal)?
+            .filter(|i| i.tenant_id == *tenant_id)
             .ok_or_else(|| AppError::NotFound { resource: "Induction", id: induction_id.to_string() })?;
 
         let mut hub = self.hub_repo
             .find_by_id(&induction.hub_id)
             .await
             .map_err(AppError::internal)?
+            .filter(|h| h.tenant_id == *tenant_id)
             .ok_or_else(|| AppError::NotFound { resource: "Hub", id: induction.hub_id.inner().to_string() })?;
 
         induction.dispatch();
@@ -266,5 +269,99 @@ mod load_event_tests {
         let prev = h.current_load;
         h.dispatch_parcel(); // empty hub: no-op
         assert!(hub_load_changed_event(&h, prev).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tenant_isolation_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct FakeHubs { hubs: Mutex<Vec<Hub>>, saves: Mutex<u32> }
+    #[async_trait::async_trait]
+    impl HubRepository for FakeHubs {
+        async fn find_by_id(&self, id: &HubId) -> anyhow::Result<Option<Hub>> {
+            Ok(self.hubs.lock().unwrap().iter().find(|h| h.id.inner() == id.inner()).cloned())
+        }
+        async fn list(&self, _t: &TenantId) -> anyhow::Result<Vec<Hub>> { Ok(vec![]) }
+        async fn save(&self, hub: &Hub) -> anyhow::Result<()> {
+            *self.saves.lock().unwrap() += 1;
+            let mut v = self.hubs.lock().unwrap();
+            v.retain(|h| h.id.inner() != hub.id.inner());
+            v.push(hub.clone());
+            Ok(())
+        }
+    }
+
+    struct FakeInductions { items: Mutex<Vec<ParcelInduction>>, saves: Mutex<u32> }
+    #[async_trait::async_trait]
+    impl InductionRepository for FakeInductions {
+        async fn find_by_id(&self, id: &InductionId) -> anyhow::Result<Option<ParcelInduction>> {
+            Ok(self.items.lock().unwrap().iter().find(|i| i.id.inner() == id.inner()).cloned())
+        }
+        async fn find_by_shipment(&self, sid: Uuid) -> anyhow::Result<Option<ParcelInduction>> {
+            Ok(self.items.lock().unwrap().iter().find(|i| i.shipment_id == sid).cloned())
+        }
+        async fn list_active(&self, _h: &HubId) -> anyhow::Result<Vec<ParcelInduction>> { Ok(vec![]) }
+        async fn save(&self, i: &ParcelInduction) -> anyhow::Result<()> {
+            *self.saves.lock().unwrap() += 1;
+            self.items.lock().unwrap().push(i.clone());
+            Ok(())
+        }
+    }
+
+    fn setup(hub: Hub, inductions: Vec<ParcelInduction>)
+        -> (HubService, Arc<FakeHubs>, Arc<FakeInductions>)
+    {
+        let h = Arc::new(FakeHubs { hubs: Mutex::new(vec![hub]), saves: Mutex::new(0) });
+        let i = Arc::new(FakeInductions { items: Mutex::new(inductions), saves: Mutex::new(0) });
+        (HubService::new(h.clone(), i.clone()), h, i)
+    }
+
+    // The publish happens only after `hub_repo.save`, so "no hub save and
+    // unchanged load" is the observable proof that nothing was published.
+
+    #[tokio::test]
+    async fn induct_into_foreign_tenant_hub_is_not_found_and_publishes_nothing() {
+        let owner = TenantId::new();
+        let hub = Hub::new(owner.clone(), "H".into(), "a".into(), 0.0, 0.0, 10);
+        let hub_id = hub.id.inner();
+        let (svc, hubs, inds) = setup(hub, vec![]);
+        let err = svc.induct_parcel(&TenantId::new(), InductParcelCommand {
+            hub_id, shipment_id: Uuid::new_v4(), tracking_number: "T".into(), inducted_by: None,
+        }).await.unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+        assert_eq!(*hubs.saves.lock().unwrap(), 0);
+        assert_eq!(*inds.saves.lock().unwrap(), 0);
+        assert_eq!(hubs.hubs.lock().unwrap()[0].current_load, 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_foreign_tenant_induction_is_not_found_and_publishes_nothing() {
+        let owner = TenantId::new();
+        let mut hub = Hub::new(owner.clone(), "H".into(), "a".into(), 0.0, 0.0, 10);
+        hub.current_load = 3;
+        let ind = ParcelInduction::new(hub.id.clone(), owner, Uuid::new_v4(), "T".into(), None);
+        let ind_id = ind.id.inner();
+        let (svc, hubs, inds) = setup(hub, vec![ind]);
+        let err = svc.dispatch_parcel(&TenantId::new(), ind_id).await.unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+        assert_eq!(*hubs.saves.lock().unwrap(), 0);
+        assert_eq!(*inds.saves.lock().unwrap(), 0);
+        assert_eq!(hubs.hubs.lock().unwrap()[0].current_load, 3);
+    }
+
+    #[tokio::test]
+    async fn same_tenant_induct_and_dispatch_still_work() {
+        let owner = TenantId::new();
+        let hub = Hub::new(owner.clone(), "H".into(), "a".into(), 0.0, 0.0, 10);
+        let hub_id = hub.id.inner();
+        let (svc, hubs, _) = setup(hub, vec![]);
+        let ind = svc.induct_parcel(&owner, InductParcelCommand {
+            hub_id, shipment_id: Uuid::new_v4(), tracking_number: "T".into(), inducted_by: None,
+        }).await.unwrap();
+        assert_eq!(hubs.hubs.lock().unwrap()[0].current_load, 1);
+        svc.dispatch_parcel(&owner, ind.id.inner()).await.unwrap();
+        assert_eq!(hubs.hubs.lock().unwrap()[0].current_load, 0);
     }
 }

@@ -181,16 +181,9 @@ async fn create_induction(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
 
-    // Guard: the target hub must belong to the caller's tenant.
-    // HubService.induct_parcel enforces capacity rules but not tenant isolation.
+    // Tenant isolation is enforced inside HubService::induct_parcel.
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let hubs = state.hub_svc.list_hubs(&tenant_id).await?;
-
-    if !hubs.iter().any(|h| h.id.inner() == cmd.hub_id) {
-        return Err(AppError::NotFound { resource: "hub", id: cmd.hub_id.to_string() });
-    }
-
-    let induction = state.hub_svc.induct_parcel(cmd).await?;
+    let induction = state.hub_svc.induct_parcel(&tenant_id, cmd).await?;
 
     Ok::<_, AppError>((StatusCode::CREATED, Json(induction)))
 }
@@ -265,7 +258,8 @@ async fn dispatch_induction(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
 
-    let induction = state.hub_svc.dispatch_parcel(id).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let induction = state.hub_svc.dispatch_parcel(&tenant_id, id).await?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }
