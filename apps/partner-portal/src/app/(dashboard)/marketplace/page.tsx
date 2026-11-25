@@ -48,9 +48,7 @@ import {
   deleteListing,
   acceptBooking,
   rejectBooking,
-  issueReceipt,
   recordPickup,
-  subscribeToMarketplaceUpdates,
   formatCentsPhp,
   SIZE_CLASS_CAPACITY_HINT,
   SIZE_CLASS_LABEL,
@@ -62,8 +60,7 @@ import {
   type VehicleFeature,
   type VehicleListing,
 } from "@/lib/api/marketplace";
-import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
-import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
+import { ReceiptModal } from "@/components/marketplace/ReceiptModal";
 import { PickupModal, type PickupModalBooking } from "@/components/marketplace/PickupModal";
 import { useCarrier } from "@/contexts/carrier-context";
 import { CurrencySelect } from "@/components/balikbayan/CurrencySelect";
@@ -645,69 +642,14 @@ function MarketplacePageInner() {
   });
   useEffect(() => {
     const id = setInterval(refresh, 30_000);
-    // Cross-portal live refresh: merchant booking creation publishes to the
-    // bus (ADR-0013 §Booking flow — stand-in for `marketplace.booking_created`
-    // on Kafka); the storage event refreshes our table immediately.
-    const unsubscribeBus = subscribeToMarketplaceUpdates(() => refresh());
-    return () => {
-      clearInterval(id);
-      unsubscribeBus();
-    };
+    return () => clearInterval(id);
   }, [refresh]);
 
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
-  const [receiptsByBookingId, setReceiptsByBookingId] = useState<Record<string, BusReceipt>>({});
-  const [receiptModal, setReceiptModal] = useState<
-    { open: boolean; booking: ReceiptModalBooking | null; receipt: BusReceipt | null }
-  >({ open: false, booking: null, receipt: null });
+  const [receiptBooking, setReceiptBooking] = useState<MarketplaceBooking | null>(null);
   const [pickupModal, setPickupModal] = useState<
     { open: boolean; booking: PickupModalBooking | null }
   >({ open: false, booking: null });
-
-  // Hydrate receipt lookup whenever the bookings list changes. Cheap — same
-  // localStorage the bus lives in; O(bookings) + O(receipts).
-  useEffect(() => {
-    const next: Record<string, BusReceipt> = {};
-    bookings.forEach((b) => {
-      const r = findReceiptByBookingId(b.id);
-      if (r) next[b.id] = r;
-    });
-    setReceiptsByBookingId(next);
-  }, [bookings]);
-
-  function openReceiptFor(b: MarketplaceBooking) {
-    const receipt = receiptsByBookingId[b.id] ?? null;
-    const modalBooking: ReceiptModalBooking = {
-      id:                   b.id,
-      awb:                  b.awb,
-      partner_display_name: carrier?.name ?? "Carrier",
-      merchant_display:     b.consumer_name,  // partner's pre-accept mask; admin/merchant see real merchant_display
-      consumer_display:     b.consumer_name,
-      pickup_label:         b.pickup_label,
-      dropoff_label:        b.dropoff_label,
-      pickup_at:            b.pickup_at,
-      cargo_weight_kg:      b.cargo_weight_kg,
-      quoted_price_cents:   b.quoted_price_cents,
-      status:               b.status,
-    };
-    setReceiptModal({ open: true, booking: modalBooking, receipt });
-  }
-
-  async function handleIssueReceipt(input: { signed_by: string; notes: string }) {
-    if (!receiptModal.booking) return;
-    const created = await issueReceipt({
-      booking_id:   receiptModal.booking.id,
-      booking:      receiptModal.booking,
-      carrier_id:   carrier ? String(carrier.id) : null,
-      carrier_name: carrier?.name ?? null,
-      signed_by:    input.signed_by || null,
-      notes:        input.notes     || null,
-    });
-    if (created) {
-      setReceiptsByBookingId((prev) => ({ ...prev, [created.booking_id]: created }));
-      setReceiptModal((prev) => ({ ...prev, receipt: created }));
-    }
-  }
 
   function openPickupFor(b: MarketplaceBooking) {
     setPickupModal({
@@ -1167,25 +1109,14 @@ function MarketplacePageInner() {
                           </button>
                         )}
                         {b.status !== "pending" && b.status !== "rejected" && b.status !== "cancelled" && (
-                          receiptsByBookingId[b.id] ? (
-                            <button
-                              onClick={() => openReceiptFor(b)}
-                              className="flex h-7 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-2 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
-                              title="View shipment receipt"
-                            >
-                              <ReceiptIcon className="h-3 w-3" />
-                              View Receipt
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => openReceiptFor(b)}
-                              className="flex h-7 items-center gap-1 rounded-md border border-green-signal/40 bg-green-surface px-2 text-2xs font-mono text-green-signal transition-all hover:shadow-[0_0_8px_rgba(0,255,136,0.4)]"
-                              title="Issue shipment receipt to customer"
-                            >
-                              <ReceiptIcon className="h-3 w-3" />
-                              Issue Receipt
-                            </button>
-                          )
+                          <button
+                            onClick={() => setReceiptBooking(b)}
+                            className="flex h-7 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-2 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
+                            title="View booking receipt"
+                          >
+                            <ReceiptIcon className="h-3 w-3" />
+                            View Receipt
+                          </button>
                         )}
                       </div>
                     </td>
@@ -1204,13 +1135,11 @@ function MarketplacePageInner() {
         onSaved={refresh}
       />
 
-      {/* ── Shipment Receipt modal ────────────────────────────────────────── */}
+      {/* ── Booking receipt modal ─────────────────────────────────────────── */}
       <ReceiptModal
-        open={receiptModal.open}
-        onClose={() => setReceiptModal({ open: false, booking: null, receipt: null })}
-        booking={receiptModal.booking}
-        receipt={receiptModal.receipt}
-        onIssue={handleIssueReceipt}
+        open={receiptBooking !== null}
+        onClose={() => setReceiptBooking(null)}
+        booking={receiptBooking}
       />
 
       {/* ── Pickup transition modal ──────────────────────────────────────── */}

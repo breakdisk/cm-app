@@ -30,7 +30,6 @@ import {
   Zap,
   ExternalLink,
   Map as MapIcon,
-  Building2,
   User as UserIcon,
   X,
   Receipt as ReceiptIcon,
@@ -49,7 +48,6 @@ import {
   formatCentsPhp,
   SIZE_CLASS_LABEL,
   VEHICLE_FEATURE_LABEL,
-  subscribeToMarketplaceUpdates,
   type AdminListing,
   type AdminBooking,
   type BookingStatus,
@@ -58,8 +56,7 @@ import {
   type PartnerType,
   type VehicleFeature,
 } from "@/lib/api/marketplace";
-import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
-import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
+import { ReceiptModal } from "@/components/marketplace/ReceiptModal";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -181,11 +178,8 @@ function AdminMarketplacePageInner() {
   const [stats, setStats]       = useState<MarketplaceStats | null>(null);
   const [loading, setLoading]   = useState(true);
 
-  // Oversight view — receipts issued by partners on tenant bookings. Read-only.
-  const [receiptsByBookingId, setReceiptsByBookingId] = useState<Record<string, BusReceipt>>({});
-  const [receiptModal, setReceiptModal] = useState<
-    { open: boolean; booking: ReceiptModalBooking | null; receipt: BusReceipt | null }
-  >({ open: false, booking: null, receipt: null });
+  // Oversight view — read-only receipt rendered from the booking itself.
+  const [receiptBooking, setReceiptBooking] = useState<AdminBooking | null>(null);
   const [disputeBooking, setDisputeBooking] = useState<AdminBooking | null>(null);
   const [tab, setTab]           = useState<Tab>(qpAwb || qpStatus ? "bookings" : "listings");
   const [search, setSearch]     = useState(qpAwb ?? "");
@@ -222,45 +216,8 @@ function AdminMarketplacePageInner() {
   });
   useEffect(() => {
     const id = setInterval(refresh, 20_000);
-    const unsubscribe = subscribeToMarketplaceUpdates(() => refresh());
-    return () => {
-      clearInterval(id);
-      unsubscribe();
-    };
+    return () => clearInterval(id);
   }, [refresh]);
-
-  // Hydrate receipts for tenant-wide visible bookings.
-  useEffect(() => {
-    if (bookings.length === 0) {
-      setReceiptsByBookingId({});
-      return;
-    }
-    const next: Record<string, BusReceipt> = {};
-    for (const b of bookings) {
-      const r = findReceiptByBookingId(b.id);
-      if (r) next[b.id] = r;
-    }
-    setReceiptsByBookingId(next);
-  }, [bookings]);
-
-  function openReceiptFor(b: AdminBooking) {
-    const receipt = receiptsByBookingId[b.id] ?? null;
-    if (!receipt) return;
-    const modalBooking: ReceiptModalBooking = {
-      id:                    b.id,
-      awb:                   b.awb,
-      partner_display_name:  b.partner_display_name,
-      merchant_display:      b.consumer_display,
-      consumer_display:      b.consumer_display,
-      pickup_label:          b.pickup_label,
-      dropoff_label:         b.dropoff_label,
-      pickup_at:             b.pickup_at,
-      cargo_weight_kg:       b.cargo_weight_kg,
-      quoted_price_cents:    b.quoted_price_cents,
-      status:                b.status,
-    };
-    setReceiptModal({ open: true, booking: modalBooking, receipt });
-  }
 
   // Distinct partners for filter dropdown
   const partnerOptions = useMemo(() => {
@@ -300,7 +257,7 @@ function AdminMarketplacePageInner() {
       return (
         b.awb.toLowerCase().includes(q) ||
         b.partner_display_name.toLowerCase().includes(q) ||
-        b.consumer_display.toLowerCase().includes(q) ||
+        b.consumer_name.toLowerCase().includes(q) ||
         b.pickup_label.toLowerCase().includes(q) ||
         b.dropoff_label.toLowerCase().includes(q)
       );
@@ -516,18 +473,16 @@ function AdminMarketplacePageInner() {
           rows={filteredBookings}
           total={bookings.length}
           loading={loading}
-          receipts={receiptsByBookingId}
-          onOpenReceipt={openReceiptFor}
+          onOpenReceipt={setReceiptBooking}
           onResolveDispute={(b) => setDisputeBooking(b)}
         />
       )}
 
       {/* Shipment receipt (view-only — tenant oversight) */}
       <ReceiptModal
-        open={receiptModal.open}
-        onClose={() => setReceiptModal({ open: false, booking: null, receipt: null })}
-        booking={receiptModal.booking}
-        receipt={receiptModal.receipt}
+        open={receiptBooking !== null}
+        onClose={() => setReceiptBooking(null)}
+        booking={receiptBooking}
       />
 
       {/* Dispute resolution modal */}
@@ -556,12 +511,6 @@ function partnerDeepLink(partnerId: string): string {
 function dispatchDeepLink(shipmentId: string): string {
   // Dispatch console keys deep-links on ?order=<shipment_id>.
   return `/admin/dispatch?order=${encodeURIComponent(shipmentId)}`;
-}
-
-function merchantPortalDeepLink(awb: string): string {
-  // Cross-portal — jumps into the merchant's own marketplace view with the
-  // AWB surfaced for support/escalation context. Plain <a> preserves /merchant basePath.
-  return `/merchant/marketplace?awb=${encodeURIComponent(awb)}`;
 }
 
 // ── Dispute Resolution Modal ──────────────────────────────────────────────────
@@ -645,7 +594,7 @@ function DisputeResolutionModal({
                 <p className="text-2xs font-mono text-white/40 mb-0.5">Booking</p>
                 <p className="text-xs font-mono text-white">{booking.awb}</p>
                 <p className="text-2xs text-white/50 mt-0.5">
-                  {booking.partner_display_name} · {booking.consumer_display}
+                  {booking.partner_display_name} · {booking.consumer_name}
                 </p>
               </div>
             )}
@@ -904,14 +853,12 @@ function BookingsTable({
   rows,
   total,
   loading,
-  receipts,
   onOpenReceipt,
   onResolveDispute,
 }: {
   rows: AdminBooking[];
   total: number;
   loading: boolean;
-  receipts: Record<string, BusReceipt>;
   onOpenReceipt: (b: AdminBooking) => void;
   onResolveDispute: (b: AdminBooking) => void;
 }) {
@@ -923,7 +870,7 @@ function BookingsTable({
             <tr className="border-b border-glass-border text-2xs font-mono uppercase tracking-wider text-white/40">
               <th className="px-5 py-3 font-medium">AWB</th>
               <th className="px-5 py-3 font-medium">Partner</th>
-              <th className="px-5 py-3 font-medium">Booked by</th>
+              <th className="px-5 py-3 font-medium">Consignee</th>
               <th className="px-5 py-3 font-medium">Route</th>
               <th className="px-5 py-3 font-medium">Cargo</th>
               <th className="px-5 py-3 font-medium">Quoted</th>
@@ -973,32 +920,19 @@ function BookingsTable({
                     </a>
                   </td>
                   <td className="px-5 py-3">
-                    {b.merchant_type === "business" ? (
-                      <a
-                        href={merchantPortalDeepLink(b.awb)}
-                        title="Open merchant view in Merchant Portal"
-                        className="group inline-flex items-center gap-1.5 text-xs text-white/80 transition-colors hover:text-cyan-neon"
-                      >
-                        <Building2 className="h-3 w-3 text-purple-plasma flex-shrink-0" />
-                        <span>{b.consumer_display}</span>
-                        <MapIcon className="h-2.5 w-2.5 opacity-0 transition-opacity group-hover:opacity-100" />
-                      </a>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 text-xs text-white/80">
-                        <UserIcon className="h-3 w-3 text-white/30 flex-shrink-0" />
-                        <span>{b.consumer_display}</span>
-                        <span className="text-2xs font-mono uppercase tracking-wider text-white/25">· walk-up</span>
-                      </span>
-                    )}
+                    <span className="inline-flex items-center gap-1.5 text-xs text-white/80">
+                      <UserIcon className="h-3 w-3 text-white/30 flex-shrink-0" />
+                      <span>{b.consumer_name}</span>
+                    </span>
                   </td>
                   <td className="px-5 py-3 text-xs text-white/70">
                     {b.pickup_label}
                     <div className="mt-0.5 text-2xs text-white/40">→ {b.dropoff_label}</div>
                   </td>
                   <td className="px-5 py-3 text-xs text-white/70">
-                    {SIZE_CLASS_LABEL[b.size_class]}
+                    {b.cargo_weight_kg.toLocaleString()} kg
                     <div className="mt-0.5 text-2xs text-white/40">
-                      {b.cargo_weight_kg.toLocaleString()} kg
+                      {b.distance_km.toLocaleString()} km
                     </div>
                   </td>
                   <td className="px-5 py-3 font-mono text-xs text-green-signal">
@@ -1022,7 +956,7 @@ function BookingsTable({
                         {b.status.replace("_", " ")}
                       </NeonBadge>
                       <div className="flex items-center gap-1.5">
-                        {receipts[b.id] && (
+                        {b.status !== "pending" && b.status !== "rejected" && b.status !== "cancelled" && (
                           <button
                             onClick={() => onOpenReceipt(b)}
                             className="flex h-6 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-1.5 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"

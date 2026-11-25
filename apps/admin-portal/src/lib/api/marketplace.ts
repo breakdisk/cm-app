@@ -6,23 +6,12 @@
  * virtue of `scope=tenant` in the session GUC — no partner filter applied.
  *
  * Real API: calls /v1/marketplace/* on the carrier service via authFetch.
- * Bus fallback: for bookings, merges in-flight bus rows (partner/merchant
- * portal demo layer) so cross-portal receipts remain visible while the
- * receipt service is still pre-ship.
+ * A receipt has no record of its own: the receipt modal renders straight from
+ * the booking the carrier service returned.
  */
 
 import { authFetch } from "@/lib/auth/auth-fetch";
-import {
-  readBus,
-  subscribeToBus,
-  findReceiptByBookingId as busFindReceiptByBookingId,
-  type BusBooking,
-  type BusReceipt,
-} from "./marketplace-bus";
-
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
-export type { BusReceipt } from "./marketplace-bus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,7 +20,6 @@ export type BookingStatus  = "pending" | "accepted" | "rejected" | "in_transit" 
 export type SizeClass      = "scooter_bicycle" | "motorcycle" | "sedan" | "van" | "1ton" | "3ton" | "7ton" | "10ton" | "trailer" | "refrigerated_truck" | "recovery_truck";
 export type VehicleFeature = "tail_lift" | "chiller" | "freezer";
 export type PartnerType    = "alliance" | "marketplace";
-export type MerchantType   = "business" | "consumer";    // ADR-0013: business = tenant merchant; consumer = walk-up booker
 
 export interface AdminListing {
   id:                   string;
@@ -53,26 +41,49 @@ export interface AdminListing {
   updated_at:           string;
 }
 
-export interface AdminBooking {
-  id:                   string;
-  shipment_id:          string;             // FK to shipments; used for dispatch deep-link
-  awb:                  string;
+export type BookingPaymentMethod = "invoice" | "online";
+export type BookingPaymentStatus = "pending" | "authorized" | "captured" | "voided" | "failed";
+
+/** Mirrors the carrier service's serde output (`services/carrier/src/domain/entities/mod.rs`). */
+export interface MarketplaceBooking {
+  id:                    string;
+  tenant_id:             string;
+  listing_id:            string;
+  carrier_id:            string;
+  shipment_id:           string;
+  awb:                   string;
+  consumer_name:         string;
+  consumer_phone:        string | null;
+  pickup_label:          string;
+  dropoff_label:         string;
+  cargo_weight_kg:       number;
+  cargo_volume_m3:       number | null;
+  quoted_price_cents:    number;
+  status:                BookingStatus;
+  pickup_at:             string;
+  picked_up_at:          string | null;
+  picked_up_by:          string | null;
+  pickup_notes:          string | null;
+  booked_by_user_id:     string | null;
+  payment_method:        BookingPaymentMethod;
+  payment_status:        BookingPaymentStatus;
+  payment_intent_id:     string | null;
+  payment_checkout_url:  string | null;
+  payment_authorized_at: string | null;
+  response_window_mins:  number;
+  distance_km:           number;
+  created_at:            string;
+  updated_at:            string;
+}
+
+/**
+ * A booking as the oversight table shows it: the real booking plus the carrier
+ * label. The carrier service returns no carrier name, so `partner_display_name`
+ * is the short carrier id until a tenant-scope carrier lookup exists.
+ */
+export interface AdminBooking extends MarketplaceBooking {
   partner_id:           string;
   partner_display_name: string;
-  merchant_type:        MerchantType;       // business = tenant merchant; consumer = individual booker
-  merchant_id:          string | null;      // populated when merchant_type=business
-  consumer_display:     string;             // masked display, pre-accept
-  size_class:           SizeClass;
-  cargo_weight_kg:      number;
-  pickup_label:         string;
-  dropoff_label:        string;
-  quoted_price_cents:   number;
-  status:               BookingStatus;
-  pickup_at:            string;
-  created_at:           string;
-  picked_up_at:         string | null;
-  picked_up_by:         string | null;
-  pickup_notes:         string | null;
 }
 
 export interface MarketplaceStats {
@@ -101,26 +112,6 @@ interface ApiListing {
   bookings_today?:          number;
   revenue_today_cents?:     number;
   updated_at:               string;
-}
-
-interface ApiBooking {
-  id:                   string;
-  listing_id:           string;
-  shipment_id:          string;
-  awb:                  string;
-  carrier_id:           string;
-  consumer_name:        string;
-  consumer_phone:       string | null;
-  pickup_label:         string;
-  dropoff_label:        string;
-  cargo_weight_kg:      number;
-  quoted_price_cents:   number;
-  status:               BookingStatus;
-  pickup_at:            string;
-  created_at:           string;
-  picked_up_at:         string | null;
-  picked_up_by:         string | null;
-  pickup_notes:         string | null;
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -159,53 +150,11 @@ function apiListingToAdmin(l: ApiListing): AdminListing {
   };
 }
 
-function apiBookingToAdmin(b: ApiBooking): AdminBooking {
+function bookingToAdmin(b: MarketplaceBooking): AdminBooking {
   return {
-    id:                   b.id,
-    shipment_id:          b.shipment_id,
-    awb:                  b.awb,
+    ...b,
     partner_id:           b.carrier_id,
     partner_display_name: b.carrier_id.slice(0, 8),
-    merchant_type:        "consumer" as MerchantType,
-    merchant_id:          null,
-    consumer_display:     b.consumer_name,
-    size_class:           "van" as SizeClass,          // not in booking response; default
-    cargo_weight_kg:      b.cargo_weight_kg,
-    pickup_label:         b.pickup_label,
-    dropoff_label:        b.dropoff_label,
-    quoted_price_cents:   b.quoted_price_cents,
-    status:               b.status,
-    pickup_at:            b.pickup_at,
-    created_at:           b.created_at,
-    picked_up_at:         b.picked_up_at,
-    picked_up_by:         b.picked_up_by,
-    pickup_notes:         b.pickup_notes,
-  };
-}
-
-// Project a canonical bus row into admin's AdminBooking view. No partner
-// filter: scope=tenant sees every partner's row (ADR-0013).
-function busToAdminBooking(b: BusBooking): AdminBooking {
-  return {
-    id:                   b.id,
-    shipment_id:          b.shipment_id,
-    awb:                  b.awb,
-    partner_id:           b.partner_id,
-    partner_display_name: b.partner_display_name,
-    merchant_type:        b.merchant_type,
-    merchant_id:          b.merchant_id,
-    consumer_display:     b.merchant_display,
-    size_class:           b.size_class,
-    cargo_weight_kg:      b.cargo_weight_kg,
-    pickup_label:         b.pickup_label,
-    dropoff_label:        b.dropoff_label,
-    quoted_price_cents:   b.quoted_price_cents,
-    status:               b.status,
-    pickup_at:            b.pickup_at,
-    created_at:           b.created_at,
-    picked_up_at:         b.picked_up_at,
-    picked_up_by:         b.picked_up_by,
-    pickup_notes:         b.pickup_notes,
   };
 }
 
@@ -219,19 +168,14 @@ export async function fetchAllListings(): Promise<AdminListing[]> {
 }
 
 export async function fetchAllBookings(): Promise<AdminBooking[]> {
-  const busRows = readBus().map(busToAdminBooking);
-  const json = await apiGet<{ bookings?: ApiBooking[] } | ApiBooking[]>("/v1/marketplace/bookings");
-  const apiRows = json
-    ? (Array.isArray(json) ? json : (json.bookings ?? [])).map(apiBookingToAdmin)
-    : [];
-
-  // Bus rows overlay API rows (bus has richer display names from the pre-service demo layer)
-  const byId = new Map<string, AdminBooking>();
-  for (const b of apiRows)  byId.set(b.id, b);
-  for (const b of busRows)  byId.set(b.id, b);
-  return [...byId.values()].sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  const json = await apiGet<{ bookings?: MarketplaceBooking[] } | MarketplaceBooking[]>(
+    "/v1/marketplace/bookings",
   );
+  if (!json) return [];
+  const raw = Array.isArray(json) ? json : (json.bookings ?? []);
+  return raw
+    .map(bookingToAdmin)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
 export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {
@@ -280,12 +224,6 @@ export async function createVehicleListing(payload: CreateListingPayload): Promi
     const text = await res.text().catch(() => "");
     throw new Error(`POST /v1/marketplace/listings failed ${res.status}: ${text}`);
   }
-}
-
-export { subscribeToBus as subscribeToMarketplaceUpdates };
-
-export async function fetchReceiptForBooking(bookingId: string): Promise<BusReceipt | null> {
-  return busFindReceiptByBookingId(bookingId);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

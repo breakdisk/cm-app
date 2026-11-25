@@ -5,18 +5,11 @@
  *   - marketplace.vehicle_listings  → GET/POST/PUT/DELETE /v1/marketplace/listings
  *   - marketplace.bookings          → GET /v1/marketplace/bookings + transition POSTs
  *
- * Cross-portal receipt propagation (pre-receipt-service): receipts are still
- * written to the marketplace-bus localStorage layer until the receipt service
- * ships. All other operations use authFetch against the carrier service.
+ * Every operation goes through authFetch to the carrier service. A receipt has
+ * no record of its own: the receipt modal renders straight from the booking.
  */
 
 import { authFetch } from "@/lib/auth/auth-fetch";
-import {
-  appendReceipt as busAppendReceipt,
-  findReceiptByBookingId as busFindReceiptByBookingId,
-  subscribeToBus,
-  type BusReceipt,
-} from "./marketplace-bus";
 
 const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost:8010";
 
@@ -72,24 +65,39 @@ export type BookingStatus =
   | "cancelled"
   | "disputed";
 
+export type BookingPaymentMethod = "invoice" | "online";
+export type BookingPaymentStatus = "pending" | "authorized" | "captured" | "voided" | "failed";
+
+/** Mirrors the carrier service's serde output (`services/carrier/src/domain/entities/mod.rs`). */
 export interface MarketplaceBooking {
-  id:                   string;
-  listing_id:           string;
-  shipment_id:          string;
-  awb:                  string;
-  consumer_name:        string;  // masked to initials when pending
-  consumer_phone:       string | null;  // null when pending/rejected
-  pickup_label:         string;
-  dropoff_label:        string;
-  cargo_weight_kg:      number;
-  cargo_volume_m3:      number | null;
-  quoted_price_cents:   number;
-  status:               BookingStatus;
-  pickup_at:            string;
-  created_at:           string;
-  picked_up_at:         string | null;
-  picked_up_by:         string | null;
-  pickup_notes:         string | null;
+  id:                    string;
+  tenant_id:             string;
+  listing_id:            string;
+  carrier_id:            string;
+  shipment_id:           string;
+  awb:                   string;
+  consumer_name:         string;
+  consumer_phone:        string | null;
+  pickup_label:          string;
+  dropoff_label:         string;
+  cargo_weight_kg:       number;
+  cargo_volume_m3:       number | null;
+  quoted_price_cents:    number;
+  status:                BookingStatus;
+  pickup_at:             string;
+  picked_up_at:          string | null;
+  picked_up_by:          string | null;
+  pickup_notes:          string | null;
+  booked_by_user_id:     string | null;
+  payment_method:        BookingPaymentMethod;
+  payment_status:        BookingPaymentStatus;
+  payment_intent_id:     string | null;
+  payment_checkout_url:  string | null;
+  payment_authorized_at: string | null;
+  response_window_mins:  number;
+  distance_km:           number;
+  created_at:            string;
+  updated_at:            string;
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -188,91 +196,6 @@ export async function recordPickup(input: RecordPickupInput): Promise<Marketplac
     picked_up_by: input.picked_up_by ?? null,
     pickup_notes: input.pickup_notes ?? null,
   });
-}
-
-export { subscribeToBus as subscribeToMarketplaceUpdates };
-
-// ── Receipts (pre-receipt-service: still uses bus) ────────────────────────────
-
-export interface IssueReceiptInput {
-  booking_id:    string;
-  /**
-   * The booking object — used to populate receipt fields without an extra
-   * round-trip.
-   *
-   * Deliberately structural rather than `MarketplaceBooking`: the receipt modal
-   * holds a narrower shape (`ReceiptModalBooking`) that carries
-   * `consumer_display` where the full booking carries `consumer_name`, and no
-   * `shipment_id` at all. Demanding the full type made the call site a type
-   * error that was silenced by nobody type-checking this portal — and every
-   * receipt issued from that modal came out with an empty consumer name while
-   * the correct value sat one field away.
-   */
-  booking?:      (Partial<MarketplaceBooking> & { consumer_display?: string }) | null;
-  /** Carrier's UUID — used to populate the receipt's partner_id field. */
-  carrier_id?:   string | null;
-  /** Carrier's display name — used to populate the receipt's issued_by_name. */
-  carrier_name?: string | null;
-  signed_by?:    string | null;
-  notes?:        string | null;
-}
-
-export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt | null> {
-  const existing = busFindReceiptByBookingId(input.booking_id);
-  if (existing) return existing;
-
-  // Receipt service not yet shipped — build the artifact locally so the
-  // partner portal can render it immediately. Production will POST to
-  // /v1/receipts and the engagement engine will forward it to the consumer.
-  const partnerId   = input.carrier_id   ?? "unknown";
-  const partnerName = input.carrier_name ?? "Carrier";
-  const issuedAt = new Date();
-  const yyyy = issuedAt.getUTCFullYear();
-  const mm   = String(issuedAt.getUTCMonth() + 1).padStart(2, "0");
-  const dd   = String(issuedAt.getUTCDate()).padStart(2, "0");
-  const seq  = String(issuedAt.getTime()).slice(-4);
-
-  // Use the caller-supplied booking when available; fall back to a fetch if not.
-  let booking = input.booking ?? null;
-  if (!booking) {
-    try {
-      const data = await apiGet<{ bookings: MarketplaceBooking[] }>("/v1/marketplace/bookings");
-      booking = data.bookings.find((b) => b.id === input.booking_id) ?? null;
-    } catch {
-      // Non-critical — receipt is still issued with whatever fields we have
-    }
-  }
-
-  const receipt: BusReceipt = {
-    id:                   `r9000000-0000-0000-0000-${issuedAt.getTime().toString().padStart(12, "0")}`,
-    receipt_no:           `R-${yyyy}${mm}${dd}-${seq}`,
-    booking_id:           input.booking_id,
-    awb:                  booking?.awb          ?? "",
-    shipment_id:          booking?.shipment_id   ?? "",
-    partner_id:           partnerId,
-    partner_display_name: partnerName,
-    merchant_id:          null,
-    merchant_display:     "",
-    // Either shape may supply it; the modal's is the one that was being lost.
-    consumer_display:     booking?.consumer_name ?? booking?.consumer_display ?? "",
-    pickup_label:         booking?.pickup_label  ?? "",
-    dropoff_label:        booking?.dropoff_label ?? "",
-    pickup_at:            booking?.pickup_at     ?? new Date().toISOString(),
-    size_class:           "van",
-    cargo_weight_kg:      booking?.cargo_weight_kg   ?? 0,
-    quoted_price_cents:   booking?.quoted_price_cents ?? 0,
-    issued_by:            "partner",
-    issued_by_name:       partnerName,
-    signed_by:            input.signed_by ?? null,
-    notes:                input.notes ?? null,
-    issued_at:            issuedAt.toISOString(),
-  };
-  busAppendReceipt(receipt);
-  return receipt;
-}
-
-export async function fetchReceiptForBooking(bookingId: string): Promise<BusReceipt | null> {
-  return busFindReceiptByBookingId(bookingId);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@ import { LiveDispatchMap } from "@/components/maps/live-dispatch-map";
 import type { DriverPin } from "@/components/maps/live-dispatch-map";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
-import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
+import { fetchAllBookings, type AdminBooking } from "@/lib/api/marketplace";
 import { useDriverRoster } from "@/context/driver-roster-context";
 import { usePermissions } from "@/hooks/usePermissions";
 
@@ -36,7 +36,6 @@ interface QueueItem {
   cod_amount_cents?: number | null;
   tracking_number?: string | null;
   origin?:        "dispatch" | "marketplace";
-  partner_display?: string;
   auto_dispatch_attempts?: number | null;
   last_dispatch_error?:    string | null;
   last_attempt_at?:        string | null;
@@ -45,19 +44,18 @@ interface QueueItem {
 
 type QueueFilter = "pending" | "dispatched" | "all";
 
-function busToQueueItem(b: BusBooking): QueueItem {
+function bookingToQueueItem(b: AdminBooking): QueueItem {
   return {
     id:                 `mp-${b.id}`,
     shipment_id:        b.shipment_id,
-    customer_name:      b.merchant_display,
+    customer_name:      b.consumer_name,
     dest_address_line1: b.dropoff_label,
     dest_city:          b.dropoff_label.split(",").pop()?.trim() ?? "—",
-    service_type:       b.size_class,
+    service_type:       "marketplace",
     status:             "pending",
     cod_amount_cents:   null,
     tracking_number:    b.awb,
     origin:             "marketplace",
-    partner_display:    b.partner_display_name,
   };
 }
 
@@ -272,18 +270,20 @@ function DispatchPageInner() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  // Marketplace-origin queue: accepted bookings from the bus become synthetic queue rows
-  const refreshMarketplaceQueue = useCallback(() => {
-    const accepted = readBus()
-      .filter((b) => b.status === "accepted")
-      .map(busToQueueItem);
-    setMarketplaceQueue(accepted);
+  // Marketplace-origin queue: accepted bookings (GET /v1/marketplace/bookings, the
+  // same call the Marketplace page makes) become synthetic queue rows. The
+  // booking carries no carrier name or vehicle class, so rows show neither.
+  const refreshMarketplaceQueue = useCallback(async () => {
+    const bookings = await fetchAllBookings();
+    setMarketplaceQueue(
+      bookings.filter((b) => b.status === "accepted").map(bookingToQueueItem),
+    );
   }, []);
 
   useEffect(() => {
-    refreshMarketplaceQueue();
-    const unsubscribe = subscribeToBus(refreshMarketplaceQueue);
-    return unsubscribe;
+    void refreshMarketplaceQueue();
+    const id = setInterval(() => void refreshMarketplaceQueue(), 30_000);
+    return () => clearInterval(id);
   }, [refreshMarketplaceQueue]);
 
   useEffect(() => {
@@ -611,11 +611,6 @@ function DispatchPageInner() {
                       <p className="text-sm font-medium text-white truncate">{item.customer_name}</p>
                       <p className="text-xs font-mono text-white/40 truncate">{item.dest_address_line1}</p>
                       <p className="text-xs font-mono text-white/25">{item.dest_city} · {item.service_type}</p>
-                      {item.origin === "marketplace" && item.partner_display && (
-                        <p className="text-[10px] font-mono text-cyan-neon/70 mt-1 truncate">
-                          via {item.partner_display}
-                        </p>
-                      )}
                     </div>
                     <div className="flex flex-col items-end gap-1">
                       {item.origin === "marketplace" && (
