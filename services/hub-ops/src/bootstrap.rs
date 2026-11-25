@@ -1956,7 +1956,6 @@ pub async fn run() -> anyhow::Result<()> {
     let spec_repo      = Arc::new(PgTruckSpecRepository { pool: pool.clone() });
     let plan_repo      = Arc::new(PgConsolidationPlanRepository { pool: pool.clone() });
     let hub_broadcaster = HubBroadcaster::new();
-    let svc = Arc::new(HubService::new(hub_repo, induction_repo));
     let consolidation_svc = Arc::new(ConsolidationService::new(
         spec_repo, plan_repo, hub_broadcaster.clone(),
     ));
@@ -1965,6 +1964,7 @@ pub async fn run() -> anyhow::Result<()> {
         KafkaProducer::new(&cfg.kafka.brokers)
             .context("failed to create Kafka producer for hub-ops")?,
     );
+    let svc = Arc::new(HubService::new(hub_repo, induction_repo).with_events(kafka.clone()));
     let pallet_repo    = Arc::new(PgPalletRepository::new(pool.clone()));
     let pallet_ctr_repo = Arc::new(PgPalletContainerRepository::new(pool.clone()));
     let pallet_svc     = Arc::new(PalletService::new(pallet_repo, pallet_ctr_repo.clone(), kafka.clone()));

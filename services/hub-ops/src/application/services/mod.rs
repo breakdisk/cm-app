@@ -16,6 +16,9 @@ use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
+use logisticos_events::{
+    envelope::Event, payloads::HubLoadChanged, producer::KafkaProducer, topics,
+};
 
 use crate::domain::entities::{Hub, HubId, InductionId, ParcelInduction};
 
@@ -62,6 +65,29 @@ pub struct SortParcelCommand {
 pub struct HubService {
     hub_repo:       Arc<dyn HubRepository>,
     induction_repo: Arc<dyn InductionRepository>,
+    /// Publishes `HUB_LOAD_CHANGED`. `None` in tests that do not exercise Kafka.
+    kafka:          Option<Arc<KafkaProducer>>,
+}
+
+/// Builds the `HUB_LOAD_CHANGED` event for a hub whose `current_load` was
+/// `previous_load` before the mutation just applied to `hub`. Returns `None`
+/// when the load did not change (e.g. dispatch on an empty hub), so no
+/// spurious event is published.
+pub(crate) fn hub_load_changed_event(hub: &Hub, previous_load: u32) -> Option<Event<HubLoadChanged>> {
+    if hub.current_load == previous_load {
+        return None;
+    }
+    Some(Event::new(
+        "hub-ops",
+        "hub.load.changed",
+        hub.tenant_id.inner(),
+        HubLoadChanged {
+            hub_id:        hub.id.inner(),
+            capacity:      hub.capacity as i32,
+            previous_load: previous_load as i32,
+            current_load:  hub.current_load as i32,
+        },
+    ))
 }
 
 impl HubService {
@@ -69,7 +95,28 @@ impl HubService {
         hub_repo: Arc<dyn HubRepository>,
         induction_repo: Arc<dyn InductionRepository>,
     ) -> Self {
-        Self { hub_repo, induction_repo }
+        Self { hub_repo, induction_repo, kafka: None }
+    }
+
+    /// Attach the producer used to publish hub load changes.
+    pub fn with_events(mut self, kafka: Arc<KafkaProducer>) -> Self {
+        self.kafka = Some(kafka);
+        self
+    }
+
+    /// Publish after the hub row is saved. A failure is logged and never
+    /// fails the request — the load change is already committed.
+    async fn publish_load_changed(&self, hub: &Hub, previous_load: u32) {
+        let (Some(kafka), Some(event)) = (&self.kafka, hub_load_changed_event(hub, previous_load)) else {
+            return;
+        };
+        if let Err(e) = kafka.publish_event(topics::HUB_LOAD_CHANGED, &event).await {
+            tracing::error!(
+                hub_id = %hub.id.inner(),
+                error = %e,
+                "failed to publish hub load change"
+            );
+        }
     }
 
     pub async fn create_hub(&self, tenant_id: &TenantId, cmd: CreateHubCommand) -> AppResult<Hub> {
@@ -114,8 +161,10 @@ impl HubService {
             }
         }
 
+        let previous_load = hub.current_load;
         hub.induct_parcel().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.hub_repo.save(&hub).await.map_err(AppError::internal)?;
+        self.publish_load_changed(&hub, previous_load).await;
 
         let induction = ParcelInduction::new(
             hub_id,
@@ -154,9 +203,11 @@ impl HubService {
             .ok_or_else(|| AppError::NotFound { resource: "Hub", id: induction.hub_id.inner().to_string() })?;
 
         induction.dispatch();
+        let previous_load = hub.current_load;
         hub.dispatch_parcel();
         self.induction_repo.save(&induction).await.map_err(AppError::internal)?;
         self.hub_repo.save(&hub).await.map_err(AppError::internal)?;
+        self.publish_load_changed(&hub, previous_load).await;
         Ok(induction)
     }
 
@@ -173,5 +224,47 @@ impl HubService {
         // list_active queries by hub_id only; the tenant guard is applied here
         // until the InductionRepository trait grows a tenant-scoped variant.
         Ok(all.into_iter().filter(|p| p.tenant_id == *tenant_id).collect())
+    }
+}
+
+#[cfg(test)]
+mod load_event_tests {
+    use super::*;
+
+    fn hub(capacity: u32) -> Hub {
+        Hub::new(TenantId::new(), "H".into(), "addr".into(), 0.0, 0.0, capacity)
+    }
+
+    #[test]
+    fn induction_event_carries_previous_and_current() {
+        let mut h = hub(10);
+        h.current_load = 4;
+        let prev = h.current_load;
+        h.induct_parcel().unwrap();
+        let ev = hub_load_changed_event(&h, prev).expect("load changed");
+        assert_eq!(ev.tenant_id, h.tenant_id.inner());
+        assert_eq!(ev.data.hub_id, h.id.inner());
+        assert_eq!(ev.data.capacity, 10);
+        assert_eq!(ev.data.previous_load, 4);
+        assert_eq!(ev.data.current_load, 5);
+    }
+
+    #[test]
+    fn dispatch_event_carries_previous_and_current() {
+        let mut h = hub(10);
+        h.current_load = 7;
+        let prev = h.current_load;
+        h.dispatch_parcel();
+        let ev = hub_load_changed_event(&h, prev).expect("load changed");
+        assert_eq!(ev.data.previous_load, 7);
+        assert_eq!(ev.data.current_load, 6);
+    }
+
+    #[test]
+    fn no_event_when_load_unchanged() {
+        let mut h = hub(10);
+        let prev = h.current_load;
+        h.dispatch_parcel(); // empty hub: no-op
+        assert!(hub_load_changed_event(&h, prev).is_none());
     }
 }
