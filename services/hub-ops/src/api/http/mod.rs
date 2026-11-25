@@ -242,7 +242,8 @@ async fn sort_induction(
         bay:  req.bay,
     };
 
-    let induction = state.hub_svc.sort_parcel(cmd).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let induction = state.hub_svc.sort_parcel(&tenant_id, cmd).await?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }

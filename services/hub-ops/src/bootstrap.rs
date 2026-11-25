@@ -1284,7 +1284,8 @@ async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<I
 
 async fn sort(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<SortParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.sort_parcel(cmd).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.sort_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }
 

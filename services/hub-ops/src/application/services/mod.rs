@@ -178,11 +178,12 @@ impl HubService {
         Ok(induction)
     }
 
-    pub async fn sort_parcel(&self, cmd: SortParcelCommand) -> AppResult<ParcelInduction> {
+    pub async fn sort_parcel(&self, tenant_id: &TenantId, cmd: SortParcelCommand) -> AppResult<ParcelInduction> {
         let mut induction = self.induction_repo
             .find_by_id(&InductionId::from_uuid(cmd.induction_id))
             .await
             .map_err(AppError::internal)?
+            .filter(|i| i.tenant_id == *tenant_id)
             .ok_or_else(|| AppError::NotFound { resource: "Induction", id: cmd.induction_id.to_string() })?;
 
         induction.sort_to(cmd.zone, cmd.bay);
@@ -349,6 +350,20 @@ mod tenant_isolation_tests {
         assert_eq!(*hubs.saves.lock().unwrap(), 0);
         assert_eq!(*inds.saves.lock().unwrap(), 0);
         assert_eq!(hubs.hubs.lock().unwrap()[0].current_load, 3);
+    }
+
+    #[tokio::test]
+    async fn sort_foreign_tenant_induction_is_not_found() {
+        let owner = TenantId::new();
+        let hub = Hub::new(owner.clone(), "H".into(), "a".into(), 0.0, 0.0, 10);
+        let ind = ParcelInduction::new(hub.id.clone(), owner, Uuid::new_v4(), "T".into(), None);
+        let ind_id = ind.id.inner();
+        let (svc, _hubs, inds) = setup(hub, vec![ind]);
+        let err = svc.sort_parcel(&TenantId::new(), SortParcelCommand {
+            induction_id: ind_id, zone: "Z".into(), bay: "B".into(),
+        }).await.unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+        assert_eq!(*inds.saves.lock().unwrap(), 0);
     }
 
     #[tokio::test]
