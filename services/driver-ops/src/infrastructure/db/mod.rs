@@ -13,3 +13,5 @@ pub mod credit_repo;
 pub use credit_repo::{CreditStore, PgCreditStore};
 pub mod provider_repo;
 pub use provider_repo::{InMemoryProviderStore, PgProviderStore, ProviderStore};
+pub mod idle_repo;
+pub use idle_repo::{IdleDriver, IdleDriverStore, PgIdleDriverStore};

@@ -1,5 +1,6 @@
 pub mod credits;
 pub mod drivers;
+pub mod idle;
 pub mod provider;
 pub mod tasks;
 pub mod location;
@@ -25,6 +26,8 @@ pub struct AppState {
     pub providers: Arc<dyn crate::infrastructure::db::ProviderStore>,
     /// Pay earned outside a delivered task (a survey, a support share).
     pub credits: Arc<dyn crate::infrastructure::db::CreditStore>,
+    /// Drivers who crossed an idle threshold - read by business-logic poller.
+    pub idle: Arc<dyn crate::infrastructure::db::IdleDriverStore>,
 }
 
 /// Events fanned out to WebSocket subscribers. Tenant-scoped on the server side —
@@ -79,6 +82,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/internal/shipments/:shipment_id/driver-contact", get(tasks::internal_driver_contact))
         .route("/v1/internal/home-leads/capacity", get(provider::internal_home_capacity))
         .route("/v1/internal/earnings/credits", post(credits::internal_credit))
+        .route("/v1/internal/drivers/idle", get(idle::internal_idle_drivers))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }

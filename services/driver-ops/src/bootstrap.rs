@@ -188,6 +188,7 @@ pub async fn run() -> anyhow::Result<()> {
         fcm: fcm_for_state,
         providers: Arc::new(crate::infrastructure::db::PgProviderStore::new(pool.clone())),
         credits,
+        idle: Arc::new(crate::infrastructure::db::PgIdleDriverStore::new(pool.clone())),
     });
 
     use tower_http::cors::CorsLayer;
