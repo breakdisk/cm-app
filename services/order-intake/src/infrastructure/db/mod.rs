@@ -240,7 +240,7 @@ impl ShipmentRow {
     }
 }
 
-fn status_str(s: &ShipmentStatus) -> &'static str {
+pub(crate) fn status_str(s: &ShipmentStatus) -> &'static str {
     match s {
         ShipmentStatus::Pending           => "pending",
         ShipmentStatus::Confirmed         => "confirmed",
@@ -515,6 +515,7 @@ impl ShipmentRepository for PgShipmentRepository {
                     pending_dispatch_events = EXCLUDED.pending_dispatch_events,
                     idempotency_key         = EXCLUDED.idempotency_key,
                     scheduled_pickup_at  = EXCLUDED.scheduled_pickup_at,
+                    -- sla_due_at is set once at create and intentionally not updated on conflict.
                     -- The version and the quoted total are fixed at booking.
                     cancellation_policy_version = COALESCE(order_intake.shipments.cancellation_policy_version, EXCLUDED.cancellation_policy_version),
                     booking_amount_cents = COALESCE(order_intake.shipments.booking_amount_cents, EXCLUDED.booking_amount_cents),
