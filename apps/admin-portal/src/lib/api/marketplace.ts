@@ -17,8 +17,8 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export type ListingStatus  = "active" | "paused" | "booked" | "expired";
 export type BookingStatus  = "pending" | "accepted" | "rejected" | "in_transit" | "delivered" | "cancelled" | "disputed";
-export type SizeClass      = "scooter_bicycle" | "motorcycle" | "sedan" | "van" | "1ton" | "3ton" | "7ton" | "10ton" | "trailer" | "refrigerated_truck" | "recovery_truck";
-export type VehicleFeature = "tail_lift" | "chiller" | "freezer";
+/** Wire values of the carrier service's `SizeClass` (services/carrier/src/domain/entities/mod.rs). */
+export type SizeClass      = "motorcycle" | "sedan" | "van" | "l300" | "6wheeler" | "10wheeler" | "trailer";
 export type PartnerType    = "alliance" | "marketplace";
 
 export interface AdminListing {
@@ -28,7 +28,6 @@ export interface AdminListing {
   partner_type:         PartnerType;       // alliance = full; marketplace = vehicle-only
   vehicle_plate:        string;
   size_class:           SizeClass;
-  features:             VehicleFeature[];
   max_weight_kg:        number;
   base_price_cents:     number;
   per_km_cents:         number;
@@ -102,7 +101,6 @@ interface ApiListing {
   carrier_id:               string;
   vehicle_plate:             string;
   size_class:               SizeClass;
-  features?:                VehicleFeature[];
   max_weight_kg:            number;
   base_price_cents:         number;
   per_km_cents:             number;
@@ -116,17 +114,7 @@ interface ApiListing {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-async function apiGet<T>(path: string): Promise<T | null> {
-  try {
-    const res = await authFetch(`${API_BASE}${path}`);
-    if (!res.ok) return null;
-    return res.json() as Promise<T>;
-  } catch {
-    return null;
-  }
-}
-
-/** Like `apiGet` but a failure throws, so callers can tell "outage" from "empty". */
+/** GET that throws on any failure, so callers can tell "outage" from "empty". */
 async function apiGetStrict<T>(path: string): Promise<T> {
   const res = await authFetch(`${API_BASE}${path}`);
   if (!res.ok) throw new Error(`GET ${path} failed (HTTP ${res.status})`);
@@ -143,7 +131,6 @@ function apiListingToAdmin(l: ApiListing): AdminListing {
     partner_type:         "marketplace" as PartnerType,
     vehicle_plate:        l.vehicle_plate,
     size_class:           l.size_class,
-    features:             (l.features ?? []) as VehicleFeature[],
     max_weight_kg:        l.max_weight_kg,
     base_price_cents:     l.base_price_cents,
     per_km_cents:         l.per_km_cents,
@@ -167,9 +154,9 @@ function bookingToAdmin(b: MarketplaceBooking): AdminBooking {
 
 // ── Public API functions ──────────────────────────────────────────────────────
 
+/** Throws on any failure: an empty array always means the tenant has no listings. */
 export async function fetchAllListings(): Promise<AdminListing[]> {
-  const json = await apiGet<{ listings?: ApiListing[] } | ApiListing[]>("/v1/marketplace/listings");
-  if (!json) return [];
+  const json = await apiGetStrict<{ listings?: ApiListing[] } | ApiListing[]>("/v1/marketplace/listings");
   const raw = Array.isArray(json) ? json : (json.listings ?? []);
   return raw.map(apiListingToAdmin);
 }
@@ -208,7 +195,6 @@ export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {
 export interface CreateListingPayload {
   vehicle_plate:                string;
   size_class:                   SizeClass;
-  features:                     VehicleFeature[];
   max_weight_kg:                number;
   max_volume_m3:                number | null;
   base_price_cents:             number;
@@ -217,7 +203,6 @@ export interface CreateListingPayload {
   service_area_label:           string;
   idle_from:                    string;
   idle_until:                   string;
-  status:                       ListingStatus;
   carrier_response_window_mins: number;
 }
 
@@ -228,31 +213,22 @@ export async function createVehicleListing(payload: CreateListingPayload): Promi
     body:    JSON.stringify(payload),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`POST /v1/marketplace/listings failed ${res.status}: ${text}`);
+    // The carrier API's error envelope is { error: { code, message } }.
+    const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+    throw new Error(body?.error?.message ?? `Marketplace listing failed (HTTP ${res.status})`);
   }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export const SIZE_CLASS_LABEL: Record<SizeClass, string> = {
-  scooter_bicycle:    "Scooter / Bicycle",
-  motorcycle:         "Motorcycle",
-  sedan:              "Sedan",
-  van:                "Van",
-  "1ton":             "1 Ton",
-  "3ton":             "3 Ton",
-  "7ton":             "7 Ton",
-  "10ton":            "10 Ton",
-  trailer:            "Trailer",
-  refrigerated_truck: "Refrigerated Truck",
-  recovery_truck:     "Recovery Truck",
-};
-
-export const VEHICLE_FEATURE_LABEL: Record<VehicleFeature, string> = {
-  tail_lift: "Tail-lift",
-  chiller:   "Chiller (0–8 °C)",
-  freezer:   "Freezer (−18 °C)",
+  motorcycle:  "Motorcycle",
+  sedan:       "Sedan",
+  van:         "Cargo van",
+  l300:        "L300",
+  "6wheeler":  "6-wheeler",
+  "10wheeler": "10-wheeler",
+  trailer:     "Trailer",
 };
 
 export function formatCentsPhp(cents: number): string {

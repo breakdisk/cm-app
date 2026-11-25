@@ -17,20 +17,15 @@ const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost
 
 export type ListingStatus = "active" | "paused" | "booked" | "expired";
 
+/** Wire values of the carrier service's `SizeClass` (services/carrier/src/domain/entities/mod.rs). */
 export type SizeClass =
-  | "scooter_bicycle"
   | "motorcycle"
   | "sedan"
   | "van"
-  | "1ton"
-  | "3ton"
-  | "7ton"
-  | "10ton"
-  | "trailer"
-  | "refrigerated_truck"
-  | "recovery_truck";
-
-export type VehicleFeature = "tail_lift" | "chiller" | "freezer";
+  | "l300"
+  | "6wheeler"
+  | "10wheeler"
+  | "trailer";
 
 export interface VehicleListing {
   id:                       string;
@@ -38,10 +33,8 @@ export interface VehicleListing {
   carrier_id:               string;
   vehicle_plate:             string;
   size_class:               SizeClass;
-  features:                 VehicleFeature[];
   max_weight_kg:            number;
   max_volume_m3:            number | null;
-  currency:                 string;   // ISO-4217 code, e.g. "PHP"
   base_price_cents:         number;
   per_km_cents:             number;
   per_kg_cents:             number | null;
@@ -102,11 +95,16 @@ export interface MarketplaceBooking {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
+/** The carrier API's error envelope is `{ error: { code, message } }`; fall back to `fallback`. */
+async function errorMessage(res: Response, fallback: string): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+  return body?.error?.message ?? fallback;
+}
+
 async function apiGet<T>(path: string): Promise<T> {
   const res = await authFetch(`${CARRIER_SVC_URL}${path}`);
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`GET ${path} failed ${res.status}: ${body}`);
+    throw new Error(await errorMessage(res, `GET ${path} failed (HTTP ${res.status})`));
   }
   return res.json() as Promise<T>;
 }
@@ -118,8 +116,7 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`POST ${path} failed ${res.status}: ${text}`);
+    throw new Error(await errorMessage(res, `POST ${path} failed (HTTP ${res.status})`));
   }
   return res.json() as Promise<T>;
 }
@@ -131,8 +128,7 @@ async function apiPut<T>(path: string, body?: unknown): Promise<T> {
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`PUT ${path} failed ${res.status}: ${text}`);
+    throw new Error(await errorMessage(res, `PUT ${path} failed (HTTP ${res.status})`));
   }
   return res.json() as Promise<T>;
 }
@@ -140,8 +136,7 @@ async function apiPut<T>(path: string, body?: unknown): Promise<T> {
 async function apiDelete(path: string): Promise<void> {
   const res = await authFetch(`${CARRIER_SVC_URL}${path}`, { method: "DELETE" });
   if (!res.ok && res.status !== 204) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`DELETE ${path} failed ${res.status}: ${text}`);
+    throw new Error(await errorMessage(res, `DELETE ${path} failed (HTTP ${res.status})`));
   }
 }
 
@@ -152,15 +147,28 @@ export async function fetchListings(): Promise<VehicleListing[]> {
   return data.listings;
 }
 
-export async function createListing(
-  input: Omit<VehicleListing, "id" | "tenant_id" | "carrier_id" | "bookings_today" | "revenue_today_cents" | "created_at" | "updated_at">,
-): Promise<VehicleListing> {
+/** Mirrors the carrier service's `CreateListingCommand`. */
+export interface CreateListingInput {
+  vehicle_plate:                string;
+  size_class:                   SizeClass;
+  max_weight_kg:                number;
+  max_volume_m3:                number | null;
+  base_price_cents:             number;
+  per_km_cents:                 number;
+  per_kg_cents:                 number | null;
+  service_area_label:           string;
+  idle_from:                    string;  // ISO-8601
+  idle_until:                   string;  // ISO-8601
+  carrier_response_window_mins: number;
+}
+
+export async function createListing(input: CreateListingInput): Promise<VehicleListing> {
   return apiPost<VehicleListing>("/v1/marketplace/listings", input);
 }
 
 export async function updateListing(
   id: string,
-  patch: Partial<Pick<VehicleListing, "status" | "currency" | "base_price_cents" | "per_km_cents" | "per_kg_cents" | "idle_until" | "service_area_label" | "max_weight_kg" | "max_volume_m3" | "carrier_response_window_mins">>,
+  patch: Partial<Pick<VehicleListing, "status" | "base_price_cents" | "per_km_cents" | "per_kg_cents" | "idle_until" | "service_area_label" | "max_weight_kg" | "max_volume_m3" | "carrier_response_window_mins">>,
 ): Promise<VehicleListing | null> {
   return apiPut<VehicleListing>(`/v1/marketplace/listings/${id}`, patch);
 }
@@ -201,37 +209,23 @@ export async function recordPickup(input: RecordPickupInput): Promise<Marketplac
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export const SIZE_CLASS_LABEL: Record<SizeClass, string> = {
-  scooter_bicycle:    "Scooter / Bicycle",
-  motorcycle:         "Motorcycle",
-  sedan:              "Sedan",
-  van:                "Van",
-  "1ton":             "1 Ton",
-  "3ton":             "3 Ton",
-  "7ton":             "7 Ton",
-  "10ton":            "10 Ton",
-  trailer:            "Trailer",
-  refrigerated_truck: "Refrigerated Truck",
-  recovery_truck:     "Recovery Truck",
+  motorcycle:  "Motorcycle",
+  sedan:       "Sedan",
+  van:         "Cargo van",
+  l300:        "L300",
+  "6wheeler":  "6-wheeler",
+  "10wheeler": "10-wheeler",
+  trailer:     "Trailer",
 };
 
 export const SIZE_CLASS_CAPACITY_HINT: Record<SizeClass, string> = {
-  scooter_bicycle:    "Up to 20 kg · 0.1 m³",
-  motorcycle:         "Up to 30 kg · 0.25 m³",
-  sedan:              "Up to 200 kg · 1.2 m³",
-  van:                "Up to 800 kg · 5 m³",
-  "1ton":             "Up to 1,000 kg · 6 m³",
-  "3ton":             "Up to 3,000 kg · 14 m³",
-  "7ton":             "Up to 7,000 kg · 28 m³",
-  "10ton":            "Up to 10,000 kg · 40 m³",
-  trailer:            "Up to 25,000 kg · 80 m³ · Flatbed available",
-  refrigerated_truck: "Up to 5,000 kg · 22 m³ · Chiller / Freezer",
-  recovery_truck:     "Vehicle towing · capacity by cargo vehicle quote",
-};
-
-export const VEHICLE_FEATURE_LABEL: Record<VehicleFeature, string> = {
-  tail_lift: "Tail-lift",
-  chiller:   "Chiller (0–8 °C)",
-  freezer:   "Freezer (−18 °C)",
+  motorcycle:  "Up to 30 kg · 0.25 m³",
+  sedan:       "Up to 200 kg · 1.2 m³",
+  van:         "Up to 800 kg · 5 m³",
+  l300:        "Up to 1,500 kg · 6.7 m³",
+  "6wheeler":  "Up to 5,000 kg · 22.9 m³",
+  "10wheeler": "Up to 10,000 kg · 43 m³",
+  trailer:     "Up to 25,000 kg · 80 m³ · Flatbed available",
 };
 
 export function formatCentsPhp(cents: number): string {

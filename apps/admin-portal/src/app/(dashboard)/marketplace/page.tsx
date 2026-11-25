@@ -12,7 +12,7 @@
  * tracking. Read-only — mutation flows are owned by the partner portal.
  */
 
-import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { motion, AnimatePresence } from "framer-motion";
@@ -47,14 +47,12 @@ import {
   fetchMarketplaceStats,
   formatCentsPhp,
   SIZE_CLASS_LABEL,
-  VEHICLE_FEATURE_LABEL,
   type AdminListing,
   type AdminBooking,
   type BookingStatus,
   type ListingStatus,
   type MarketplaceStats,
   type PartnerType,
-  type VehicleFeature,
 } from "@/lib/api/marketplace";
 import { ReceiptModal } from "@/components/marketplace/ReceiptModal";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -192,6 +190,13 @@ function AdminMarketplacePageInner() {
     (qpStatus as BookingStatus) || "all",
   );
 
+  // Set false on unmount so a poll tick that resolves late never sets state.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
       const [l, b, s] = await Promise.all([
@@ -199,14 +204,15 @@ function AdminMarketplacePageInner() {
         fetchAllBookings(),
         fetchMarketplaceStats(),
       ]);
+      if (!mountedRef.current) return;
       setListings(l);
       setBookings(b);
       setStats(s);
       setLoadError(false);
     } catch {
-      setLoadError(true);
+      if (mountedRef.current) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, []);
 
@@ -788,17 +794,6 @@ function ListingsTable({
                         <p className="mt-0.5 text-2xs text-white/50">
                           {SIZE_CLASS_LABEL[l.size_class]}
                         </p>
-                        {l.features && l.features.length > 0 && (
-                          <div className="flex flex-wrap gap-0.5 mt-0.5">
-                            {(l.features as VehicleFeature[]).map((f) => (
-                              <span key={f} className={`rounded-full px-1 py-0.5 text-2xs font-mono ${
-                                f === "freezer" ? "bg-cyan-surface/60 text-cyan-neon/80" :
-                                f === "chiller" ? "bg-purple-surface/60 text-purple-plasma/80" :
-                                "bg-amber-surface/60 text-amber-signal/80"
-                              }`}>{VEHICLE_FEATURE_LABEL[f]}</span>
-                            ))}
-                          </div>
-                        )}
                       </div>
                     </div>
                   </td>

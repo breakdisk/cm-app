@@ -302,6 +302,8 @@ function DispatchPageInner() {
     const id = setInterval(() => void refreshMarketplaceQueue(isMounted), 30_000);
     return () => {
       mounted = false;
+      // A dev StrictMode remount must not find the first load skipped as "in flight".
+      marketplaceInFlight.current = false;
       clearInterval(id);
     };
   }, [refreshMarketplaceQueue]);
