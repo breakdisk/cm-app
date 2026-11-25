@@ -27,10 +27,27 @@ pub struct IdleDriver {
 /// `oldest < idle_since <= newest`. `newest = now - idle_minutes` (the threshold
 /// has been reached) and `oldest = newest - window_secs` (it had not been reached
 /// at the previous poll), so each idle episode lands in exactly one poll.
-pub fn crossing_window(now: DateTime<Utc>, idle_minutes: u32, window_secs: u32) -> (DateTime<Utc>, DateTime<Utc>) {
-    let newest = now - Duration::minutes(i64::from(idle_minutes));
-    let oldest = newest - Duration::seconds(i64::from(window_secs));
-    (newest, oldest)
+///
+/// The crossing time of an episode is `idle_since + idle_minutes`; it is returned
+/// when that falls in the half-open interval `(since, as_of]`.
+pub fn crossing_bounds(as_of: DateTime<Utc>, since: DateTime<Utc>, idle_minutes: u32) -> (DateTime<Utc>, DateTime<Utc>) {
+    let idle = Duration::minutes(i64::from(idle_minutes));
+    (as_of - idle, since - idle)
+}
+
+/// Lower bound of the crossing interval: the caller's watermark when given,
+/// else `as_of - window_secs`. A `since` must satisfy `as_of - 3600s <= since < as_of`.
+pub fn resolve_since(
+    as_of: DateTime<Utc>,
+    window_secs: u32,
+    since: Option<DateTime<Utc>>,
+) -> Result<DateTime<Utc>, String> {
+    match since {
+        None => Ok(as_of - Duration::seconds(i64::from(window_secs))),
+        Some(s) if s >= as_of => Err("since must be earlier than now".into()),
+        Some(s) if s < as_of - Duration::seconds(3600) => Err("since must be within the last 3600s".into()),
+        Some(s) => Ok(s),
+    }
 }
 
 /// Task statuses that mean the driver is still working. Every other status is
@@ -52,8 +69,8 @@ pub trait IdleDriverStore: Send + Sync {
         &self,
         tenant_id: Uuid,
         idle_minutes: u32,
-        window_secs: u32,
-        now: DateTime<Utc>,
+        since: DateTime<Utc>,
+        as_of: DateTime<Utc>,
     ) -> anyhow::Result<Vec<IdleDriver>>;
 }
 
@@ -71,10 +88,10 @@ impl IdleDriverStore for PgIdleDriverStore {
         &self,
         tenant_id: Uuid,
         idle_minutes: u32,
-        window_secs: u32,
-        now: DateTime<Utc>,
+        since: DateTime<Utc>,
+        as_of: DateTime<Utc>,
     ) -> anyhow::Result<Vec<IdleDriver>> {
-        let (newest, oldest) = crossing_window(now, idle_minutes, window_secs);
+        let (newest, oldest) = crossing_bounds(as_of, since, idle_minutes);
         let active: Vec<String> = ACTIVE_TASK_STATUSES.iter().map(|s| (*s).to_owned()).collect();
 
         // `tasks` carries no tenant_id; tenant scope comes from `drivers`.
@@ -110,12 +127,16 @@ impl IdleDriverStore for PgIdleDriverStore {
         .fetch_all(&self.pool)
         .await?;
 
+        if rows.len() as i64 >= MAX_IDLE_ROWS {
+            tracing::warn!(%tenant_id, idle_minutes, cap = MAX_IDLE_ROWS, "idle-driver result hit the row cap; some drivers were not returned");
+        }
+
         Ok(rows
             .into_iter()
             .map(|(driver_id, idle_since)| IdleDriver {
                 driver_id,
                 idle_since,
-                idle_minutes: (now - idle_since).num_minutes(),
+                idle_minutes: (as_of - idle_since).num_minutes(),
             })
             .collect())
     }
@@ -126,23 +147,49 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    #[test]
-    fn window_bounds_are_threshold_and_threshold_plus_window() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
-        let (newest, oldest) = crossing_window(now, 30, 60);
-        assert_eq!(newest, Utc.with_ymd_and_hms(2026, 11, 25, 11, 30, 0).unwrap());
-        assert_eq!(oldest, Utc.with_ymd_and_hms(2026, 11, 25, 11, 29, 0).unwrap());
+    fn t(h: u32, m: u32, sec: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, 25, h, m, sec).unwrap()
     }
 
     #[test]
-    fn consecutive_polls_tile_without_gap_or_overlap() {
-        // Poll 1 covers (o1, n1], poll 2 (exactly one window later) covers (o2, n2].
-        // A driver is in one poll only if o2 == n1.
-        let t0 = Utc.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
-        let (n1, o1) = crossing_window(t0, 45, 60);
-        let (n2, o2) = crossing_window(t0 + Duration::seconds(60), 45, 60);
+    fn window_mode_bounds_are_threshold_and_threshold_plus_window() {
+        let as_of = t(12, 0, 0);
+        let since = resolve_since(as_of, 60, None).unwrap();
+        assert_eq!(since, t(11, 59, 0));
+        let (newest, oldest) = crossing_bounds(as_of, since, 30);
+        assert_eq!(newest, t(11, 30, 0));
+        assert_eq!(oldest, t(11, 29, 0));
+    }
+
+    #[test]
+    fn since_mode_bounds_come_from_the_watermark() {
+        let as_of = t(12, 0, 0);
+        let since = resolve_since(as_of, 60, Some(t(11, 50, 0))).unwrap();
+        assert_eq!(since, t(11, 50, 0));
+        let (newest, oldest) = crossing_bounds(as_of, since, 30);
+        assert_eq!((newest, oldest), (t(11, 30, 0), t(11, 20, 0)));
+    }
+
+    #[test]
+    fn consecutive_watermarked_polls_tile_without_gap_or_overlap() {
+        // Poll 1 covers (s1, a1]; poll 2 uses since = a1, so (a1, a2]: no gap, no overlap,
+        // whatever the jitter between a1 and a2.
+        let a1 = t(12, 0, 0);
+        let a2 = t(12, 7, 13);
+        let (n1, _) = crossing_bounds(a1, t(11, 59, 0), 45);
+        let (n2, o2) = crossing_bounds(a2, resolve_since(a2, 60, Some(a1)).unwrap(), 45);
         assert_eq!(o2, n1);
-        assert!(o1 < n1 && n1 < n2);
+        assert!(n1 < n2);
+    }
+
+    #[test]
+    fn since_must_be_in_the_past_and_within_an_hour() {
+        let as_of = t(12, 0, 0);
+        assert!(resolve_since(as_of, 60, Some(as_of)).is_err());
+        assert!(resolve_since(as_of, 60, Some(t(12, 0, 1))).is_err());
+        assert!(resolve_since(as_of, 60, Some(t(10, 59, 59))).is_err());
+        assert!(resolve_since(as_of, 60, Some(t(11, 0, 0))).is_ok());
+        assert!(resolve_since(as_of, 60, Some(t(11, 59, 59))).is_ok());
     }
 
     #[test]
