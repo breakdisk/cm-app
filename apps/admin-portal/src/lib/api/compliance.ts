@@ -131,6 +131,40 @@ export async function fetchProfile(profileId: string) {
   return j.data;
 }
 
+export interface UploadDocumentInput {
+  document_type_id: string;
+  document_number:  string;
+  /** Bare base64 — no `data:` prefix. */
+  file_base64:      string;
+  content_type:     string;
+  /** `YYYY-MM-DD` */
+  issue_date?:      string;
+  /** `YYYY-MM-DD` */
+  expiry_date?:     string;
+}
+
+/**
+ * Upload a document into someone's compliance profile on their behalf.
+ * Requires `compliance:admin`; the server answers 403 otherwise and 404 for a
+ * profile that is unknown or belongs to another tenant.
+ */
+export async function uploadDocumentOnBehalf(
+  profileId: string,
+  input: UploadDocumentInput,
+): Promise<DriverDocument> {
+  const j = await okJson(
+    await authFetch(
+      `${BASE}/api/v1/compliance/admin/profiles/${encodeURIComponent(profileId)}/documents`,
+      {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(input),
+      },
+    ),
+  );
+  return j.data;
+}
+
 export async function approveDocument(docId: string): Promise<void> {
   await okJson(await authFetch(`${BASE}/api/v1/compliance/admin/documents/${docId}/approve`, {
     method: "POST",

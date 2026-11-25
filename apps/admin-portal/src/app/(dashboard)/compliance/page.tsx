@@ -331,6 +331,7 @@ function ComplianceConsole() {
             onReject={handleReject}
             onSuspend={canAdmin ? handleSuspend : undefined}
             onReinstate={canAdmin ? handleReinstate : undefined}
+            canAdmin={canAdmin}
             typeNames={typeNames}
             entityNames={entityNames}
           />
