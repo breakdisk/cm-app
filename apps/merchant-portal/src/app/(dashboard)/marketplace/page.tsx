@@ -11,8 +11,8 @@
  * ?partner pre-fills the search box.
  */
 
-import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import {
@@ -40,6 +40,7 @@ import {
   type ListingStatus,
   type BookingStatus,
 } from "@/lib/api/marketplace";
+import { safeCheckoutUrl } from "@/lib/api/checkout-url";
 import { useDialogA11y } from "@/lib/hooks/use-dialog-a11y";
 import { ReceiptModal } from "@/components/marketplace/ReceiptModal";
 
@@ -105,6 +106,8 @@ export default function MerchantMarketplacePage() {
 
 function MarketplacePageInner() {
   const qp = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const qpAwb     = qp?.get("awb");
   const qpListing = qp?.get("listing");
   const qpPartner = qp?.get("partner");
@@ -145,12 +148,21 @@ function MarketplacePageInner() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  // Auto-open the booking dialog when arriving with ?listing=<id>
+  // Auto-open the booking dialog for ?listing=<id>, at most once per distinct
+  // id: the 30 s poll replaces `listings`, and closing the dialog must not
+  // bring it back. The param is dropped from the URL once consumed.
+  const consumedListing = useRef<string | null>(null);
   useEffect(() => {
     if (!qpListing || listings.length === 0) return;
+    if (consumedListing.current === qpListing) return;
+    consumedListing.current = qpListing;
     const l = listings.find((x) => x.id === qpListing);
     if (l && l.status === "active") setBookingFor(l);
-  }, [qpListing, listings]);
+    const rest = new URLSearchParams(qp?.toString() ?? "");
+    rest.delete("listing");
+    const q = rest.toString();
+    router.replace(q ? `${pathname}?${q}` : pathname);
+  }, [qpListing, listings, qp, router, pathname]);
 
   const listingById = useMemo(() => new Map(listings.map((l) => [l.id, l])), [listings]);
 
@@ -170,14 +182,21 @@ function MarketplacePageInner() {
     // Throws on failure; the dialog shows the server's message and stays open.
     const { checkout_url } = await createBooking(input);
     setBookingFor(null);
-    if (checkout_url) {
-      // Online payment: the booking is only shown to a carrier after the hold lands.
-      window.location.assign(checkout_url);
-      return;
-    }
     setTab("bookings");
     setActionError(null);
     refresh();
+    if (checkout_url) {
+      // Online payment: the booking is only shown to a carrier after the hold
+      // lands. The URL comes from the server, so only follow a valid https one.
+      const safe = safeCheckoutUrl(checkout_url);
+      if (safe) {
+        window.location.assign(safe);
+      } else {
+        setActionError(
+          "Payment link is invalid. Your booking was created but is not paid; contact support.",
+        );
+      }
+    }
   }
 
   async function handleCancel(id: string) {
