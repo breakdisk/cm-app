@@ -209,6 +209,7 @@ function DispatchPageInner() {
 
   const [queue,             setQueue]             = useState<QueueItem[]>([]);
   const [marketplaceQueue,  setMarketplaceQueue]  = useState<QueueItem[]>([]);
+  const [marketplaceError,   setMarketplaceError]   = useState(false);
   const [drivers,           setDrivers]           = useState<DriverProfile[]>([]);
   const [driverSummary,     setDriverSummary]     = useState<DriverSummary | null>(null);
   const [dispatching,       setDispatching]       = useState<string | null>(null);
@@ -273,17 +274,36 @@ function DispatchPageInner() {
   // Marketplace-origin queue: accepted bookings (GET /v1/marketplace/bookings, the
   // same call the Marketplace page makes) become synthetic queue rows. The
   // booking carries no carrier name or vehicle class, so rows show neither.
-  const refreshMarketplaceQueue = useCallback(async () => {
-    const bookings = await fetchAllBookings();
-    setMarketplaceQueue(
-      bookings.filter((b) => b.status === "accepted").map(bookingToQueueItem),
-    );
+  const marketplaceInFlight = useRef(false);
+  const marketplaceSeq      = useRef(0);
+  const refreshMarketplaceQueue = useCallback(async (isMounted: () => boolean) => {
+    if (marketplaceInFlight.current) return;   // skip a tick while a request is outstanding
+    marketplaceInFlight.current = true;
+    const seq = ++marketplaceSeq.current;
+    try {
+      const bookings = await fetchAllBookings();
+      if (!isMounted() || seq !== marketplaceSeq.current) return;
+      setMarketplaceQueue(
+        bookings.filter((b) => b.status === "accepted").map(bookingToQueueItem),
+      );
+      setMarketplaceError(false);
+    } catch {
+      // Keep the previous rows: an outage is not "no marketplace bookings".
+      if (isMounted() && seq === marketplaceSeq.current) setMarketplaceError(true);
+    } finally {
+      marketplaceInFlight.current = false;
+    }
   }, []);
 
   useEffect(() => {
-    void refreshMarketplaceQueue();
-    const id = setInterval(() => void refreshMarketplaceQueue(), 30_000);
-    return () => clearInterval(id);
+    let mounted = true;
+    const isMounted = () => mounted;
+    void refreshMarketplaceQueue(isMounted);
+    const id = setInterval(() => void refreshMarketplaceQueue(isMounted), 30_000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
   }, [refreshMarketplaceQueue]);
 
   useEffect(() => {
@@ -590,6 +610,12 @@ function DispatchPageInner() {
              queueFilter === "dispatched" ? "Dispatched" :
              "All Shipments"} · {mergedQueue.length}
           </span>
+
+          {marketplaceError && (
+            <p role="alert" className="rounded-md border border-red-signal/40 bg-red-surface px-3 py-2 text-xs text-red-signal">
+              Marketplace bookings could not be refreshed; the list may be out of date.
+            </p>
+          )}
 
           {mergedQueue.length === 0 && !loading && (
             <p className="text-xs font-mono text-white/25 text-center py-4">

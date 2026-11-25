@@ -177,6 +177,8 @@ function AdminMarketplacePageInner() {
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
   const [stats, setStats]       = useState<MarketplaceStats | null>(null);
   const [loading, setLoading]   = useState(true);
+  // A failed refresh keeps the last good lists and flags the outage; the next success clears it.
+  const [loadError, setLoadError] = useState(false);
 
   // Oversight view — read-only receipt rendered from the booking itself.
   const [receiptBooking, setReceiptBooking] = useState<AdminBooking | null>(null);
@@ -191,15 +193,21 @@ function AdminMarketplacePageInner() {
   );
 
   const refresh = useCallback(async () => {
-    const [l, b, s] = await Promise.all([
-      fetchAllListings(),
-      fetchAllBookings(),
-      fetchMarketplaceStats(),
-    ]);
-    setListings(l);
-    setBookings(b);
-    setStats(s);
-    setLoading(false);
+    try {
+      const [l, b, s] = await Promise.all([
+        fetchAllListings(),
+        fetchAllBookings(),
+        fetchMarketplaceStats(),
+      ]);
+      setListings(l);
+      setBookings(b);
+      setStats(s);
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -464,6 +472,17 @@ function AdminMarketplacePageInner() {
           listings but no online drivers. See ADR-0014 — this view is what
           the real marketplace service will replace in Phase 2. */}
       {tab === "listings" && <ShadowMarketplacePanel listings={listings} />}
+
+      {loadError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-signal/40 bg-red-surface px-4 py-2.5 text-xs text-red-signal"
+        >
+          Could not load marketplace data. {bookings.length > 0 || listings.length > 0
+            ? "Showing the last data received; retrying automatically."
+            : "Retrying automatically."}
+        </div>
+      )}
 
       {/* ── Content ───────────────────────────────────────────────────────── */}
       {tab === "listings" ? (

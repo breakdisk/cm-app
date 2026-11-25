@@ -126,6 +126,13 @@ async function apiGet<T>(path: string): Promise<T | null> {
   }
 }
 
+/** Like `apiGet` but a failure throws, so callers can tell "outage" from "empty". */
+async function apiGetStrict<T>(path: string): Promise<T> {
+  const res = await authFetch(`${API_BASE}${path}`);
+  if (!res.ok) throw new Error(`GET ${path} failed (HTTP ${res.status})`);
+  return (await res.json()) as T;
+}
+
 // ── Projection helpers ────────────────────────────────────────────────────────
 
 function apiListingToAdmin(l: ApiListing): AdminListing {
@@ -167,11 +174,11 @@ export async function fetchAllListings(): Promise<AdminListing[]> {
   return raw.map(apiListingToAdmin);
 }
 
+/** Throws on any failure: an empty array always means the tenant has no bookings. */
 export async function fetchAllBookings(): Promise<AdminBooking[]> {
-  const json = await apiGet<{ bookings?: MarketplaceBooking[] } | MarketplaceBooking[]>(
+  const json = await apiGetStrict<{ bookings?: MarketplaceBooking[] } | MarketplaceBooking[]>(
     "/v1/marketplace/bookings",
   );
-  if (!json) return [];
   const raw = Array.isArray(json) ? json : (json.bookings ?? []);
   return raw
     .map(bookingToAdmin)
