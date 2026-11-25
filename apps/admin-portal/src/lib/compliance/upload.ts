@@ -55,3 +55,14 @@ export function readFileAsBase64(file: Blob): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * Where Tab / Shift+Tab should land inside a focus trap of `count` focusable
+ * elements, given the index of the currently focused one (-1 when focus is
+ * outside the trap). Wraps at both ends. `null` when there is nothing to focus.
+ */
+export function nextFocusIndex(current: number, count: number, shift: boolean): number | null {
+  if (count <= 0) return null;
+  if (current < 0 || current >= count) return shift ? count - 1 : 0;
+  return shift ? (current - 1 + count) % count : (current + 1) % count;
+}

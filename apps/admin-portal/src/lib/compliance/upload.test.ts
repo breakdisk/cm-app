@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
-import { MAX_UPLOAD_BYTES, stripDataUrlPrefix, validateUploadFile } from "./upload";
+import { MAX_UPLOAD_BYTES, nextFocusIndex, stripDataUrlPrefix, validateUploadFile } from "./upload";
 
 describe("stripDataUrlPrefix", () => {
   it("removes the data: header and keeps the payload", () => {
@@ -37,5 +37,26 @@ describe("validateUploadFile", () => {
 
   it.each(["image/jpeg", "image/png", "image/webp", "application/pdf"])("accepts %s", (type) => {
     expect(validateUploadFile({ size: 10, type })).toBeNull();
+  });
+});
+
+describe("nextFocusIndex", () => {
+  it("moves forward and wraps from last to first", () => {
+    expect(nextFocusIndex(0, 3, false)).toBe(1);
+    expect(nextFocusIndex(2, 3, false)).toBe(0);
+  });
+
+  it("moves backward and wraps from first to last", () => {
+    expect(nextFocusIndex(2, 3, true)).toBe(1);
+    expect(nextFocusIndex(0, 3, true)).toBe(2);
+  });
+
+  it("pulls focus in from outside the trap", () => {
+    expect(nextFocusIndex(-1, 3, false)).toBe(0);
+    expect(nextFocusIndex(-1, 3, true)).toBe(2);
+  });
+
+  it("returns null when nothing is focusable", () => {
+    expect(nextFocusIndex(-1, 0, false)).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchProfile, fetchDocumentBlobUrl, isStoredObject } from "@/lib/api/compliance";
 import type { DriverDocument } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
@@ -74,8 +74,14 @@ export function DocumentDetailPanel({
   /** Bumped after an upload so the panel re-fetches without the parent's help. */
   const [localRefresh,    setLocalRefresh]    = useState(0);
 
+  const loadedProfileRef = useRef<string | null>(null);
+
   useEffect(() => {
-    setDetail(null);
+    // After an upload the panel refreshes in place: blanking it would unmount
+    // the "Upload document" trigger and lose the focus the modal returns to.
+    const sameProfile = loadedProfileRef.current === profileId;
+    loadedProfileRef.current = profileId;
+    if (!sameProfile) setDetail(null);
     // Object URLs are held by the document, not the page. Release them when
     // the panel switches profiles, or one courier's licence stays resident in
     // memory behind another courier's row for as long as the tab is open.

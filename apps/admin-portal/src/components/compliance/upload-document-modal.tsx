@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Loader2, Upload, X } from "lucide-react";
 import { fetchDocumentTypes, uploadDocumentOnBehalf } from "@/lib/api/compliance";
@@ -7,6 +7,7 @@ import type { DocumentType } from "@/lib/api/compliance";
 import {
   ACCEPTED_CONTENT_TYPES,
   MAX_DOCUMENT_NUMBER_LENGTH,
+  nextFocusIndex,
   readFileAsBase64,
   validateUploadFile,
 } from "@/lib/compliance/upload";
@@ -20,6 +21,8 @@ interface Props {
 
 const INPUT =
   "w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-sm text-white placeholder:text-white/25 outline-none focus:border-cyan-glow/50";
+const FOCUSABLE =
+  'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
 const LABEL = "text-[11px] uppercase tracking-wider text-white/40";
 
 /**
@@ -38,6 +41,43 @@ export function UploadDocumentModal({ profileId, onClose, onUploaded }: Props) {
   const [fileErr,   setFileErr]   = useState<string | null>(null);
   const [busy,      setBusy]      = useState(false);
   const [error,     setError]     = useState<string | null>(null);
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const firstFieldRef = useRef<HTMLSelectElement>(null);
+  // Latest busy/onClose for the document-level key handler without re-binding it.
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Focus management: remember the trigger, move focus in, restore on close.
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    firstFieldRef.current?.focus();
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        if (busyRef.current) return;
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const root = dialogRef.current;
+      if (!root) return;
+      const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (el) => !(el as HTMLButtonElement).disabled,
+      );
+      const next = nextFocusIndex(items.indexOf(document.activeElement as HTMLElement), items.length, e.shiftKey);
+      e.preventDefault();
+      if (next !== null) items[next].focus();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      trigger?.focus();
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -91,9 +131,10 @@ export function UploadDocumentModal({ profileId, onClose, onUploaded }: Props) {
     >
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <motion.div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Upload document"
+        aria-labelledby="upl-title"
         initial={{ opacity: 0, scale: 0.95, y: 12 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: "spring", damping: 26, stiffness: 300 }}
@@ -103,7 +144,7 @@ export function UploadDocumentModal({ profileId, onClose, onUploaded }: Props) {
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-3.5">
           <div className="flex items-center gap-2">
             <Upload size={15} className="text-cyan-400" />
-            <h2 className="text-base font-bold text-white">Upload document</h2>
+            <h2 id="upl-title" className="text-base font-bold text-white">Upload document</h2>
           </div>
           <button
             onClick={onClose}
@@ -120,6 +161,7 @@ export function UploadDocumentModal({ profileId, onClose, onUploaded }: Props) {
             <label htmlFor="upl-type" className={LABEL}>Document type</label>
             <select
               id="upl-type"
+              ref={firstFieldRef}
               value={typeId}
               onChange={(e) => setTypeId(e.target.value)}
               disabled={busy}
