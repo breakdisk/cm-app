@@ -58,6 +58,37 @@ pub struct Config {
     /// with no payment config must still boot and take cash bookings.
     #[serde(default)]
     pub quote_token_secret: Option<String>,
+    /// Delivery-deadline settings, `SLA__*`.
+    #[serde(default)]
+    pub sla: SlaConfig,
+}
+
+/// `SLA__UTC_OFFSET_HOURS` (default 8) is the fixed offset whose midnight ends an
+/// SLA day; `SLA__SWEEP_SECS` (default 300) is the breach sweep interval.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SlaConfig {
+    #[serde(default = "default_sla_offset_hours")]
+    pub utc_offset_hours: i32,
+    #[serde(default = "default_sla_sweep_secs")]
+    pub sweep_secs: u64,
+}
+
+fn default_sla_offset_hours() -> i32 { 8 }
+fn default_sla_sweep_secs() -> u64 { 300 }
+
+impl Default for SlaConfig {
+    fn default() -> Self {
+        Self { utc_offset_hours: default_sla_offset_hours(), sweep_secs: default_sla_sweep_secs() }
+    }
+}
+
+impl SlaConfig {
+    /// The configured offset; an out-of-range value falls back to +08:00.
+    pub fn offset(&self) -> chrono::FixedOffset {
+        chrono::FixedOffset::east_opt(self.utc_offset_hours.saturating_mul(3600))
+            .or_else(|| chrono::FixedOffset::east_opt(8 * 3600))
+            .unwrap_or_else(|| chrono::Offset::fix(&chrono::Utc))
+    }
 }
 
 /// The three fields required for the "pay online at booking" capability,
@@ -382,6 +413,7 @@ mod config_tests {
             payments: Some(PaymentsConfig { url: "http://payments:8012".into() }),
             // quote_token_secret deliberately missing — two of three set.
             quote_token_secret: None,
+            sla: Default::default(),
         };
 
         let missing = cfg.payment_config().expect_err("two of three set must still be disabled");
@@ -410,6 +442,7 @@ mod config_tests {
             mapbox: MapboxConfig::default(),
             payments: Some(PaymentsConfig { url: "http://payments:8012".into() }),
             quote_token_secret: Some("shh".into()),
+            sla: Default::default(),
         };
 
         let enabled = cfg.payment_config().expect("all three set must enable the capability");

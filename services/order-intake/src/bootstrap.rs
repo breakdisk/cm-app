@@ -199,6 +199,7 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
+    let publisher_for_sla: Arc<dyn crate::application::services::shipment_service::EventPublisher> = publisher.clone();
     let svc = Arc::new(
         ShipmentService::new(
             repo.clone(),
@@ -213,6 +214,7 @@ pub async fn run() -> anyhow::Result<()> {
         .with_promotions(promotions)
         .with_router(road_router(cfg.geocoder.mapbox_access_token.as_deref()))
         .with_home_rates(cfg.home_move.clone())
+        .with_sla_offset(cfg.sla.offset())
         .with_home_teams(
             crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(
                 cfg.services.driver_ops_url.clone().filter(|u| !u.trim().is_empty()),
@@ -227,6 +229,8 @@ pub async fn run() -> anyhow::Result<()> {
         tracing::info!("whole-home moves disabled — HOME_MOVE__TRIP_CENTS unset");
     }
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
+    // Delivery-deadline breaches: mark and publish so SlaBreach rules can fire.
+    tokio::spawn(crate::infrastructure::sla_sweep::run(pool.clone(), publisher_for_sla, cfg.sla.sweep_secs));
     let pool_for_dims = pool.clone();
 
     // Spawn Kafka payment consumer — closes the loop `create()` opens when a
