@@ -256,6 +256,34 @@ pub async fn run() -> anyhow::Result<()> {
             }
         });
     }
+
+    // Overdue sweep: issued -> overdue once past due, then one
+    // `invoice.overdue` event per whole day overdue (feeds business-logic's
+    // PaymentOverdue rule). Nothing else ever moved an invoice to overdue.
+    {
+        let sweep = crate::application::services::OverdueSweep::new(
+            Arc::clone(&invoice_repo) as _,
+            Arc::new(crate::application::services::overdue_sweep::KafkaOverdueNotifier(Arc::clone(&kafka))),
+        );
+        // `interval` panics on a zero period; treat 0 as the smallest legal value.
+        let secs = cfg.payments.overdue_sweep_secs.max(1);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs));
+            loop {
+                tick.tick().await;
+                match sweep.run_once(chrono::Utc::now()).await {
+                    Ok(o) if o.moved_to_overdue > 0 || o.notified > 0 || o.publish_failed > 0 => {
+                        tracing::info!(
+                            moved = o.moved_to_overdue, notified = o.notified,
+                            publish_failed = o.publish_failed, "overdue sweep"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(err = %e, "overdue sweep failed"),
+                }
+            }
+        });
+    }
     let app = router(state);
 
     // Monthly merchant billing cron — runs on the 1st of each month and issues

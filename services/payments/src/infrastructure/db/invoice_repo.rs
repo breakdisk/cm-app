@@ -184,7 +184,7 @@ impl InvoiceRepository for PgInvoiceRepository {
         let row = sqlx::query_as::<_, InvoiceRow>(
             &format!(
                 "{SELECT} WHERE tenant_id = $1 AND merchant_id = $2
-                  AND status = 'issued'
+                  AND status IN ('issued', 'overdue')
                   AND invoice_type = 'shipment_charges'
                  ORDER BY issued_at DESC LIMIT 1"
             ),
@@ -204,12 +204,15 @@ impl InvoiceRepository for PgInvoiceRepository {
             return Ok(vec![]);
         }
         // Returns (shipment_id, invoice_id) for any per-shipment invoice that is
-        // still outstanding (draft or issued — not yet paid/voided/cancelled).
+        // still outstanding (draft, issued or overdue — not yet paid/voided/
+        // cancelled). `overdue` MUST count: the overdue sweep moves unpaid
+        // invoices there, and dropping them would open the billing clearance
+        // gate on exactly the shipments whose bill is latest.
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT shipment_id, id
                FROM payments.invoices
               WHERE shipment_id = ANY($1)
-                AND status IN ('draft', 'issued')"
+                AND status IN ('draft', 'issued', 'overdue')"
         )
         .bind(shipment_ids)
         .fetch_all(&self.pool)
@@ -261,5 +264,83 @@ impl InvoiceRepository for PgInvoiceRepository {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+// ── Overdue sweep persistence ─────────────────────────────────────────────────
+
+#[derive(sqlx::FromRow)]
+struct OverdueNoticeRow {
+    #[sqlx(flatten)]
+    invoice:               InvoiceRow,
+    overdue_days_notified: i32,
+}
+
+#[async_trait]
+impl crate::application::services::overdue_sweep::OverdueStore for PgInvoiceRepository {
+    async fn mark_issued_past_due(
+        &self,
+        now:   chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> anyhow::Result<u64> {
+        // Same rule as `Invoice::is_past_due`: status issued, due_at strictly
+        // before now. The outer `status = 'issued'` guards a concurrent
+        // payment landing between the subselect and the update.
+        let res = sqlx::query(
+            "UPDATE payments.invoices
+                SET status = 'overdue', updated_at = $1
+              WHERE status = 'issued'
+                AND id IN (SELECT id FROM payments.invoices
+                            WHERE status = 'issued' AND due_at < $1
+                            ORDER BY due_at
+                            LIMIT $2)",
+        )
+        .bind(now)
+        .bind(limit)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    async fn list_overdue_awaiting_notice(
+        &self,
+        now:   chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<(Invoice, i32)>> {
+        // FLOOR(days) in SQL only *selects* candidates; the number that is
+        // published is recomputed in Rust (`days_overdue`) from the same `now`.
+        let rows = sqlx::query_as::<_, OverdueNoticeRow>(
+            "SELECT id, invoice_number, invoice_type, tenant_id, merchant_id,
+                    customer_id, billing_start, billing_end, status, line_items,
+                    adjustments, currency, issued_at, due_at, paid_at, created_at,
+                    updated_at, overdue_days_notified
+               FROM payments.invoices
+              WHERE status = 'overdue'
+                AND overdue_days_notified <
+                    FLOOR(EXTRACT(EPOCH FROM ($1 - due_at)) / 86400)::int
+              ORDER BY due_at
+              LIMIT $2",
+        )
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| (Invoice::from(r.invoice), r.overdue_days_notified)).collect())
+    }
+
+    async fn set_notified_days(&self, id: Uuid, expected: i32, new: i32) -> anyhow::Result<bool> {
+        // Compare-and-set: applies for exactly one sweeper. Also used, with the
+        // arguments swapped, to put a claim back.
+        let res = sqlx::query(
+            "UPDATE payments.invoices
+                SET overdue_days_notified = $3
+              WHERE id = $1 AND overdue_days_notified = $2",
+        )
+        .bind(id)
+        .bind(expected)
+        .bind(new)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() == 1)
     }
 }
