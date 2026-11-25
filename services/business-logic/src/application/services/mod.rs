@@ -64,7 +64,9 @@ impl RuleRepository {
     }
 
     /// Get active rules matching a Kafka topic, ordered by priority (lower = higher priority).
-    pub async fn rules_for_topic(&self, tenant_id: Uuid, topic: &str) -> Vec<AutomationRule> {
+    /// `data` is the event's business payload (the envelope's `data`, already unwrapped);
+    /// threshold triggers inspect it to decide whether the event is a crossing.
+    pub async fn rules_for_topic(&self, tenant_id: Uuid, topic: &str, data: &Value) -> Vec<AutomationRule> {
         let _event_type = topic_to_event_type(topic);
         let rules = self.rules.read().await;
         let mut matching: Vec<AutomationRule> = rules
@@ -72,7 +74,7 @@ impl RuleRepository {
             .filter(|r| {
                 r.is_active
                     && (r.tenant_id == Uuid::nil() || r.tenant_id == tenant_id)
-                    && trigger_matches_topic(&r.trigger, topic)
+                    && trigger_matches(&r.trigger, topic, data)
             })
             .cloned()
             .collect();
@@ -87,20 +89,53 @@ impl RuleRepository {
     }
 }
 
-/// Determines if a rule trigger matches an incoming Kafka topic.
-fn trigger_matches_topic(trigger: &RuleTrigger, topic: &str) -> bool {
-    matches!(
-        (trigger, topic),
-        (RuleTrigger::DeliveryFailed,        "logisticos.driver.delivery.failed")
-        | (RuleTrigger::DeliveryCompleted,   "logisticos.driver.delivery.completed")
-        | (RuleTrigger::ShipmentCreated,     "logisticos.order.shipment.created")
-        | (RuleTrigger::ShipmentRescheduled, "logisticos.order.shipment.rescheduled")
-        | (RuleTrigger::PickupCompleted,     "logisticos.driver.pickup.completed")
-        | (RuleTrigger::CodCollected,        "logisticos.payments.cod.collected")
-        | (RuleTrigger::PaymentReceived,     "logisticos.payments.payment.received")
-        | (RuleTrigger::DeliveryAttempted { .. }, "logisticos.driver.delivery.attempted")
-        | (RuleTrigger::CampaignTriggered { .. }, "logisticos.marketing.campaign.triggered")
-    )
+/// Determines if a rule trigger matches an incoming Kafka event.
+///
+/// Most triggers match on the topic alone. The threshold triggers
+/// (`HubCapacityExceeded`, `PaymentOverdue`, `SlaBreach`) also inspect `data`
+/// and fire only on a *crossing*, so a hub that stays above its threshold does
+/// not re-fire on every load change. A missing or ill-typed field is a non-match.
+pub fn trigger_matches(trigger: &RuleTrigger, topic: &str, data: &Value) -> bool {
+    use logisticos_events::topics;
+
+    let int = |key: &str| data.get(key).and_then(Value::as_i64);
+
+    match trigger {
+        RuleTrigger::HubCapacityExceeded { threshold_pct } if topic == topics::HUB_LOAD_CHANGED => {
+            let (Some(capacity), Some(previous), Some(current)) =
+                (int("capacity"), int("previous_load"), int("current_load"))
+            else {
+                return false;
+            };
+            // Integer math, widened to i64: no float rounding at the boundary.
+            let threshold = i64::from(*threshold_pct) * capacity;
+            capacity > 0 && previous * 100 < threshold && current * 100 >= threshold
+        }
+        RuleTrigger::PaymentOverdue { days } if topic == topics::INVOICE_OVERDUE => {
+            let (Some(previous), Some(current)) = (int("previous_days_overdue"), int("days_overdue"))
+            else {
+                return false;
+            };
+            let days = i64::from(*days);
+            previous < days && current >= days
+        }
+        RuleTrigger::SlaBreach { sla_type } if topic == topics::SHIPMENT_SLA_BREACHED => data
+            .get("sla_type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.eq_ignore_ascii_case(sla_type)),
+        _ => matches!(
+            (trigger, topic),
+            (RuleTrigger::DeliveryFailed,        "logisticos.driver.delivery.failed")
+            | (RuleTrigger::DeliveryCompleted,   "logisticos.driver.delivery.completed")
+            | (RuleTrigger::ShipmentCreated,     "logisticos.order.shipment.created")
+            | (RuleTrigger::ShipmentRescheduled, "logisticos.order.shipment.rescheduled")
+            | (RuleTrigger::PickupCompleted,     "logisticos.driver.pickup.completed")
+            | (RuleTrigger::CodCollected,        "logisticos.payments.cod.collected")
+            | (RuleTrigger::PaymentReceived,     "logisticos.payments.payment.received")
+            | (RuleTrigger::DeliveryAttempted { .. }, "logisticos.driver.delivery.attempted")
+            | (RuleTrigger::CampaignTriggered { .. }, "logisticos.marketing.campaign.triggered")
+        ),
+    }
 }
 
 fn topic_to_event_type(topic: &str) -> String {
@@ -253,4 +288,98 @@ pub async fn execute_actions(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use logisticos_events::topics;
+    use serde_json::json;
+
+    fn hub(threshold_pct: u8, data: Value) -> bool {
+        trigger_matches(&RuleTrigger::HubCapacityExceeded { threshold_pct }, topics::HUB_LOAD_CHANGED, &data)
+    }
+
+    #[test]
+    fn hub_capacity_upward_crossing_only() {
+        // 79 -> 80 of 100 at an 80% threshold: crossing.
+        assert!(hub(80, json!({"capacity": 100, "previous_load": 79, "current_load": 80})));
+        // Below the threshold.
+        assert!(!hub(80, json!({"capacity": 100, "previous_load": 50, "current_load": 79})));
+        // Already above: no re-fire.
+        assert!(!hub(80, json!({"capacity": 100, "previous_load": 85, "current_load": 90})));
+        // Downward crossing is not an exceed.
+        assert!(!hub(80, json!({"capacity": 100, "previous_load": 90, "current_load": 70})));
+        // Zero capacity never matches.
+        assert!(!hub(80, json!({"capacity": 0, "previous_load": 0, "current_load": 5})));
+    }
+
+    #[test]
+    fn hub_capacity_missing_or_ill_typed_field_is_false() {
+        assert!(!hub(80, json!({"capacity": 100, "previous_load": 79})));
+        assert!(!hub(80, json!({"capacity": "100", "previous_load": 79, "current_load": 80})));
+        assert!(!hub(80, json!({})));
+    }
+
+    #[test]
+    fn hub_capacity_wrong_topic_is_false() {
+        let t = RuleTrigger::HubCapacityExceeded { threshold_pct: 80 };
+        let d = json!({"capacity": 100, "previous_load": 79, "current_load": 80});
+        assert!(!trigger_matches(&t, topics::INVOICE_OVERDUE, &d));
+    }
+
+    fn overdue(days: u32, data: Value) -> bool {
+        trigger_matches(&RuleTrigger::PaymentOverdue { days }, topics::INVOICE_OVERDUE, &data)
+    }
+
+    #[test]
+    fn payment_overdue_crossing_only() {
+        assert!(overdue(7, json!({"previous_days_overdue": 6, "days_overdue": 7})));
+        assert!(!overdue(7, json!({"previous_days_overdue": 5, "days_overdue": 6})));
+        assert!(!overdue(7, json!({"previous_days_overdue": 7, "days_overdue": 8})));
+        assert!(!overdue(7, json!({"days_overdue": 7})));
+        assert!(!overdue(7, json!({"previous_days_overdue": "6", "days_overdue": 7})));
+    }
+
+    fn sla(kind: &str, data: Value) -> bool {
+        trigger_matches(&RuleTrigger::SlaBreach { sla_type: kind.into() }, topics::SHIPMENT_SLA_BREACHED, &data)
+    }
+
+    #[test]
+    fn sla_breach_matches_type_case_insensitively() {
+        assert!(sla("delivery", json!({"sla_type": "delivery"})));
+        assert!(sla("Delivery", json!({"sla_type": "DELIVERY"})));
+        assert!(!sla("delivery", json!({"sla_type": "pickup"})));
+        assert!(!sla("delivery", json!({})));
+        assert!(!sla("delivery", json!({"sla_type": 3})));
+    }
+
+    #[tokio::test]
+    async fn existing_arm_matches_envelope_data_and_context_reads_data() {
+        let tenant = Uuid::new_v4();
+        let shipment = Uuid::new_v4();
+        let rule = AutomationRule {
+            id: Uuid::new_v4(),
+            tenant_id: tenant,
+            name: "failed".into(),
+            description: String::new(),
+            is_active: true,
+            priority: 1,
+            trigger: RuleTrigger::DeliveryFailed,
+            conditions: vec![],
+            actions: vec![],
+            created_at: chrono::Utc::now(),
+        };
+        let repo = RuleRepository::new(vec![rule]);
+        let envelope = json!({
+            "tenant_id": tenant, "source": "driver-ops",
+            "data": {"shipment_id": shipment, "driver_id": Uuid::new_v4()}
+        });
+        let (t, data) = crate::bootstrap::decode_event(None, &envelope).expect("decodes");
+        let hits = repo.rules_for_topic(t, topics::DELIVERY_FAILED, &data).await;
+        assert_eq!(hits.len(), 1);
+        let ctx = build_context(t, topics::DELIVERY_FAILED, &data);
+        assert_eq!(ctx.shipment_id, Some(shipment));
+        assert!(ctx.driver_id.is_some());
+    }
 }

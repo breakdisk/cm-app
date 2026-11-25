@@ -271,6 +271,12 @@ create_topic "logisticos.order.home.notice"
 create_topic "logisticos.identity.otp.requested"
 create_topic "logisticos.identity.tenant.finalized"
 
+# Threshold signals consumed by business-logic triggers (HubCapacityExceeded,
+# PaymentOverdue, SlaBreach). Published by hub-ops, payments, order-intake.
+create_topic "logisticos.hub.load.changed"
+create_topic "logisticos.payments.invoice.overdue"
+create_topic "logisticos.order.shipment.sla_breached"
+
 echo ""
 echo "=== Done. Verify with: ==="
 echo "docker exec $KAFKA_CONTAINER $KAFKA_BIN --bootstrap-server localhost:9092 --list"

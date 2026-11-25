@@ -318,6 +318,10 @@ pub async fn run() -> anyhow::Result<()> {
         "logisticos.payments.cod.collected",
         "logisticos.payments.payment.received",
         "logisticos.marketing.campaign.triggered",
+        // Threshold signals: HubCapacityExceeded, PaymentOverdue, SlaBreach.
+        "logisticos.hub.load.changed",
+        "logisticos.payments.invoice.overdue",
+        "logisticos.order.shipment.sla_breached",
     ])?;
 
     // HTTP server: health + rules CRUD API.
@@ -359,38 +363,47 @@ async fn run_consumer(
     loop {
         match consumer.recv().await {
             Ok(msg) => {
-                let tenant_id = extract_tenant_id(&msg).unwrap_or(Uuid::nil());
+                let header_tenant = extract_tenant_id(&msg);
                 let topic = msg.topic().to_owned();
 
                 if let Some(payload) = msg.payload() {
                     if let Ok(json) = serde_json::from_slice::<Value>(payload) {
-                        let matching_rules = rules.rules_for_topic(tenant_id, &topic).await;
-                        let mut ctx = build_context(tenant_id, &topic, &json);
-                        enrich_segments(&mut ctx, &matching_rules, seg_checker.as_ref()).await;
+                        match decode_event(header_tenant, &json) {
+                            None => {
+                                // Never evaluate rules against a nil tenant: it would
+                                // match platform rules for a tenant we cannot name.
+                                tracing::warn!(topic = %topic, "Event has no determinable tenant — skipped");
+                            }
+                            Some((tenant_id, data)) => {
+                                let matching_rules = rules.rules_for_topic(tenant_id, &topic, &data).await;
+                                let mut ctx = build_context(tenant_id, &topic, &data);
+                                enrich_segments(&mut ctx, &matching_rules, seg_checker.as_ref()).await;
 
-                        for rule in &matching_rules {
-                            if rule.conditions_met(&ctx) {
-                                tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
+                                for rule in &matching_rules {
+                                    if rule.conditions_met(&ctx) {
+                                        tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
 
-                                let outcome = match execute_actions(rule, &ctx, executor.as_ref()).await {
-                                    Ok(()) => "success",
-                                    Err(e) => {
-                                        tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
-                                        "error"
+                                        let outcome = match execute_actions(rule, &ctx, executor.as_ref()).await {
+                                            Ok(()) => "success",
+                                            Err(e) => {
+                                                tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
+                                                "error"
+                                            }
+                                        };
+
+                                        pg_repo.log_execution(
+                                            rule.id,
+                                            ctx.tenant_id,
+                                            &topic,
+                                            ctx.shipment_id,
+                                            true,
+                                            &rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>(),
+                                            outcome,
+                                            None,
+                                            chrono::Utc::now(),
+                                        ).await.ok();
                                     }
-                                };
-
-                                pg_repo.log_execution(
-                                    rule.id,
-                                    ctx.tenant_id,
-                                    &topic,
-                                    ctx.shipment_id,
-                                    true,
-                                    &rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>(),
-                                    outcome,
-                                    None,
-                                    chrono::Utc::now(),
-                                ).await.ok();
+                                }
                             }
                         }
                     }
@@ -404,6 +417,29 @@ async fn run_consumer(
             }
         }
     }
+}
+
+/// Split a Kafka message body into `(tenant, business data)`.
+///
+/// Every `libs/events` publisher sends the envelope
+/// `{ id, source, event_type, time, tenant_id, data }` and sets no Kafka headers;
+/// a few producers send a flat object, optionally with a `tenant_id` header.
+/// - Envelope form (object `data` plus uuid-string `tenant_id`): tenant is the
+///   envelope's, data is `payload["data"]`.
+/// - Flat form: tenant is the header, else the payload's own `tenant_id`; data is
+///   the payload itself.
+/// - No tenant determinable: `None`.
+pub fn decode_event(headers_tenant: Option<Uuid>, payload: &Value) -> Option<(Uuid, Value)> {
+    let body_tenant = payload
+        .get("tenant_id")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<Uuid>().ok());
+
+    if let (Some(tenant), Some(data)) = (body_tenant, payload.get("data").filter(|d| d.is_object())) {
+        return Some((tenant, data.clone()));
+    }
+
+    headers_tenant.or(body_tenant).map(|tenant| (tenant, payload.clone()))
 }
 
 fn extract_tenant_id(msg: &rdkafka::message::BorrowedMessage<'_>) -> Option<Uuid> {
@@ -537,4 +573,50 @@ async fn check_inactive_customers(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_event;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn envelope_form_uses_envelope_tenant_and_data() {
+        let tenant = Uuid::new_v4();
+        let shipment = Uuid::new_v4();
+        let payload = json!({
+            "id": Uuid::new_v4(), "source": "driver-ops", "event_type": "delivery.failed",
+            "time": "2026-11-25T00:00:00Z", "tenant_id": tenant,
+            "data": {"shipment_id": shipment}
+        });
+        // The header, if any, never overrides the envelope.
+        let (t, data) = decode_event(Some(Uuid::new_v4()), &payload).expect("decodes");
+        assert_eq!(t, tenant);
+        assert_eq!(data, json!({"shipment_id": shipment}));
+    }
+
+    #[test]
+    fn flat_form_uses_header_tenant() {
+        let tenant = Uuid::new_v4();
+        let payload = json!({"shipment_id": "x"});
+        let (t, data) = decode_event(Some(tenant), &payload).expect("decodes");
+        assert_eq!(t, tenant);
+        assert_eq!(data, payload);
+    }
+
+    #[test]
+    fn flat_form_falls_back_to_body_tenant() {
+        let tenant = Uuid::new_v4();
+        let payload = json!({"tenant_id": tenant, "campaign_id": "c"});
+        let (t, data) = decode_event(None, &payload).expect("decodes");
+        assert_eq!(t, tenant);
+        assert_eq!(data, payload);
+    }
+
+    #[test]
+    fn no_tenant_is_none() {
+        assert!(decode_event(None, &json!({"shipment_id": "x"})).is_none());
+        assert!(decode_event(None, &json!({"tenant_id": "not-a-uuid", "data": {}})).is_none());
+    }
 }
