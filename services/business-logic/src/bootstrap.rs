@@ -289,6 +289,8 @@ pub async fn run() -> anyhow::Result<()> {
         .create()?;
 
     let cdp_url = std::env::var("CDP_URL").unwrap_or_else(|_| "http://cdp:8005".into());
+    let driver_ops_url = std::env::var("SERVICES__DRIVER_OPS_URL").unwrap_or_else(|_| "http://driver-ops:8006".into());
+    let idle_poll_secs = parse_idle_poll_secs(std::env::var("BUSINESS_LOGIC__IDLE_POLL_SECS").ok().as_deref());
     let executor = Arc::new(HttpActionExecutor {
         http:           reqwest::Client::new(),
         engagement_url: std::env::var("ENGAGEMENT_URL").unwrap_or_else(|_| "http://engagement:8010".into()),
@@ -347,7 +349,8 @@ pub async fn run() -> anyhow::Result<()> {
             result?;
         }
         _ = run_consumer(Arc::clone(&consumer), Arc::clone(&rule_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&pg_repo), Arc::clone(&seg_checker)) => {}
-        _ = run_inactive_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, seg_checker, cdp_url) => {}
+        _ = run_inactive_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&seg_checker), cdp_url) => {}
+        _ = run_idle_driver_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, seg_checker, driver_ops_url, idle_poll_secs) => {}
     }
 
     Ok(())
@@ -575,9 +578,211 @@ async fn check_inactive_customers(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// DriverIdleExceeded periodic poller
+//
+// Idle is the absence of events, so it is polled. Each tick asks driver-ops which
+// drivers crossed each rule's threshold since the previous tick (the crossing
+// window equals the poll interval), then runs the rule exactly like the Kafka
+// path, including the execution log.
+// ---------------------------------------------------------------------------
+
+const IDLE_TOPIC: &str = "logisticos.driver.idle_exceeded";
+const DEFAULT_IDLE_POLL_SECS: u64 = 60;
+
+/// `BUSINESS_LOGIC__IDLE_POLL_SECS`: default 60; 0 or unparsable falls back to 60.
+/// The value is also driver-ops' `window_secs` (accepts 30..=3600), so clamp it:
+/// a configured value must never turn every poll into a 400.
+fn parse_idle_poll_secs(raw: Option<&str>) -> u64 {
+    match raw {
+        None => DEFAULT_IDLE_POLL_SECS,
+        Some(v) => match v.trim().parse::<u64>() {
+            Ok(n) if n > 0 => n.clamp(30, 3600),
+            _ => {
+                tracing::warn!(value = v, "invalid BUSINESS_LOGIC__IDLE_POLL_SECS; using 60");
+                DEFAULT_IDLE_POLL_SECS
+            }
+        },
+    }
+}
+
+type IdleGroups = std::collections::HashMap<(Uuid, u32), Vec<crate::domain::entities::rule::AutomationRule>>;
+
+/// Group active `DriverIdleExceeded` rules by (tenant, minutes). Returns the
+/// groups and how many global (nil-tenant) rules were skipped.
+fn group_idle_rules(rules: Vec<crate::domain::entities::rule::AutomationRule>) -> (IdleGroups, usize) {
+    use crate::domain::entities::rule::RuleTrigger;
+    let mut groups = IdleGroups::new();
+    let mut skipped = 0;
+    for rule in rules.into_iter().filter(|r| r.is_active) {
+        if let RuleTrigger::DriverIdleExceeded { minutes } = &rule.trigger {
+            if rule.tenant_id == Uuid::nil() {
+                skipped += 1;
+                continue;
+            }
+            groups.entry((rule.tenant_id, *minutes)).or_default().push(rule);
+        }
+    }
+    (groups, skipped)
+}
+
+async fn run_idle_driver_checker(
+    pg_repo:        Arc<PgRuleRepository>,
+    executor:       Arc<dyn ActionExecutor>,
+    seg_checker:    Arc<dyn SegmentChecker>,
+    driver_ops_url: String,
+    poll_secs:      u64,
+) {
+    use tokio::time::{interval, Duration};
+    let mut ticker = interval(Duration::from_secs(poll_secs));
+    let http = reqwest::Client::new();
+    let mut warned_global = false;
+    loop {
+        ticker.tick().await;
+        if let Err(e) = check_idle_drivers(
+            pg_repo.as_ref(), executor.as_ref(), seg_checker.as_ref(), &http, &driver_ops_url,
+            poll_secs, &mut warned_global,
+        ).await {
+            tracing::warn!(err = %e, "DriverIdleExceeded checker: cycle error");
+        }
+    }
+}
+
+async fn check_idle_drivers(
+    pg_repo:        &PgRuleRepository,
+    executor:       &dyn ActionExecutor,
+    seg_checker:    &dyn SegmentChecker,
+    http:           &reqwest::Client,
+    driver_ops_url: &str,
+    window_secs:    u64,
+    warned_global:  &mut bool,
+) -> anyhow::Result<()> {
+    let (groups, skipped) = group_idle_rules(pg_repo.load_all().await?);
+    if skipped > 0 && !*warned_global {
+        *warned_global = true;
+        tracing::info!(skipped, "global (nil-tenant) DriverIdleExceeded rules are not supported; skipping");
+    }
+
+    for ((tenant_id, minutes), rules) in &groups {
+        let resp = http
+            .get(format!("{}/v1/internal/drivers/idle", driver_ops_url))
+            .query(&[
+                ("tenant_id", tenant_id.to_string()),
+                ("idle_minutes", minutes.to_string()),
+                ("window_secs", window_secs.to_string()),
+            ])
+            .send()
+            .await;
+        let drivers: Vec<Value> = match resp {
+            Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+                Ok(v) => v["data"].as_array().cloned().unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!(err = %e, minutes, %tenant_id, "driver-ops idle response unreadable");
+                    continue;
+                }
+            },
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), minutes, %tenant_id, "driver-ops idle query refused");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, minutes, %tenant_id, "driver-ops idle call failed");
+                continue;
+            }
+        };
+
+        for d in drivers {
+            let payload = serde_json::json!({
+                "driver_id":    d["driver_id"],
+                "tenant_id":    tenant_id,
+                "idle_since":   d["idle_since"],
+                "idle_minutes": d["idle_minutes"],
+            });
+            let mut ctx = crate::application::services::build_context(*tenant_id, IDLE_TOPIC, &payload);
+            crate::application::services::enrich_segments(&mut ctx, rules, seg_checker).await;
+
+            for rule in rules {
+                if !rule.conditions_met(&ctx) { continue; }
+                tracing::info!(rule_id = %rule.id, driver_id = %d["driver_id"], "DriverIdleExceeded rule fired");
+                let outcome = match crate::application::services::execute_actions(rule, &ctx, executor).await {
+                    Ok(()) => "success",
+                    Err(e) => {
+                        tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
+                        "error"
+                    }
+                };
+                if let Err(e) = pg_repo.log_execution(
+                    rule.id,
+                    ctx.tenant_id,
+                    IDLE_TOPIC,
+                    ctx.shipment_id,
+                    true,
+                    &rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>(),
+                    outcome,
+                    None,
+                    chrono::Utc::now(),
+                ).await {
+                    tracing::warn!(rule_id = %rule.id, err = %e, "failed to log rule execution");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::decode_event;
+    use super::{group_idle_rules, parse_idle_poll_secs};
+    use crate::domain::entities::rule::{AutomationRule, RuleTrigger};
+
+    fn rule(tenant: Uuid, trigger: RuleTrigger, active: bool) -> AutomationRule {
+        AutomationRule {
+            id: Uuid::new_v4(), tenant_id: tenant, name: "r".into(), description: String::new(),
+            is_active: active, trigger, conditions: vec![], actions: vec![], priority: 1,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn idle_rules_group_by_tenant_and_minutes() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let idle = |m| RuleTrigger::DriverIdleExceeded { minutes: m };
+        let (g, skipped) = group_idle_rules(vec![
+            rule(a, idle(30), true), rule(a, idle(30), true), rule(a, idle(45), true),
+            rule(b, idle(30), true),
+            rule(a, idle(30), false),
+            rule(a, RuleTrigger::DeliveryFailed, true),
+        ]);
+        assert_eq!(skipped, 0);
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[&(a, 30)].len(), 2);
+        assert_eq!(g[&(a, 45)].len(), 1);
+        assert_eq!(g[&(b, 30)].len(), 1);
+    }
+
+    #[test]
+    fn nil_tenant_idle_rules_are_skipped_and_counted() {
+        let t = Uuid::new_v4();
+        let idle = RuleTrigger::DriverIdleExceeded { minutes: 30 };
+        let (g, skipped) = group_idle_rules(vec![
+            rule(Uuid::nil(), idle.clone(), true), rule(Uuid::nil(), idle.clone(), true), rule(t, idle, true),
+        ]);
+        assert_eq!(skipped, 2);
+        assert_eq!(g.len(), 1);
+        assert!(g.contains_key(&(t, 30)));
+    }
+
+    #[test]
+    fn idle_poll_secs_defaults_and_rejects_bad_values() {
+        assert_eq!(parse_idle_poll_secs(None), 60);
+        assert_eq!(parse_idle_poll_secs(Some("0")), 60);
+        assert_eq!(parse_idle_poll_secs(Some("abc")), 60);
+        assert_eq!(parse_idle_poll_secs(Some("120")), 120);
+        assert_eq!(parse_idle_poll_secs(Some("10")), 30);
+        assert_eq!(parse_idle_poll_secs(Some("99999")), 3600);
+    }
+
     use serde_json::json;
     use uuid::Uuid;
 
