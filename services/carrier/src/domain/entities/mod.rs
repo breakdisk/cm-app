@@ -753,6 +753,23 @@ impl MarketplaceBooking {
         }
     }
 
+    /// A hold landed on a booking that had already been cancelled while its
+    /// checkout was open. The caller voids it at the provider first; this only
+    /// records that the intent exists and is released. Never moves a booking
+    /// whose payment is anything but `Pending`.
+    pub fn late_hold_voided(&mut self, intent_id: Uuid) -> Result<(), BookingPaymentError> {
+        match self.payment_status {
+            BookingPaymentStatus::Pending => {
+                self.payment_status = BookingPaymentStatus::Voided;
+                self.payment_intent_id = Some(intent_id);
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingPaymentStatus::Voided => Ok(()),
+            from => Err(BookingPaymentError::Illegal { from, to: BookingPaymentStatus::Voided }),
+        }
+    }
+
     /// Declined at the gateway, or the checkout session expired unused.
     /// Reachable from `Pending` as well as `Authorized` -- a decline happens
     /// before any hold exists.

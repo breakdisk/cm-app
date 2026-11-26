@@ -615,6 +615,27 @@ impl MarketplaceRepository for PgMarketplaceRepository {
         Ok(())
     }
 
+    async fn transition_booking(
+        &self,
+        b: &MarketplaceBooking,
+        expected_status: &crate::domain::entities::BookingStatus,
+        expected_payment: crate::domain::entities::BookingPaymentStatus,
+    ) -> anyhow::Result<bool> {
+        // Same mutable column set as `save_booking`, guarded on the state the
+        // caller read. `rows_affected() == 0` means the booking moved first.
+        let res = sqlx::query(
+            "UPDATE carrier.marketplace_bookings SET              status = $1, picked_up_at = $2, picked_up_by = $3, pickup_notes = $4,              updated_at = $5, payment_status = $6, payment_intent_id = $7,              payment_authorized_at = $8              WHERE id = $9 AND tenant_id = $10 AND status = $11 AND payment_status = $12",
+        )
+        .bind(b.status.as_str()).bind(b.picked_up_at).bind(&b.picked_up_by)
+        .bind(&b.pickup_notes).bind(b.updated_at)
+        .bind(b.payment_status.as_str()).bind(b.payment_intent_id)
+        .bind(b.payment_authorized_at)
+        .bind(b.id).bind(b.tenant_id)
+        .bind(expected_status.as_str()).bind(expected_payment.as_str())
+        .execute(&self.pool).await?;
+        Ok(res.rows_affected() == 1)
+    }
+
     async fn save_booking_payment_reference(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE carrier.marketplace_bookings SET              payment_intent_id = $1, payment_checkout_url = $2, updated_at = $3              WHERE id = $4",

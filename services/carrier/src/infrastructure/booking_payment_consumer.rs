@@ -37,6 +37,8 @@ use rdkafka::{
 use tokio::sync::watch;
 use uuid::Uuid;
 
+use crate::application::services::BookingPayments;
+use crate::domain::entities::BookingStatus;
 use crate::domain::repositories::MarketplaceRepository;
 
 /// The tag `CarrierPaymentsClient::authorize` stamps on every intent it opens,
@@ -47,6 +49,7 @@ pub async fn start_booking_payment_consumer(
     brokers: &str,
     group_id: &str,
     repo: Arc<dyn MarketplaceRepository>,
+    payments: Option<Arc<dyn BookingPayments>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
@@ -73,7 +76,7 @@ pub async fn start_booking_payment_consumer(
                         if let Some(payload) = msg.payload() {
                             match serde_json::from_slice::<serde_json::Value>(payload) {
                                 Ok(json) => {
-                                    if let Err(e) = handle(&topic, json, &repo).await {
+                                    if let Err(e) = handle(&topic, json, &repo, payments.as_ref()).await {
                                         // Withholding the commit would block the
                                         // partition on a poison message, and both
                                         // arms are idempotent, so a retry costs
@@ -101,6 +104,7 @@ pub async fn handle(
     topic: &str,
     json: serde_json::Value,
     repo: &Arc<dyn MarketplaceRepository>,
+    payments: Option<&Arc<dyn BookingPayments>>,
 ) -> anyhow::Result<()> {
     match topic {
         topics::PAYMENT_INTENT_AUTHORIZED => {
@@ -109,7 +113,7 @@ pub async fn handle(
             if evt.data.purpose != MARKETPLACE_BOOKING_PURPOSE {
                 return Ok(());
             }
-            handle_authorized(evt.data.reference_id, evt.data.intent_id, repo).await
+            handle_authorized(evt.data.reference_id, evt.data.intent_id, repo, payments).await
         }
         topics::PAYMENT_INTENT_FAILED => {
             let evt: Event<PaymentIntentFailed> = serde_json::from_value(json)
@@ -124,28 +128,62 @@ pub async fn handle(
 }
 
 /// Funds are ring-fenced — the carrier may now see the booking.
-async fn handle_authorized(
+pub(crate) async fn handle_authorized(
     booking_id: Uuid,
     intent_id: Uuid,
     repo: &Arc<dyn MarketplaceRepository>,
+    payments: Option<&Arc<dyn BookingPayments>>,
 ) -> anyhow::Result<()> {
-    let Some(mut booking) = repo.find_booking_by_id(booking_id).await? else {
-        // Not an error: an old partition replay, or a purged row. Logged so a
-        // systematic mismatch is visible rather than silently dropped.
-        tracing::warn!(%booking_id, "payment.intent.authorized for an unknown booking");
-        return Ok(());
-    };
+    // Compare-and-set with a short retry: a merchant cancel or a carrier
+    // answer can land between our read and our write, and a blind save would
+    // overwrite their status with the stale one we read.
+    for _ in 0..3 {
+        let Some(mut booking) = repo.find_booking_by_id(booking_id).await? else {
+            // Not an error: an old partition replay, or a purged row. Logged so a
+            // systematic mismatch is visible rather than silently dropped.
+            tracing::warn!(%booking_id, "payment.intent.authorized for an unknown booking");
+            return Ok(());
+        };
+        let expected_status  = booking.status.clone();
+        let expected_payment = booking.payment_status;
 
-    // Idempotent, and specifically does not re-stamp `payment_authorized_at`
-    // on a redelivery — that timestamp is the response-window clock, and
-    // restamping it would push the carrier's deadline out every time Kafka
-    // replayed the message.
-    booking.payment_authorized(intent_id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    repo.save_booking(&booking).await?;
+        if booking.status != BookingStatus::Pending {
+            // The merchant cancelled (or the carrier answered) while checkout
+            // was still open, and the hold landed anyway. Marking it authorized
+            // would ring-fence money against a booking nothing will ever
+            // release, so void it instead. A booking whose payment is already
+            // settled is a redelivery: nothing to do.
+            if expected_payment != crate::domain::entities::BookingPaymentStatus::Pending {
+                return Ok(());
+            }
+            let Some(payments) = payments else {
+                anyhow::bail!(
+                    "booking {booking_id} is {} but a hold {intent_id} landed and payments is not configured to void it",
+                    booking.status.as_str()
+                );
+            };
+            payments.void(intent_id).await?;
+            booking.late_hold_voided(intent_id).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if repo.transition_booking(&booking, &expected_status, expected_payment).await? {
+                tracing::warn!(%booking_id, %intent_id, status = booking.status.as_str(),
+                    "hold landed on a booking that is no longer pending — voided");
+                return Ok(());
+            }
+            continue;
+        }
 
-    tracing::info!(%booking_id, %intent_id, carrier_id = %booking.carrier_id,
-        "booking funded — now offered to the carrier");
-    Ok(())
+        // Idempotent, and specifically does not re-stamp `payment_authorized_at`
+        // on a redelivery — that timestamp is the response-window clock, and
+        // restamping it would push the carrier's deadline out every time Kafka
+        // replayed the message.
+        booking.payment_authorized(intent_id).map_err(|e| anyhow::anyhow!("{e}"))?;
+        if repo.transition_booking(&booking, &expected_status, expected_payment).await? {
+            tracing::info!(%booking_id, %intent_id, carrier_id = %booking.carrier_id,
+                "booking funded — now offered to the carrier");
+            return Ok(());
+        }
+    }
+    anyhow::bail!("booking {booking_id} kept changing underneath payment.intent.authorized; giving up after 3 tries")
 }
 
 /// The hold never landed, or expired unused — cancel the booking. Nothing to
