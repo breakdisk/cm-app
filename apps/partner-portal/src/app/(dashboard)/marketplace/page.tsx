@@ -380,15 +380,16 @@ function ListingDrawer({
                 </div>
 
                 <div className="grid grid-cols-3 gap-4">
-                  <Field label={`Base price (PHP)`}>
+                  <Field label="Base price (PHP)">
                     <input
                       type="number"
+                      step="0.01"
                       value={form.base_price_cents / 100}
-                      onChange={(e) => setForm((f) => ({ ...f, base_price_cents: Number(e.target.value) * 100 }))}
+                      onChange={(e) => setForm((f) => ({ ...f, base_price_cents: Math.round(Number(e.target.value) * 100) }))}
                       className="input"
                     />
                   </Field>
-                  <Field label={`Per km (PHP)`}>
+                  <Field label="Per km (PHP)">
                     <input
                       type="number"
                       step="0.01"
@@ -397,7 +398,7 @@ function ListingDrawer({
                       className="input"
                     />
                   </Field>
-                  <Field label={`Per kg (PHP)`}>
+                  <Field label="Per kg (PHP)">
                     <input
                       type="number"
                       step="0.01"
