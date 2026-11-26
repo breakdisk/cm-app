@@ -540,7 +540,7 @@ mod pin_waiver {
     fn waive_without_a_photo_is_refused() {
         let mut pod = make_pod(true);
         let err = pod.waive_undelivered_pin().unwrap_err();
-        assert!(err.contains("photo of the delivered parcel"));
+        assert_eq!(err, "A photo of the delivered parcel is required when the recipient never received a delivery PIN.");
         assert_eq!(pod.pin_exception, None);
     }
 

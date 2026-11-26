@@ -145,6 +145,13 @@ pub fn pin_requirement(policy_required: bool, supplied: bool, live_pin: Option<L
     }
 }
 
+/// Maps a PIN's recorded `delivered_via` to its live state. Any recorded
+/// channel, including `"legacy"` (rows backfilled by migration 0010), means
+/// the recipient is presumed to hold the PIN; only NULL means it never arrived.
+pub fn live_pin_state(delivered_via: Option<&str>) -> LivePinState {
+    LivePinState { delivered: delivered_via.is_some() }
+}
+
 /// How a newly issued PIN reached the recipient, if it did.
 pub fn delivered_via(sms_sent: bool, reveal_to_caller: bool) -> Option<&'static str> {
     if sms_sent {
@@ -184,6 +191,16 @@ mod tests {
         assert_eq!(pin_requirement(true, false, D), PinRequirement::RefuseMissing);
         assert_eq!(pin_requirement(true, false, U), PinRequirement::Waive);
         assert_eq!(pin_requirement(true, false, None), PinRequirement::Waive);
+    }
+
+    #[test]
+    fn any_recorded_channel_counts_as_delivered_including_legacy() {
+        for via in ["sms", "response", "legacy"] {
+            assert!(live_pin_state(Some(via)).delivered, "{via}");
+            assert_eq!(pin_requirement(true, false, Some(live_pin_state(Some(via)))), PinRequirement::RefuseMissing);
+        }
+        assert!(!live_pin_state(None).delivered);
+        assert_eq!(pin_requirement(true, false, Some(live_pin_state(None))), PinRequirement::Waive);
     }
 
     #[test]

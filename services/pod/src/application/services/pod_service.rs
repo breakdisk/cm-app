@@ -23,7 +23,7 @@ use crate::{
             is_allowed_content_type, generate_otp, hash_otp, verify_otp,
             delivery_pin::{
                 attempts_left, delivered_via, issue_decision, pin_requirement, DeliveryPinPolicy, IssueDecision,
-                IssuedPin, LivePinState, PinRejection, PinRequirement,
+                IssuedPin, live_pin_state, PinRejection, PinRequirement,
             },
         },
     },
@@ -292,7 +292,7 @@ impl PodService {
                 .find_active_by_shipment(pod.shipment_id, tenant_id.inner()).await
                 .map_err(AppError::Internal)?
                 .filter(OtpCode::is_valid)
-                .map(|o| LivePinState { delivered: o.delivered_via.is_some() })
+                .map(|o| live_pin_state(o.delivered_via.as_deref()))
         } else {
             None
         };
