@@ -824,6 +824,9 @@ mod booking_tests {
     struct FakeRepo {
         listings: Mutex<Vec<VehicleListing>>,
         bookings: Mutex<Vec<MarketplaceBooking>>,
+        /// The next N `transition_booking` calls lose the compare-and-set
+        /// (write nothing, return false), as if another writer got in first.
+        lose_transitions: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeRepo {
@@ -896,6 +899,11 @@ mod booking_tests {
             expected_status: &BookingStatus,
             expected_payment: BookingPaymentStatus,
         ) -> anyhow::Result<bool> {
+            let lose = self.lose_transitions.load(std::sync::atomic::Ordering::SeqCst);
+            if lose > 0 {
+                self.lose_transitions.store(lose - 1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(false);
+            }
             let mut all = self.bookings.lock().unwrap();
             match all.iter_mut().find(|x| {
                 x.id == b.id && x.tenant_id == b.tenant_id
@@ -1494,6 +1502,46 @@ mod booking_tests {
 
         assert_eq!(flaky.voids.lock().unwrap().as_slice(), &[intent, intent]);
         assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Voided);
+    }
+
+    /// A lost compare-and-set after the void must not void again: the provider
+    /// would reject it and we would raise a false manual-release alarm.
+    #[tokio::test]
+    async fn a_cas_conflict_after_a_successful_late_hold_void_does_not_void_again() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, pay, booking_id, _) = cancelled_with_open_checkout().await;
+        repo.lose_transitions.store(1, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
+        let intent = Uuid::new_v4();
+
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
+
+        assert_eq!(pay.voids.lock().unwrap().as_slice(), &[intent], "exactly one provider void");
+        assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Voided);
+    }
+
+    /// Money released, record never written: the error says reconcile, not
+    /// manual release, and the provider was still only asked once.
+    /// (The matching `error!` log is "... RECONCILE BOOKING"; the fakes cannot
+    /// capture tracing output, so the distinct error text stands in for it.)
+    #[tokio::test]
+    async fn a_late_hold_voided_but_never_recorded_errors_as_reconcile_after_one_void() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, pay, booking_id, _) = cancelled_with_open_checkout().await;
+        repo.lose_transitions.store(99, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
+
+        let err = handle_authorized(booking_id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay), &NO_WAIT)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(pay.voids.lock().unwrap().len(), 1, "exactly one provider void");
+        assert!(err.contains("reconcile"), "got {err}");
+        assert!(!err.contains("gateway"), "must not be the void-failed error: {err}");
+        assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Pending);
     }
 
     /// The consumer loop commits regardless, so this error is not redelivered:

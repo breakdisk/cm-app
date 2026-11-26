@@ -184,6 +184,13 @@ pub(crate) async fn handle_authorized(
     // Compare-and-set with a short retry: a merchant cancel or a carrier
     // answer can land between our read and our write, and a blind save would
     // overwrite their status with the stale one we read.
+    //
+    // `voided_tenant` is set once the provider void has succeeded. The void
+    // happens at most once per invocation: a later pass only re-reads and
+    // retries the write, because the provider would reject a second void (the
+    // intent is no longer Authorized) and we would then raise a false
+    // manual-release alarm for a hold that is already released.
+    let mut voided_tenant: Option<Uuid> = None;
     for _ in 0..3 {
         let Some(mut booking) = repo.find_booking_by_id(booking_id).await? else {
             // Not an error: an old partition replay, or a purged row. Logged so a
@@ -209,7 +216,10 @@ pub(crate) async fn handle_authorized(
                     booking.status.as_str()
                 );
             };
-            void_late_hold(payments, booking_id, booking.tenant_id, intent_id, void_backoff).await?;
+            if voided_tenant.is_none() {
+                void_late_hold(payments, booking_id, booking.tenant_id, intent_id, void_backoff).await?;
+                voided_tenant = Some(booking.tenant_id);
+            }
             booking.late_hold_voided(intent_id).map_err(|e| anyhow::anyhow!("{e}"))?;
             if repo.transition_booking(&booking, &expected_status, expected_payment).await? {
                 tracing::warn!(%booking_id, %intent_id, status = booking.status.as_str(),
@@ -229,6 +239,15 @@ pub(crate) async fn handle_authorized(
                 "booking funded — now offered to the carrier");
             return Ok(());
         }
+    }
+    if let Some(tenant_id) = voided_tenant {
+        // The money is released; only our record of it is missing. Distinct
+        // from the manual-release alarm, which means the hold is still held.
+        tracing::error!(%booking_id, %tenant_id, %intent_id,
+            "late hold voided at provider but booking not recorded — RECONCILE BOOKING");
+        anyhow::bail!(
+            "late hold {intent_id} was voided but booking {booking_id} could not be updated after 3 tries; reconcile the booking"
+        );
     }
     anyhow::bail!("booking {booking_id} kept changing underneath payment.intent.authorized; giving up after 3 tries")
 }
