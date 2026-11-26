@@ -142,7 +142,10 @@ impl DriverAssignmentService {
                     let score_b = b.distance_km * 0.7 + b.active_stop_count as f64 * 0.3;
                     score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .unwrap(); // Safe: checked is_empty() above
+                .ok_or_else(|| AppError::BusinessRule(format!(
+                    "No available drivers within {}km of the first stop",
+                    DEFAULT_DRIVER_SEARCH_RADIUS_KM
+                )))?;
 
             tracing::info!(
                 driver_id = %best.driver_id,
@@ -469,7 +472,10 @@ impl DriverAssignmentService {
                         let sb = b.distance_km * 0.7 + b.active_stop_count as f64 * 0.3;
                         sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
                     })
-                    .unwrap() // safe: checked is_empty() above
+                    .ok_or_else(|| AppError::BusinessRule(format!(
+                        "No available drivers nearby with a vehicle that can carry {} kg ({})",
+                        queue_item.weight_grams / 1000, queue_item.delivery_category
+                    )))?
                     .driver_id
                     .clone()
             }
