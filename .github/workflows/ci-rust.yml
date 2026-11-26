@@ -378,27 +378,20 @@ jobs:
                -A clippy::missing_panics_doc \
                -A clippy::too_many_lines
 
-      # Advisory for now — same reasoning as the rustfmt step above, and the
-      # same instruction: flip this to a gate in the change that clears the
-      # backlog. There are 62 (41 on Result, 21 on Option) as of 2026-08-09.
+      # GATE since 2026-11-26. Production `unwrap()` was driven to zero across the
+      # workspace (R12), so any new `.unwrap()` in a lib or bin target now fails
+      # the build. Use `?` with thiserror/anyhow, `ok_or_else`/`map_err`, or, for
+      # a provably-present constant, `expect("<invariant>")`.
       #
       # The previous implementation was a line-based grep that excluded lines
-      # *containing* `#[cfg(test)]`. Inline `#[cfg(test)] mod tests { … }` is
-      # the dominant pattern here, and an unwrap 120 lines inside such a block
-      # is nowhere near the attribute — so the check reported test doubles and
-      # assertions as production violations. It could not have passed on a
-      # healthy repo, and it never ran, so nobody found out.
-      #
-      # Clippy knows what test code is. Without `--all-targets`, `cfg(test)` is
-      # off, so inline test modules are not compiled and not linted — which is
-      # exactly the boundary this check was trying and failing to express.
-      - name: Check for .unwrap() in production paths (advisory)
-        continue-on-error: true
+      # *containing* `#[cfg(test)]`; it reported test doubles and assertions as
+      # production violations and never ran. Clippy knows what test code is.
+      # Without `--all-targets`, `cfg(test)` is off, so inline test modules are
+      # not compiled and not linted, which is exactly the boundary wanted here.
+      - name: Check for .unwrap() in production paths
         run: |
           cargo clippy --workspace --lib --bins --all-features \
-            -- -W clippy::unwrap_used 2>&1 | grep -E "unwrap\(\) on" -A 2 || true
-          echo ""
-          echo "Use the ? operator with thiserror/anyhow instead."
+            -- -D clippy::unwrap_used
 
       # Replaces a check that could not fail: it grepped src/main.rs and
       # src/router.rs — files these services do not use for routing — and
