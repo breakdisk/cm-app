@@ -23,7 +23,7 @@ use crate::{
             is_allowed_content_type, generate_otp, hash_otp, verify_otp,
             delivery_pin::{
                 attempts_left, delivered_via, issue_decision, pin_requirement, DeliveryPinPolicy, IssueDecision,
-                IssuedPin, live_pin_state, PinRejection, PinRequirement,
+                IssuedPin, live_pin_state, supersede_decision, PinRejection, SupersedeDecision, PinRequirement,
             },
         },
     },
@@ -304,7 +304,8 @@ impl PodService {
             (PinRequirement::Check, Some(code)) => {
                 Some(self.check_delivery_pin(tenant_id.inner(), pod.shipment_id, code).await?)
             }
-            (PinRequirement::RefuseMissing, _) => {
+            // Unreachable (Check means a code was supplied); refuse rather than skip.
+            (PinRequirement::Check, None) | (PinRequirement::RefuseMissing, _) => {
                 return Err(AppError::BusinessRule(PinRejection::Missing.message()));
             }
             (PinRequirement::Waive, _) => {
@@ -317,7 +318,7 @@ impl PodService {
                 );
                 None
             }
-            _ => None,
+            (PinRequirement::NotRequired, _) => None,
         };
         if let Some(otp) = &pin {
             pod.mark_otp_verified(otp.id);
@@ -808,7 +809,22 @@ impl PodService {
                 false
             }
         };
-        otp.record_delivery(delivered_via(sms_sent, cmd.reveal_to_caller));
+        let via = delivered_via(sms_sent, cmd.reveal_to_caller);
+
+        // The newest row wins in find_active_by_shipment, so an undelivered
+        // replacement would shadow a PIN the recipient holds and make the
+        // delivery waivable. Leave the delivered PIN authoritative.
+        let live_state = live.as_ref().map(|p| live_pin_state(p.delivered_via.as_deref()));
+        if supersede_decision(live_state, via.is_some()) == SupersedeDecision::Refuse {
+            tracing::warn!(
+                shipment_id = %cmd.shipment_id,
+                "New delivery PIN could not be delivered — keeping the recipient's existing PIN"
+            );
+            return Err(AppError::BusinessRule(
+                "The new PIN could not be delivered; the recipient's existing PIN is still valid.".into(),
+            ));
+        }
+        otp.record_delivery(via);
 
         self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
 

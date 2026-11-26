@@ -78,7 +78,7 @@ impl SmsAdapter for TwilioSmsAdapter {
             anyhow::bail!("Twilio SMS failed (HTTP {}): {}", status, body);
         }
 
-        tracing::info!(to = %to, "OTP SMS sent via Twilio");
+        tracing::info!(to = %mask_recipient(to), "OTP SMS sent via Twilio");
         Ok(())
     }
 }

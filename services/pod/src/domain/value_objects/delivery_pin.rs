@@ -145,6 +145,23 @@ pub fn pin_requirement(policy_required: bool, supplied: bool, live_pin: Option<L
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupersedeDecision {
+    Allow,
+    Refuse,
+}
+
+/// Whether a freshly issued PIN may replace the live one. A new PIN that reached
+/// nobody must not shadow one the recipient holds: the newest row wins, so it
+/// would turn a refused delivery into a waivable one.
+pub fn supersede_decision(live_pin: Option<LivePinState>, new_pin_delivered: bool) -> SupersedeDecision {
+    if live_pin.is_some_and(|p| p.delivered) && !new_pin_delivered {
+        SupersedeDecision::Refuse
+    } else {
+        SupersedeDecision::Allow
+    }
+}
+
 /// Maps a PIN's recorded `delivered_via` to its live state. Any recorded
 /// channel, including `"legacy"` (rows backfilled by migration 0010), means
 /// the recipient is presumed to hold the PIN; only NULL means it never arrived.
@@ -201,6 +218,17 @@ mod tests {
         }
         assert!(!live_pin_state(None).delivered);
         assert_eq!(pin_requirement(true, false, Some(live_pin_state(None))), PinRequirement::Waive);
+    }
+
+    #[test]
+    fn an_undelivered_pin_never_replaces_a_delivered_one() {
+        use SupersedeDecision::{Allow, Refuse};
+        assert_eq!(supersede_decision(D, false), Refuse);
+        assert_eq!(supersede_decision(D, true), Allow);
+        assert_eq!(supersede_decision(None, false), Allow);
+        assert_eq!(supersede_decision(U, false), Allow);
+        assert_eq!(supersede_decision(U, true), Allow);
+        assert_eq!(supersede_decision(None, true), Allow);
     }
 
     #[test]
