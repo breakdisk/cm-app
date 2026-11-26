@@ -19,7 +19,10 @@
 //!   the booking. No carrier was ever shown it, so there is nothing to undo on
 //!   that side, and the merchant was never charged.
 //!
-//! Both arms are idempotent against Kafka's at-least-once redelivery.
+//! Both arms are idempotent against Kafka's at-least-once redelivery, but the
+//! consumer loop commits every message whether or not the handler succeeded,
+//! so a handler error is NOT retried by redelivery. Anything that must not be
+//! lost (the late-hold void) retries inside the handler instead.
 
 use std::sync::Arc;
 
@@ -77,11 +80,13 @@ pub async fn start_booking_payment_consumer(
                             match serde_json::from_slice::<serde_json::Value>(payload) {
                                 Ok(json) => {
                                     if let Err(e) = handle(&topic, json, &repo, payments.as_ref()).await {
-                                        // Withholding the commit would block the
-                                        // partition on a poison message, and both
-                                        // arms are idempotent, so a retry costs
-                                        // nothing while a block costs every later
-                                        // booking. Logged loudly instead.
+                                        // The commit below is unconditional:
+                                        // withholding it would block the
+                                        // partition on a poison message and
+                                        // every later booking with it. So an
+                                        // error here is NOT redelivered -- it is
+                                        // logged and dropped. Work that must not
+                                        // be lost retries inside the handler.
                                         tracing::error!(err = %e, %topic,
                                             "booking-payment consumer: handler error (skipping)");
                                     }
@@ -113,7 +118,9 @@ pub async fn handle(
             if evt.data.purpose != MARKETPLACE_BOOKING_PURPOSE {
                 return Ok(());
             }
-            handle_authorized(evt.data.reference_id, evt.data.intent_id, repo, payments).await
+            handle_authorized(
+                evt.data.reference_id, evt.data.intent_id, repo, payments, &LATE_HOLD_VOID_BACKOFF,
+            ).await
         }
         topics::PAYMENT_INTENT_FAILED => {
             let evt: Event<PaymentIntentFailed> = serde_json::from_value(json)
@@ -127,12 +134,52 @@ pub async fn handle(
     }
 }
 
+/// Pauses between attempts to void a hold that landed on a booking that is no
+/// longer pending: 3 attempts in all (immediately, after 200 ms, after 1 s).
+pub(crate) const LATE_HOLD_VOID_BACKOFF: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(200),
+    std::time::Duration::from_secs(1),
+];
+
+/// Voids a late hold, retrying across `backoff` (attempts = `backoff.len() + 1`).
+///
+/// The consumer loop never redelivers a failed message, so this is the only
+/// retry the hold gets. If every attempt fails the hold stays at the provider
+/// against a cancelled booking and must be released by hand; that is logged
+/// at `error` with the ids needed to do so.
+async fn void_late_hold(
+    payments: &Arc<dyn BookingPayments>,
+    booking_id: Uuid,
+    tenant_id: Uuid,
+    intent_id: Uuid,
+    backoff: &[std::time::Duration],
+) -> anyhow::Result<()> {
+    let mut attempt = 0usize;
+    loop {
+        match payments.void(intent_id).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let Some(pause) = backoff.get(attempt) else {
+                    tracing::error!(%booking_id, %tenant_id, %intent_id, attempts = attempt + 1, err = %e,
+                        "late hold void failed after retries — MANUAL RELEASE REQUIRED");
+                    return Err(e);
+                };
+                tracing::warn!(%booking_id, %intent_id, attempt = attempt + 1, err = %e,
+                    "late hold void failed; retrying");
+                tokio::time::sleep(*pause).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
 /// Funds are ring-fenced — the carrier may now see the booking.
 pub(crate) async fn handle_authorized(
     booking_id: Uuid,
     intent_id: Uuid,
     repo: &Arc<dyn MarketplaceRepository>,
     payments: Option<&Arc<dyn BookingPayments>>,
+    void_backoff: &[std::time::Duration],
 ) -> anyhow::Result<()> {
     // Compare-and-set with a short retry: a merchant cancel or a carrier
     // answer can land between our read and our write, and a blind save would
@@ -162,7 +209,7 @@ pub(crate) async fn handle_authorized(
                     booking.status.as_str()
                 );
             };
-            payments.void(intent_id).await?;
+            void_late_hold(payments, booking_id, booking.tenant_id, intent_id, void_backoff).await?;
             booking.late_hold_voided(intent_id).map_err(|e| anyhow::anyhow!("{e}"))?;
             if repo.transition_booking(&booking, &expected_status, expected_payment).await? {
                 tracing::warn!(%booking_id, %intent_id, status = booking.status.as_str(),

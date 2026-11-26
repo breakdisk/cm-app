@@ -915,6 +915,8 @@ mod booking_tests {
         voids:         Mutex<Vec<Uuid>>,
         capture_fails: bool,
         void_fails:    bool,
+        /// Fail this many void calls, then succeed -- a flaky provider.
+        void_fail_first: std::sync::atomic::AtomicUsize,
         /// Runs inside the provider call -- the window in which another
         /// request can move the booking. Models a racing writer.
         during_call:   Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -946,6 +948,11 @@ mod booking_tests {
             self.voids.lock().unwrap().push(intent_id);
             self.race();
             if self.void_fails { anyhow::bail!("gateway refused the void") }
+            let left = self.void_fail_first.load(std::sync::atomic::Ordering::SeqCst);
+            if left > 0 {
+                self.void_fail_first.store(left - 1, std::sync::atomic::Ordering::SeqCst);
+                anyhow::bail!("gateway timed out on the void")
+            }
             Ok(())
         }
     }
@@ -1458,7 +1465,7 @@ mod booking_tests {
         let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
         let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
 
-        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay)).await.unwrap();
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
 
         assert_eq!(pay.voids.lock().unwrap().as_slice(), &[intent]);
         let saved = repo.booking(booking_id);
@@ -1466,21 +1473,44 @@ mod booking_tests {
         assert_eq!(saved.payment_status, BookingPaymentStatus::Voided);
 
         // A redelivery is a no-op: no second void.
-        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay)).await.unwrap();
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
         assert_eq!(pay.voids.lock().unwrap().len(), 1);
     }
 
+    /// Zero-length pauses, same attempt count as production (2 pauses = 3 tries).
+    const NO_WAIT: [std::time::Duration; 2] = [std::time::Duration::ZERO; 2];
+
     #[tokio::test]
-    async fn a_failed_void_of_a_late_hold_is_an_error_and_records_nothing() {
+    async fn a_late_hold_void_that_fails_once_is_retried_and_recorded() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, _, booking_id, _) = cancelled_with_open_checkout().await;
+        let flaky = Arc::new(FakePayments::default());
+        flaky.void_fail_first.store(1, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = flaky.clone();
+        let intent = Uuid::new_v4();
+
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
+
+        assert_eq!(flaky.voids.lock().unwrap().as_slice(), &[intent, intent]);
+        assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Voided);
+    }
+
+    /// The consumer loop commits regardless, so this error is not redelivered:
+    /// three attempts are all the hold gets, and nothing is recorded.
+    #[tokio::test]
+    async fn a_late_hold_void_that_fails_all_three_attempts_errors_and_records_nothing() {
         use crate::infrastructure::booking_payment_consumer::handle_authorized;
         let (repo, _, booking_id, _) = cancelled_with_open_checkout().await;
         let failing = Arc::new(FakePayments { void_fails: true, ..Default::default() });
         let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
-        let dyn_pay: Arc<dyn BookingPayments> = failing;
+        let dyn_pay: Arc<dyn BookingPayments> = failing.clone();
 
-        handle_authorized(booking_id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay))
+        handle_authorized(booking_id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay), &NO_WAIT)
             .await
             .expect_err("void failed");
+
+        assert_eq!(failing.voids.lock().unwrap().len(), 3);
         assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Pending);
     }
 
@@ -1499,7 +1529,7 @@ mod booking_tests {
         let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
         let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
 
-        handle_authorized(placed.booking.id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay)).await.unwrap();
+        handle_authorized(placed.booking.id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
 
         let saved = repo.booking(placed.booking.id);
         assert_eq!(saved.status, BookingStatus::Pending);
