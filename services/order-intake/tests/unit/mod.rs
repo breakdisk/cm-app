@@ -5,10 +5,11 @@
 // No database, no HTTP, no Kafka — pure domain logic.
 
 use logisticos_order_intake::domain::{
-    entities::shipment::Shipment,
-    value_objects::{ServiceType, ShipmentWeight, ShipmentDimensions, TrackingNumber},
+    entities::shipment::{PaymentRequirement, Shipment},
+    value_objects::{ServiceType, ShipmentWeight, ShipmentDimensions},
 };
 use logisticos_types::{
+    awb::{Awb, ServiceCode as AwbServiceCode, TenantCode},
     ShipmentId, MerchantId, CustomerId, TenantId,
     Money, Currency, Address, ShipmentStatus,
 };
@@ -43,7 +44,13 @@ fn make_shipment(
         tenant_id:        TenantId::new(),
         merchant_id:      MerchantId::new(),
         customer_id:      CustomerId::new(),
-        tracking_number:  "CMPH0012345678".into(),
+        customer_name:    "Test Customer".into(),
+        customer_phone:   "+639171234567".into(),
+        customer_email:   None,
+        booked_by_customer: false,
+        auto_dispatch:    true,
+        awb:              Awb::generate(&TenantCode::new("TST").unwrap(), AwbServiceCode::Standard, 1),
+        piece_count:      1,
         status,
         service_type,
         origin:           make_address(),
@@ -53,6 +60,19 @@ fn make_shipment(
         declared_value:   declared_value.map(|a| Money::new(a, Currency::PHP)),
         cod_amount:       cod_amount.map(|a| Money::new(a, Currency::PHP)),
         special_instructions: None,
+        merchant_reference:   None,
+        source_platform:      None,
+        external_order_id:    None,
+        payment_intent_id:       None,
+        payment_status:          PaymentRequirement::NotRequired,
+        pending_dispatch_events: None,
+        idempotency_key:         None,
+        scheduled_pickup_at:         None,
+        cancellation_policy_version: None,
+        booking_amount_cents:        None,
+        booking_currency:            None,
+        dest_geocoding:              Default::default(),
+        dest_parts:                  Default::default(),
         created_at:       Utc::now(),
         updated_at:       Utc::now(),
     }
@@ -528,43 +548,36 @@ mod service_type {
 mod tracking_number {
     use super::*;
 
-    #[test]
-    fn generated_tracking_number_has_correct_prefix() {
-        let tn = TrackingNumber::generate();
-        assert!(
-            tn.starts_with("CMPH"),
-            "Tracking number must start with CMPH, got: {}",
-            tn
-        );
+    // The legacy `TrackingNumber::generate()` ("CMPH" + 10 digits) is gone; the
+    // customer-facing number is now `Awb`: CM-{TTT}-{S}{NNNNNNN}{C}.
+    fn awb(seq: u32) -> Awb {
+        Awb::generate(&TenantCode::new("TST").unwrap(), AwbServiceCode::Standard, seq)
     }
 
     #[test]
-    fn generated_tracking_number_has_correct_length() {
-        let tn = TrackingNumber::generate();
-        // "CMPH" + 10 digits = 14 characters
-        assert_eq!(
-            tn.len(), 14,
-            "Tracking number must be 14 characters, got {} ({})",
-            tn.len(), tn
-        );
+    fn generated_awb_has_correct_prefix() {
+        let a = awb(1);
+        assert!(a.as_str().starts_with("CM-TST-S"), "got: {}", a);
     }
 
     #[test]
-    fn generated_tracking_numbers_are_unique() {
-        // Probability of collision is astronomically low
-        let a = TrackingNumber::generate();
-        let b = TrackingNumber::generate();
-        assert_ne!(a, b, "Two generated tracking numbers must not collide");
+    fn generated_awb_has_correct_length() {
+        // "CM-" + "TST-" + service char + 7-digit sequence + check char = 16
+        assert_eq!(awb(1).as_str().len(), 16);
     }
 
     #[test]
-    fn generated_tracking_number_suffix_is_all_digits() {
-        let tn = TrackingNumber::generate();
-        let suffix = &tn[4..]; // skip "CMPH"
-        assert!(
-            suffix.chars().all(|c| c.is_ascii_digit()),
-            "Tracking number suffix must be all digits: {}",
-            suffix
-        );
+    fn generated_awbs_are_unique_per_sequence() {
+        assert_ne!(awb(1), awb(2));
+    }
+
+    #[test]
+    fn generated_awb_sequence_is_seven_digits_and_round_trips() {
+        let a = awb(1234);
+        let seq = &a.as_str()[8..15];
+        assert!(seq.chars().all(|c| c.is_ascii_digit()), "sequence must be digits: {seq}");
+        assert_eq!(seq, "0001234");
+        assert!(a.is_valid(), "generated AWB must carry a valid check character");
+        assert_eq!(Awb::parse(a.as_str()).unwrap(), a);
     }
 }
