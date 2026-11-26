@@ -226,13 +226,13 @@ impl Awb {
         }
         let tenant_code = parts[0]; // e.g. "PH1"
         let payload = format!("{}{}", tenant_code, &service_seq_check[..8]); // TTT+S+NNNNNNN
-        let check_char = service_seq_check.chars().last().unwrap();
+        let check_char = service_seq_check.chars().last().ok_or(AwbError::InvalidFormat)?;
         let expected = luhn_checksum(&payload)?;
         if check_char != expected {
             return Err(AwbError::InvalidChecksum);
         }
         // validate service code
-        ServiceCode::from_char(service_seq_check.chars().next().unwrap())?;
+        ServiceCode::from_char(service_seq_check.chars().next().ok_or(AwbError::InvalidFormat)?)?;
         Ok(Self(normalised))
     }
 
@@ -257,7 +257,7 @@ impl Awb {
             return false;
         }
         let payload = format!("{}{}", parts[0], &parts[1][..8]);
-        matches!(luhn_checksum(&payload), Ok(c) if c == parts[1].chars().last().unwrap())
+        matches!(luhn_checksum(&payload), Ok(c) if parts[1].ends_with(c))
     }
 
     /// Extract the tenant code segment (e.g. `"PH1"`).
