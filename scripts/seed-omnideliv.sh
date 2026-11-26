@@ -12,12 +12,14 @@ PSQL="docker exec -i logisticos-postgres psql -U logisticos -v ON_ERROR_STOP=1"
 TENANT="00000000-0000-0000-0000-000000000001"   # the existing dev tenant
 KUYAS="11111111-0000-0000-0000-000000000001"
 PUREGOLD="11111111-0000-0000-0000-000000000002"
-COURIER="33333333-0000-0000-0000-000000000001"
 # The dev driver login, so the courier half of the flow is reachable. A
 # gen_random_uuid() here produces a courier nobody can authenticate as, which
 # leaves the claim -> Kafka -> order-advances leg permanently untestable — the
 # seed looks complete and the only part it cannot exercise is the event pipeline.
 DRIVER_USER="00000000-0000-0000-0000-000000000004"   # driver@demo.com
+# field_ops.couriers.id IS the user id (ADR-0015; CHECK couriers_id_is_user_id,
+# field-ops migration 0010). Every row linked to the courier below follows.
+COURIER="$DRIVER_USER"
 # The merchant portal login, so `GET /v1/omnideliv/vendors/me/earnings`
 # has a store to resolve. Without it that endpoint 404s and the vendor
 # payout cannot be checked over HTTP — only in psql.
