@@ -824,6 +824,18 @@ impl MarketplaceBooking {
         Ok(())
     }
 
+    /// The merchant withdrew a booking the carrier has not answered yet.
+    /// Distinct from `expire` (nobody answered) and `reject` (the carrier said
+    /// no) so the audit trail and the log say who ended it.
+    pub fn cancel_by_consumer(&mut self) -> anyhow::Result<()> {
+        if self.status != BookingStatus::Pending {
+            anyhow::bail!("Only a pending booking can be cancelled by the merchant, current status: {}", self.status.as_str());
+        }
+        self.status = BookingStatus::Cancelled;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     pub fn accept(&mut self) -> anyhow::Result<()> {
         if self.status != BookingStatus::Pending {
             anyhow::bail!("Booking can only be accepted when pending, current status: {}", self.status.as_str());

@@ -49,6 +49,13 @@ pub trait BookingPayments: Send + Sync {
     async fn void(&self, intent_id: Uuid) -> anyhow::Result<()>;
 }
 
+/// Why a pending booking is being ended; picks the domain transition and the log line.
+#[derive(Clone, Copy)]
+enum CancelReason {
+    Expired,
+    MerchantCancelled,
+}
+
 // ── Input types ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -441,7 +448,20 @@ impl MarketplaceService {
     /// ring-fenced, which is the money-safety-critical direction, so the
     /// booking stays `Pending` and the next tick tries again rather than
     /// advancing past a hold that was never released.
-    async fn expire_booking(&self, mut booking: MarketplaceBooking) -> anyhow::Result<bool> {
+    async fn expire_booking(&self, booking: MarketplaceBooking) -> anyhow::Result<bool> {
+        self.void_hold_and_cancel(booking, CancelReason::Expired).await?;
+        Ok(true)
+    }
+
+    /// The one money path for ending a pending booking, shared by the expiry
+    /// sweep and the merchant's own cancel. Void first, then cancel: a failed
+    /// void leaves the booking `Pending` and saves nothing. A booking whose
+    /// payment is not `Authorized` holds nothing, so the void is skipped.
+    async fn void_hold_and_cancel(
+        &self,
+        mut booking: MarketplaceBooking,
+        reason: CancelReason,
+    ) -> anyhow::Result<MarketplaceBooking> {
         if booking.payment_status == BookingPaymentStatus::Authorized {
             let Some(intent_id) = booking.payment_intent_id else {
                 anyhow::bail!("booking {} is authorized with no intent id", booking.id);
@@ -454,11 +474,48 @@ impl MarketplaceService {
             booking.payment_voided().map_err(|e| anyhow::anyhow!("{e}"))?;
         }
 
-        booking.expire()?;
+        match reason {
+            CancelReason::Expired => booking.expire()?,
+            CancelReason::MerchantCancelled => booking.cancel_by_consumer()?,
+        }
         self.repo.save_booking(&booking).await?;
-        tracing::warn!(booking_id = %booking.id, carrier_id = %booking.carrier_id,
-            "carrier did not answer inside the response window — booking cancelled");
-        Ok(true)
+        match reason {
+            CancelReason::Expired => tracing::warn!(booking_id = %booking.id, carrier_id = %booking.carrier_id,
+                "carrier did not answer inside the response window — booking cancelled"),
+            CancelReason::MerchantCancelled => tracing::info!(booking_id = %booking.id, carrier_id = %booking.carrier_id,
+                "merchant cancelled a booking the carrier had not accepted"),
+        }
+        Ok(booking)
+    }
+
+    /// A merchant withdraws a booking the carrier has not accepted. A booking
+    /// that is not the caller's is indistinguishable from a missing one.
+    pub async fn cancel_booking_by_merchant(
+        &self,
+        booking_id: Uuid,
+        tenant_id:  Uuid,
+        user_id:    Uuid,
+    ) -> AppResult<MarketplaceBooking> {
+        let not_found = || AppError::NotFound { resource: "MarketplaceBooking", id: booking_id.to_string() };
+        let booking = self
+            .repo
+            .find_booking_by_id(booking_id)
+            .await
+            .map_err(AppError::internal)?
+            .ok_or_else(not_found)?;
+
+        if booking.tenant_id != tenant_id || booking.booked_by_user_id != Some(user_id) {
+            return Err(not_found());
+        }
+        if booking.status != BookingStatus::Pending {
+            return Err(AppError::BusinessRule(
+                "Only a booking the carrier has not accepted yet can be cancelled.".into(),
+            ));
+        }
+
+        self.void_hold_and_cancel(booking, CancelReason::MerchantCancelled)
+            .await
+            .map_err(AppError::internal)
     }
 
     async fn publish_requested(&self, booking: &MarketplaceBooking) {
@@ -1120,6 +1177,109 @@ mod booking_tests {
         b.created_at = Utc::now() - Duration::days(3);
         b.accept().unwrap();
         assert!(!b.response_window_expired(Utc::now()));
+    }
+
+    // ── Merchant cancel ───────────────────────────────────────────────────
+
+    #[test]
+    fn cancel_by_consumer_works_from_pending_and_fails_once_accepted() {
+        let l = listing(Uuid::new_v4());
+        let mut b = MarketplaceBooking::place(
+            &l, Uuid::new_v4(), Uuid::new_v4(), "AWB".into(), "N".into(), None,
+            "p".into(), "d".into(), 100.0, None, 5.0, Utc::now(),
+        );
+        let mut accepted = b.clone();
+        b.cancel_by_consumer().unwrap();
+        assert_eq!(b.status, BookingStatus::Cancelled);
+
+        accepted.accept().unwrap();
+        accepted.cancel_by_consumer().expect_err("accepted cannot be cancelled");
+        assert_eq!(accepted.status, BookingStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn merchant_cancel_voids_an_authorized_hold_then_cancels() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        let out = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(out.status, BookingStatus::Cancelled);
+        assert_eq!(pay.voids.lock().unwrap().as_slice(), &[b.payment_intent_id.unwrap()]);
+        let saved = repo.booking(b.id);
+        assert_eq!(saved.status, BookingStatus::Cancelled);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Voided);
+    }
+
+    #[tokio::test]
+    async fn a_failed_void_keeps_the_booking_pending_on_merchant_cancel() {
+        let pay = Arc::new(FakePayments { void_fails: true, ..Default::default() });
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        svc.cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .expect_err("void failed");
+
+        let saved = repo.booking(b.id);
+        assert_eq!(saved.status, BookingStatus::Pending);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Authorized);
+    }
+
+    /// Nothing is held for an unpaid booking, so the void is skipped.
+    #[tokio::test]
+    async fn merchant_cancel_skips_the_void_when_nothing_is_authorized() {
+        let tenant = Uuid::new_v4();
+        let l = listing(tenant);
+        let repo = FakeRepo::with_listing(l.clone());
+        let pay = Arc::new(FakePayments::default());
+        let svc = service(repo.clone(), Some(pay.clone()));
+        let user = Uuid::new_v4();
+        let placed = svc
+            .create_booking(tenant, user, cmd(l.id, BookingPaymentMethod::Online))
+            .await
+            .unwrap();
+        assert_ne!(repo.booking(placed.booking.id).payment_status, BookingPaymentStatus::Authorized);
+
+        svc.cancel_booking_by_merchant(placed.booking.id, tenant, user).await.unwrap();
+
+        assert!(pay.voids.lock().unwrap().is_empty());
+        assert_eq!(repo.booking(placed.booking.id).status, BookingStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn merchant_cancel_of_someone_elses_booking_is_not_found() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        let other_user = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, Uuid::new_v4()).await.unwrap_err();
+        let other_tenant = svc
+            .cancel_booking_by_merchant(b.id, Uuid::new_v4(), b.booked_by_user_id.unwrap()).await.unwrap_err();
+        let missing = svc
+            .cancel_booking_by_merchant(Uuid::new_v4(), b.tenant_id, b.booked_by_user_id.unwrap()).await.unwrap_err();
+
+        for e in [&other_user, &other_tenant, &missing] {
+            assert!(matches!(e, AppError::NotFound { resource: "MarketplaceBooking", .. }), "got {e:?}");
+        }
+        assert!(pay.voids.lock().unwrap().is_empty());
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn merchant_cannot_cancel_an_accepted_booking() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+        svc.accept_booking(b.id, b.carrier_id).await.unwrap();
+
+        let err = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::BusinessRule(_)), "got {err:?}");
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Accepted);
     }
 
     // ── Resuming an unfinished payment ────────────────────────────────────

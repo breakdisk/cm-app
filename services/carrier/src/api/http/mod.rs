@@ -144,6 +144,7 @@ pub fn router() -> Router<AppState> {
         // panic at startup, so they share one.
         .route("/v1/marketplace/bookings",                     get(list_bookings).post(create_booking))
         .route("/v1/marketplace/my-bookings",                  get(list_my_bookings))
+        .route("/v1/marketplace/bookings/:booking_id/cancel",  post(cancel_booking))
         .route("/v1/marketplace/bookings/:booking_id/accept",  post(accept_booking))
         .route("/v1/marketplace/bookings/:booking_id/reject",  post(reject_booking))
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
@@ -673,6 +674,22 @@ async fn create_booking(
             "checkout_url": checkout_url,
         })),
     ))
+}
+
+/// POST /v1/marketplace/bookings/:booking_id/cancel
+/// A merchant withdraws a booking the carrier has not accepted yet. Any hold is
+/// voided first; a booking that is not the caller's answers 404 like a missing one.
+async fn cancel_booking(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(booking_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::MARKETPLACE_BOOK)?;
+    let booking = state
+        .marketplace_svc
+        .cancel_booking_by_merchant(booking_id, claims.tenant_id, claims.user_id)
+        .await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "booking": booking }))))
 }
 
 /// GET /v1/marketplace/my-bookings
