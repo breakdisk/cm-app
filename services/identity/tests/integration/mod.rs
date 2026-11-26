@@ -122,7 +122,7 @@ impl std::future::IntoFuture for RequestBuilder {
 
 struct TestResponse {
     status: StatusCode,
-    bytes: bytes::Bytes,
+    bytes: axum::body::Bytes,
 }
 
 impl TestResponse {
@@ -141,7 +141,6 @@ use logisticos_auth::{
     claims::Claims,
     jwt::JwtService,
     password::hash_password,
-    rbac::default_permissions_for_role,
 };
 use logisticos_types::{ApiKeyId, TenantId, UserId};
 
@@ -149,14 +148,21 @@ use logisticos_identity::{
     api::http::{router, AppState},
     application::services::{ApiKeyService, AuthService, TenantService},
     domain::{
-        entities::{ApiKey, AuthIdentity, AuthProvider, Tenant, User},
-        repositories::{ApiKeyRepository, AuthIdentityRepository, TenantRepository, UserRepository},
+        entities::{
+            ApiKey, AuthIdentity, AuthProvider, NewPartnerMembership, PartnerMembership,
+            PricingFeature, Tenant, User,
+        },
+        repositories::{
+            ApiKeyRepository, AuthIdentityRepository, PartnerBinding, PartnerMembershipRepository,
+            PricingFeatureRepository, TenantRepository, UpsertOutcome, UserRepository,
+        },
     },
     infrastructure::{
         cache::RedisCache,
         db::{
-            PgAuditLogRepository, PgEmailVerificationTokenRepository,
-            PgPasswordResetTokenRepository, PgPushTokenRepository,
+            PgAuditLogRepository, PgBrandingRepository, PgDriverInviteTokenRepository,
+            PgEmailVerificationTokenRepository, PgPasswordResetTokenRepository,
+            PgPickupAddressRepository, PgPushTokenRepository,
         },
         external::LogEmailAdapter,
     },
@@ -168,6 +174,10 @@ use async_trait::async_trait;
 
 pub struct InMemoryTenantRepository {
     tenants: Mutex<Vec<Tenant>>,
+}
+
+impl Default for InMemoryTenantRepository {
+    fn default() -> Self { Self::new() }
 }
 
 impl InMemoryTenantRepository {
@@ -211,6 +221,10 @@ pub struct InMemoryUserRepository {
     users: Mutex<Vec<User>>,
 }
 
+impl Default for InMemoryUserRepository {
+    fn default() -> Self { Self::new() }
+}
+
 impl InMemoryUserRepository {
     pub fn new() -> Self {
         Self { users: Mutex::new(Vec::new()) }
@@ -240,6 +254,23 @@ impl UserRepository for InMemoryUserRepository {
             .cloned())
     }
 
+    async fn find_by_email_global(&self, email: &str) -> anyhow::Result<Option<User>> {
+        let store = self.users.lock().unwrap();
+        Ok(store.iter().rev().find(|u| u.email == email).cloned())
+    }
+
+    async fn find_by_phone(
+        &self,
+        tenant_id: &TenantId,
+        phone: &str,
+    ) -> anyhow::Result<Option<User>> {
+        let store = self.users.lock().unwrap();
+        Ok(store
+            .iter()
+            .find(|u| &u.tenant_id == tenant_id && u.phone_number.as_deref() == Some(phone))
+            .cloned())
+    }
+
     async fn save(&self, user: &User) -> anyhow::Result<()> {
         let mut store = self.users.lock().unwrap();
         store.retain(|u| u.id != user.id);
@@ -257,6 +288,10 @@ impl UserRepository for InMemoryUserRepository {
 
 pub struct InMemoryApiKeyRepository {
     keys: Mutex<Vec<ApiKey>>,
+}
+
+impl Default for InMemoryApiKeyRepository {
+    fn default() -> Self { Self::new() }
 }
 
 impl InMemoryApiKeyRepository {
@@ -310,6 +345,34 @@ impl AuthIdentityRepository for InMemoryAuthIdentityRepository {
     }
 }
 
+// ─── Pricing + partner membership fakes ─────────────────────────────────────
+// `AuthService` consults both while minting claims. Neither is under test
+// here, so: no tier features, and nobody is a partner's person.
+
+pub struct EmptyPricingFeatureRepository;
+
+#[async_trait]
+impl PricingFeatureRepository for EmptyPricingFeatureRepository {
+    async fn list_all(&self) -> anyhow::Result<Vec<PricingFeature>> { Ok(vec![]) }
+    async fn list_for_tier(&self, _tier: &str) -> anyhow::Result<Vec<PricingFeature>> { Ok(vec![]) }
+    async fn set_enabled_tiers(&self, _key: &str, _tiers: &[String]) -> anyhow::Result<()> { Ok(()) }
+}
+
+pub struct NoPartnerMembershipRepository;
+
+#[async_trait]
+impl PartnerMembershipRepository for NoPartnerMembershipRepository {
+    async fn binding(&self, _t: uuid::Uuid, _u: uuid::Uuid) -> anyhow::Result<PartnerBinding> {
+        Ok(PartnerBinding::Unbound)
+    }
+    async fn find_active(&self, _t: uuid::Uuid, _u: uuid::Uuid) -> anyhow::Result<Option<PartnerMembership>> {
+        Ok(None)
+    }
+    async fn upsert_active(&self, _new: &NewPartnerMembership) -> anyhow::Result<UpsertOutcome> {
+        anyhow::bail!("not used by the integration suite")
+    }
+}
+
 // ── Test app builder ─────────────────────────────────────────────────────────
 //
 // TenantService::new requires Arc<KafkaProducer> (a concrete type, not a trait
@@ -347,16 +410,18 @@ fn build_test_server(
         86400, // 24 hour refresh
     ));
 
-    let tenant_service = Arc::new(TenantService::new(
-        Arc::clone(&tenant_repo) as Arc<dyn TenantRepository>,
-        Arc::clone(&user_repo) as Arc<dyn UserRepository>,
-        Arc::clone(&kafka),
-    ));
-
     // Use a lazy pool (no real DB) for the concrete repos that tests don't exercise.
     let fake_pool = sqlx::postgres::PgPoolOptions::new()
         .connect_lazy("postgres://test:test@localhost/test_identity")
         .expect("lazy pool");
+
+    let tenant_service = Arc::new(TenantService::new(
+        Arc::clone(&tenant_repo) as Arc<dyn TenantRepository>,
+        Arc::clone(&user_repo) as Arc<dyn UserRepository>,
+        Arc::clone(&kafka),
+        Arc::new(PgDriverInviteTokenRepository::new(fake_pool.clone())),
+    ));
+
     let reset_token_repo = Arc::new(PgPasswordResetTokenRepository::new(fake_pool.clone()));
     let email_verification_token_repo = Arc::new(PgEmailVerificationTokenRepository::new(fake_pool.clone()));
     let push_token_repo = Arc::new(PgPushTokenRepository::new(fake_pool.clone()));
@@ -369,12 +434,15 @@ fn build_test_server(
         Arc::clone(&tenant_repo) as Arc<dyn TenantRepository>,
         Arc::clone(&user_repo) as Arc<dyn UserRepository>,
         Arc::clone(&auth_identity_repo) as Arc<dyn AuthIdentityRepository>,
+        Arc::new(EmptyPricingFeatureRepository),
+        Arc::new(NoPartnerMembershipRepository),
         Arc::clone(&jwt),
         Arc::clone(&reset_token_repo),
         Arc::clone(&email_verification_token_repo),
         Arc::clone(&redis_cache),
         Arc::new(LogEmailAdapter),
         "http://localhost:3002".to_string(),
+        Arc::clone(&kafka),
     ));
 
     let api_key_service = Arc::new(ApiKeyService::new(
@@ -390,6 +458,10 @@ fn build_test_server(
         email_verification_token_repo,
         push_token_repo,
         audit_log,
+        address_repo: Arc::new(PgPickupAddressRepository::new(fake_pool.clone())),
+        branding_repo: Arc::new(PgBrandingRepository::new(fake_pool)),
+        pricing_feature_repo: Arc::new(EmptyPricingFeatureRepository),
+        partner_membership_repo: Arc::new(NoPartnerMembershipRepository),
     });
 
     let app = router(state);
