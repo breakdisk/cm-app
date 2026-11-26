@@ -145,6 +145,9 @@ pub struct GenerateOtpCommand {
     /// the door cannot overwrite the PIN on the recipient's booking screen.
     #[serde(default)]
     pub reissue: bool,
+    /// Set by the handler from the caller's roles, never from the body.
+    #[serde(skip)]
+    pub reveal_to_caller: bool,
 }
 
 #[derive(Debug, Deserialize)]

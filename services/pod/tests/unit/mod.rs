@@ -528,3 +528,37 @@ mod pop_weight_overage {
         assert_eq!(pop.scanned_barcode.as_deref(), Some("AWB-001234567"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Delivery PIN waiver (recipient never received a PIN)
+// ---------------------------------------------------------------------------
+
+mod pin_waiver {
+    use super::*;
+
+    #[test]
+    fn waive_without_a_photo_is_refused() {
+        let mut pod = make_pod(true);
+        let err = pod.waive_undelivered_pin().unwrap_err();
+        assert!(err.contains("photo of the delivered parcel"));
+        assert_eq!(pod.pin_exception, None);
+    }
+
+    #[test]
+    fn waive_with_a_photo_sets_the_pin_exception() {
+        let mut pod = make_pod(true);
+        pod.attach_photo(make_photo());
+        pod.waive_undelivered_pin().unwrap();
+        assert_eq!(pod.pin_exception.as_deref(), Some("PIN_UNDELIVERED"));
+    }
+
+    #[test]
+    fn record_delivery_stamps_only_when_a_channel_is_given() {
+        let mut otp = OtpCode::new(Uuid::new_v4(), Uuid::new_v4(), "+639171234567".into(), "h".into(), chrono::Duration::hours(1));
+        otp.record_delivery(None);
+        assert!(otp.delivered_via.is_none() && otp.delivered_at.is_none());
+        otp.record_delivery(Some("sms"));
+        assert_eq!(otp.delivered_via.as_deref(), Some("sms"));
+        assert!(otp.delivered_at.is_some());
+    }
+}

@@ -113,9 +113,86 @@ pub fn issue_decision(live_pin_failed_attempts: Option<i32>, reissue: bool, max_
     }
 }
 
+/// The state of the shipment's live PIN, as far as the submit path cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LivePinState {
+    /// The PIN is known to have reached the recipient (SMS, or shown to a non-driver caller).
+    pub delivered: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinRequirement {
+    /// A PIN was supplied: verify it.
+    Check,
+    /// The recipient holds a PIN and none was supplied: refuse.
+    RefuseMissing,
+    /// The recipient never got a PIN: accept photo evidence instead.
+    Waive,
+    /// Policy does not require a PIN.
+    NotRequired,
+}
+
+/// Whether a submit needs a PIN. A PIN is demanded only if it reached the recipient.
+pub fn pin_requirement(policy_required: bool, supplied: bool, live_pin: Option<LivePinState>) -> PinRequirement {
+    if supplied {
+        PinRequirement::Check
+    } else if !policy_required {
+        PinRequirement::NotRequired
+    } else if live_pin.is_some_and(|p| p.delivered) {
+        PinRequirement::RefuseMissing
+    } else {
+        PinRequirement::Waive
+    }
+}
+
+/// How a newly issued PIN reached the recipient, if it did.
+pub fn delivered_via(sms_sent: bool, reveal_to_caller: bool) -> Option<&'static str> {
+    if sms_sent {
+        Some("sms")
+    } else if reveal_to_caller {
+        Some("response")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const D: Option<LivePinState> = Some(LivePinState { delivered: true });
+    const U: Option<LivePinState> = Some(LivePinState { delivered: false });
+
+    #[test]
+    fn a_supplied_pin_is_always_checked() {
+        for policy in [true, false] {
+            for live in [None, U, D] {
+                assert_eq!(pin_requirement(policy, true, live), PinRequirement::Check);
+            }
+        }
+    }
+
+    #[test]
+    fn no_pin_is_needed_when_policy_does_not_require_one() {
+        for live in [None, U, D] {
+            assert_eq!(pin_requirement(false, false, live), PinRequirement::NotRequired);
+        }
+    }
+
+    #[test]
+    fn a_missing_pin_is_refused_only_if_the_recipient_received_one() {
+        assert_eq!(pin_requirement(true, false, D), PinRequirement::RefuseMissing);
+        assert_eq!(pin_requirement(true, false, U), PinRequirement::Waive);
+        assert_eq!(pin_requirement(true, false, None), PinRequirement::Waive);
+    }
+
+    #[test]
+    fn delivered_via_picks_sms_then_response_then_nothing() {
+        assert_eq!(delivered_via(true, false), Some("sms"));
+        assert_eq!(delivered_via(true, true), Some("sms"));
+        assert_eq!(delivered_via(false, true), Some("response"));
+        assert_eq!(delivered_via(false, false), None);
+    }
 
     #[test]
     fn the_default_policy_requires_a_pin_that_outlives_sea_freight() {

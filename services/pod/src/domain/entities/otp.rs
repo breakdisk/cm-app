@@ -18,6 +18,12 @@ pub struct OtpCode {
     /// Wrong PINs entered against this code. It locks at the policy's `max_attempts`.
     #[serde(default)]
     pub failed_attempts: i32,
+    /// How the PIN reached the recipient: `"sms"` or `"response"`. `None` means
+    /// it is not known to have reached them (or the row predates tracking).
+    #[serde(default)]
+    pub delivered_via: Option<String>,
+    #[serde(default)]
+    pub delivered_at: Option<DateTime<Utc>>,
 }
 
 impl OtpCode {
@@ -33,6 +39,8 @@ impl OtpCode {
             expires_at: now + ttl,
             created_at: now,
             failed_attempts: 0,
+            delivered_via: None,
+            delivered_at: None,
         }
     }
 
@@ -42,6 +50,14 @@ impl OtpCode {
 
     pub fn is_locked(&self, max_attempts: i32) -> bool {
         self.failed_attempts >= max_attempts
+    }
+
+    /// Stamps how the PIN reached the recipient. A `None` channel leaves it unset.
+    pub fn record_delivery(&mut self, via: Option<&str>) {
+        if let Some(v) = via {
+            self.delivered_via = Some(v.to_string());
+            self.delivered_at = Some(Utc::now());
+        }
     }
 
     pub fn mark_used(&mut self) {
