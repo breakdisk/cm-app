@@ -253,6 +253,37 @@ impl MarketplaceService {
             .map_err(AppError::internal)
     }
 
+    /// Tenant-wide listing read for admin oversight. `tenant_id` must come
+    /// from the validated token.
+    pub async fn list_listings_for_tenant(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<Vec<VehicleListing>> {
+        self.repo
+            .list_listings_by_tenant(tenant_id, limit.clamp(1, 100), offset.max(0))
+            .await
+            .map_err(AppError::internal)
+    }
+
+    /// Tenant-wide booking read for admin oversight. Same visibility rule as
+    /// the carrier inbox: an online booking whose hold has not landed is not
+    /// an offer yet, so it is not listed.
+    pub async fn list_bookings_for_tenant(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<Vec<MarketplaceBooking>> {
+        let bookings = self
+            .repo
+            .list_bookings_by_tenant(tenant_id, limit.clamp(1, 100), offset.max(0))
+            .await
+            .map_err(AppError::internal)?;
+        Ok(bookings.into_iter().filter(MarketplaceBooking::is_offered_to_carrier).collect())
+    }
+
     pub async fn update_listing(
         &self,
         listing_id: Uuid,
@@ -869,6 +900,12 @@ mod booking_tests {
         }
         async fn list_listings_by_carrier(&self, _c: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<VehicleListing>> {
             Ok(self.listings.lock().unwrap().clone())
+        }
+        async fn list_listings_by_tenant(&self, t: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<VehicleListing>> {
+            Ok(self.listings.lock().unwrap().iter().filter(|l| l.tenant_id == t).cloned().collect())
+        }
+        async fn list_bookings_by_tenant(&self, t: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<MarketplaceBooking>> {
+            Ok(self.bookings.lock().unwrap().iter().filter(|b| b.tenant_id == t).cloned().collect())
         }
         async fn update_listing(&self, _l: &VehicleListing) -> anyhow::Result<()> { Ok(()) }
         async fn delete_listing(&self, _id: Uuid) -> anyhow::Result<bool> { Ok(true) }

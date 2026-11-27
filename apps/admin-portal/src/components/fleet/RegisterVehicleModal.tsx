@@ -9,38 +9,38 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { createFleetApi, type RegisterVehiclePayload, type VehicleType } from "@/lib/api/fleet";
 import {
   createVehicleListing,
+  fetchCarrierOptions,
+  SIZE_CLASS_LABEL,
+  type CarrierOption,
   type SizeClass,
-  type VehicleFeature,
   type CreateListingPayload,
 } from "@/lib/api/marketplace";
 
-// ── Vehicle type config (1-to-1 with marketplace SizeClass) ──────────────────
+// ── Vehicle type config (1-to-1 with the carrier service's SizeClass) ───────
+//
+// `fleet_type` is the fleet service's own vehicle enum, sent when registering
+// the vehicle in step 1. It is not the marketplace size class.
 
 interface TypeConfig {
   label:         string;
-  size_class:    SizeClass;
+  fleet_type:    VehicleType;
   icon:          string;
-  def_features:  VehicleFeature[];
   def_weight_kg: number;
   def_base_php:  number;
   def_km_php:    number;
 }
 
-const TYPE_CONFIG: Record<VehicleType, TypeConfig> = {
-  Scooter:            { label: "Scooter / Bicycle", size_class: "scooter_bicycle",   icon: "🛵", def_features: [], def_weight_kg: 30,    def_base_php: 150,  def_km_php: 8  },
-  Motorcycle:         { label: "Motorcycle",         size_class: "motorcycle",         icon: "🏍", def_features: [], def_weight_kg: 80,    def_base_php: 250,  def_km_php: 12 },
-  Sedan:              { label: "Sedan",               size_class: "sedan",              icon: "🚗", def_features: [], def_weight_kg: 300,   def_base_php: 500,  def_km_php: 15 },
-  Van:                { label: "Van",                 size_class: "van",                icon: "🚐", def_features: [], def_weight_kg: 800,   def_base_php: 900,  def_km_php: 18 },
-  Truck_1T:           { label: "1 Ton - Pickup",      size_class: "1ton",               icon: "🚛", def_features: [], def_weight_kg: 1000,  def_base_php: 1200, def_km_php: 22 },
-  Truck_3T:           { label: "3 Ton",               size_class: "3ton",               icon: "🚛", def_features: [], def_weight_kg: 3000,  def_base_php: 2200, def_km_php: 28 },
-  Truck_7T:           { label: "7 Ton",               size_class: "7ton",               icon: "🚛", def_features: [], def_weight_kg: 7000,  def_base_php: 3800, def_km_php: 35 },
-  Truck_10T:          { label: "10 Ton",              size_class: "10ton",              icon: "🚛", def_features: [], def_weight_kg: 10000, def_base_php: 5500, def_km_php: 42 },
-  Trailer:            { label: "Trailer",             size_class: "trailer",            icon: "🚚", def_features: [], def_weight_kg: 20000, def_base_php: 9000, def_km_php: 55 },
-  Refrigerated_Truck: { label: "Refrigerated Truck",  size_class: "refrigerated_truck", icon: "❄️", def_features: [], def_weight_kg: 5000,  def_base_php: 4500, def_km_php: 40 },
-  Recovery_Truck:     { label: "Recovery Truck",      size_class: "recovery_truck",     icon: "🔧", def_features: [], def_weight_kg: 5000,  def_base_php: 3000, def_km_php: 35 },
+const TYPE_CONFIG: Record<SizeClass, TypeConfig> = {
+  motorcycle: { label: SIZE_CLASS_LABEL.motorcycle, fleet_type: "Motorcycle", icon: "🏍", def_weight_kg: 80,    def_base_php: 250,  def_km_php: 12 },
+  sedan:      { label: SIZE_CLASS_LABEL.sedan,      fleet_type: "Sedan",      icon: "🚗", def_weight_kg: 300,   def_base_php: 500,  def_km_php: 15 },
+  van:        { label: SIZE_CLASS_LABEL.van,        fleet_type: "Van",        icon: "🚐", def_weight_kg: 800,   def_base_php: 900,  def_km_php: 18 },
+  l300:       { label: SIZE_CLASS_LABEL.l300,       fleet_type: "Truck_1T",   icon: "🚛", def_weight_kg: 1500,  def_base_php: 1200, def_km_php: 22 },
+  "6wheeler": { label: SIZE_CLASS_LABEL["6wheeler"],  fleet_type: "Truck_7T",  icon: "🚛", def_weight_kg: 5000,  def_base_php: 3800, def_km_php: 35 },
+  "10wheeler":{ label: SIZE_CLASS_LABEL["10wheeler"], fleet_type: "Truck_10T", icon: "🚛", def_weight_kg: 10000, def_base_php: 5500, def_km_php: 42 },
+  trailer:    { label: SIZE_CLASS_LABEL.trailer,    fleet_type: "Trailer",    icon: "🚚", def_weight_kg: 20000, def_base_php: 9000, def_km_php: 55 },
 };
 
-const ALL_TYPES = Object.keys(TYPE_CONFIG) as VehicleType[];
+const ALL_TYPES = Object.keys(TYPE_CONFIG) as SizeClass[];
 
 // Most-used vehicle colors in PH logistics fleet (ordered by frequency)
 const COMMON_COLORS = [
@@ -94,37 +94,11 @@ const MODELS_BY_MAKE: Record<string, Partial<Record<VehicleType, string[]>>> = {
   "UD Trucks":     { Truck_3T: ["Condor MK11E"], Truck_7T: ["Condor PK9E"], Truck_10T: ["Quester CWE"], Trailer: ["Quester CGE"] },
 };
 
-// ── Feature metadata ──────────────────────────────────────────────────────────
-
-const FEATURE_META: Record<VehicleFeature, { label: string; activeClass: string; inactiveClass: string }> = {
-  tail_lift: {
-    label:        "Tail-lift Gate",
-    activeClass:  "border-amber-400/50 bg-amber-400/15 text-amber-300",
-    inactiveClass:"border-glass-border  bg-glass-100   text-white/40",
-  },
-  chiller: {
-    label:        "Chiller (0–8 °C)",
-    activeClass:  "border-cyan-neon/50  bg-cyan-neon/15  text-cyan-neon",
-    inactiveClass:"border-glass-border  bg-glass-100     text-white/40",
-  },
-  freezer: {
-    label:        "Freezer (−18 °C)",
-    activeClass:  "border-blue-400/50  bg-blue-400/15  text-blue-300",
-    inactiveClass:"border-glass-border bg-glass-100   text-white/40",
-  },
-};
-
-const FEATURE_ICONS: Record<VehicleFeature, string> = {
-  tail_lift: "⬆",
-  chiller:   "🌡",
-  freezer:   "❄️",
-};
-
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Step1Fields {
   plate_number:  string;
-  vehicle_type:  VehicleType;
+  size_class:    SizeClass;
   make:          string;
   model:         string;
   year:          string;
@@ -133,7 +107,6 @@ interface Step1Fields {
 
 interface Step2Fields {
   list_on_marketplace: boolean;
-  features:            VehicleFeature[];
   max_weight_kg:       string;
   base_price_php:      string;
   per_km_php:          string;
@@ -159,13 +132,12 @@ interface Props {
 const STEP_LABELS = ["Vehicle Identity", "Marketplace Listing"];
 const THIS_YEAR   = new Date().getFullYear();
 
-function defaultStep2(vtype: VehicleType = "Van"): Step2Fields {
+function defaultStep2(vtype: SizeClass = "van"): Step2Fields {
   const cfg = TYPE_CONFIG[vtype];
   const now = new Date();
   const end = new Date(now.getTime() + 6 * 3_600_000);
   return {
     list_on_marketplace: true,
-    features:            [...cfg.def_features],
     max_weight_kg:       String(cfg.def_weight_kg),
     base_price_php:      String(cfg.def_base_php),
     per_km_php:          String(cfg.def_km_php),
@@ -184,24 +156,9 @@ const inputCls =
 
 const labelCls = "block text-xs text-white/50 mb-1.5 font-medium";
 
-// ── FeatureBadge (small inline tag) ──────────────────────────────────────────
-
-function FeatureBadge({ feature }: { feature: VehicleFeature }) {
-  const palette: Record<VehicleFeature, string> = {
-    tail_lift: "text-amber-400 bg-amber-400/10 border-amber-400/20",
-    chiller:   "text-cyan-400  bg-cyan-400/10  border-cyan-400/20",
-    freezer:   "text-blue-400  bg-blue-400/10  border-blue-400/20",
-  };
-  return (
-    <span className={`inline-flex items-center gap-0.5 text-[10px] font-mono px-1.5 py-0.5 rounded border ${palette[feature]}`}>
-      {FEATURE_ICONS[feature]} {FEATURE_META[feature].label.split(" ")[0]}
-    </span>
-  );
-}
-
 // ── VehicleTypePicker ─────────────────────────────────────────────────────────
 
-function VehicleTypePicker({ value, onChange }: { value: VehicleType; onChange: (v: VehicleType) => void }) {
+function VehicleTypePicker({ value, onChange }: { value: SizeClass; onChange: (v: SizeClass) => void }) {
   const [open, setOpen] = useState(false);
   const ref             = useRef<HTMLDivElement>(null);
   const cfg             = TYPE_CONFIG[value];
@@ -224,11 +181,6 @@ function VehicleTypePicker({ value, onChange }: { value: VehicleType; onChange: 
         <span className="flex items-center gap-2 min-w-0">
           <span className="text-base leading-none flex-shrink-0">{cfg.icon}</span>
           <span className="truncate">{cfg.label}</span>
-          {cfg.def_features.length > 0 && (
-            <span className="hidden sm:flex gap-1 flex-shrink-0">
-              {cfg.def_features.map((f) => <FeatureBadge key={f} feature={f} />)}
-            </span>
-          )}
         </span>
         <ChevronDown
           size={12}
@@ -263,7 +215,6 @@ function VehicleTypePicker({ value, onChange }: { value: VehicleType; onChange: 
                       <span className="text-sm font-mono">{c.label}</span>
                     </span>
                     <span className="flex items-center gap-1 flex-shrink-0">
-                      {c.def_features.map((f) => <FeatureBadge key={f} feature={f} />)}
                       {active && (
                         <span className="w-1.5 h-1.5 rounded-full bg-cyan-neon ml-1" />
                       )}
@@ -383,26 +334,39 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
   const [error,   setError]   = useState<string | null>(null);
 
   const [s1, setS1] = useState<Step1Fields>({
-    plate_number: "", vehicle_type: "Van",
+    plate_number: "", size_class: "van",
     make: "", model: "", year: String(THIS_YEAR), color: "",
   });
-  const [s2,     setS2]     = useState<Step2Fields>(() => defaultStep2("Van"));
+  const [s2,     setS2]     = useState<Step2Fields>(() => defaultStep2("van"));
   const [result, setResult] = useState<RegisterResult | null>(null);
+  const [carriers, setCarriers] = useState<CarrierOption[]>([]);
+  const [carrierId, setCarrierId] = useState("");
+  const [carriersError, setCarriersError] = useState(false);
+
+  // The listing belongs to a carrier in this tenant; load the choices when the modal opens.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    fetchCarrierOptions()
+      .then((c) => { if (live) { setCarriers(c); setCarriersError(false); } })
+      .catch(() => { if (live) setCarriersError(true); });
+    return () => { live = false; };
+  }, [open]);
 
   function reset() {
     setStep(1); setLoading(false); setError(null); setResult(null);
-    setS1({ plate_number: "", vehicle_type: "Van", make: "", model: "", year: String(THIS_YEAR), color: "" });
-    setS2(defaultStep2("Van"));
+    setS1({ plate_number: "", size_class: "van", make: "", model: "", year: String(THIS_YEAR), color: "" });
+    setS2(defaultStep2("van"));
+    setCarrierId("");
   }
 
   function handleClose() { reset(); onClose(); }
 
-  function handleTypeChange(type: VehicleType) {
-    setS1((p) => ({ ...p, vehicle_type: type, make: "", model: "" }));
+  function handleTypeChange(type: SizeClass) {
+    setS1((p) => ({ ...p, size_class: type, make: "", model: "" }));
     const cfg = TYPE_CONFIG[type];
     setS2((p) => ({
       ...p,
-      features:      [...cfg.def_features],
       max_weight_kg: String(cfg.def_weight_kg),
       base_price_php:String(cfg.def_base_php),
       per_km_php:    String(cfg.def_km_php),
@@ -411,15 +375,6 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
 
   function handleMakeChange(make: string) {
     setS1((p) => ({ ...p, make, model: "" }));
-  }
-
-  function toggleFeature(f: VehicleFeature) {
-    setS2((p) => ({
-      ...p,
-      features: p.features.includes(f)
-        ? p.features.filter((x) => x !== f)
-        : [...p.features, f],
-    }));
   }
 
   // ── Step 1: Register vehicle in fleet service ────────────────────────────────
@@ -436,7 +391,7 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
       const api     = createFleetApi();
       const payload: RegisterVehiclePayload = {
         plate_number: s1.plate_number.toUpperCase().trim(),
-        vehicle_type: s1.vehicle_type,
+        vehicle_type: TYPE_CONFIG[s1.size_class].fleet_type,
         make:         s1.make.trim(),
         model:        s1.model.trim(),
         year,
@@ -467,6 +422,7 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
     if (isNaN(weightKg)  || weightKg  <= 0) { setError("Max weight must be a positive number.");  return; }
     if (isNaN(baseCents) || baseCents <= 0) { setError("Base price must be a positive number.");   return; }
     if (isNaN(kmCents)   || kmCents   <= 0) { setError("Per-km rate must be a positive number."); return; }
+    if (!carrierId)                         { setError("Choose the carrier this listing belongs to."); return; }
     if (!s2.service_area_label.trim())      { setError("Service area is required.");               return; }
     if (new Date(s2.idle_until) <= new Date(s2.idle_from)) {
       setError("'Available until' must be after 'Available from'."); return;
@@ -475,9 +431,9 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
     setError(null); setLoading(true);
     try {
       const listing: CreateListingPayload = {
+        carrier_id:                   carrierId,
         vehicle_plate:                result.plate,
-        size_class:                   TYPE_CONFIG[s1.vehicle_type].size_class,
-        features:                     s2.features,
+        size_class:                   s1.size_class,
         max_weight_kg:                weightKg,
         max_volume_m3:                null,
         base_price_cents:             baseCents,
@@ -486,7 +442,6 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
         service_area_label:           s2.service_area_label.trim(),
         idle_from:                    new Date(s2.idle_from).toISOString(),
         idle_until:                   new Date(s2.idle_until).toISOString(),
-        status:                       "active",
         carrier_response_window_mins: 15,
       };
       await createVehicleListing(listing);
@@ -496,9 +451,7 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
     } catch (err: unknown) {
       const e = err as { message?: string };
       setError(
-        e.message?.includes("carrier") || e.message?.includes("401") || e.message?.includes("403")
-          ? "Vehicle registered. Marketplace listing requires carrier portal access — list it from the Partner Portal."
-          : (e.message ?? "Marketplace listing failed. The vehicle was registered successfully."),
+        `Vehicle registered, but the marketplace listing failed: ${e.message ?? "unknown error"}`,
       );
     } finally {
       setLoading(false);
@@ -507,9 +460,10 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
 
   if (!open) return null;
 
-  const vCfg          = TYPE_CONFIG[s1.vehicle_type];
-  const makeOptions   = MAKES_BY_TYPE[s1.vehicle_type] ?? [];
-  const modelOptions  = (MODELS_BY_MAKE[s1.make]?.[s1.vehicle_type] ?? []);
+  const vCfg          = TYPE_CONFIG[s1.size_class];
+  const fleetType     = vCfg.fleet_type;
+  const makeOptions   = MAKES_BY_TYPE[fleetType] ?? [];
+  const modelOptions  = (MODELS_BY_MAKE[s1.make]?.[fleetType] ?? []);
 
   return (
     <AnimatePresence>
@@ -598,10 +552,10 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
                     </div>
                   </div>
 
-                  {/* Vehicle Type — full SizeClass list with feature badges */}
+                  {/* Vehicle Type — the carrier service's SizeClass list */}
                   <div>
                     <label className={labelCls}>Vehicle Type</label>
-                    <VehicleTypePicker value={s1.vehicle_type} onChange={handleTypeChange} />
+                    <VehicleTypePicker value={s1.size_class} onChange={handleTypeChange} />
                   </div>
 
                   {/* Make + Model — combobox with brand pre-fill */}
@@ -702,35 +656,21 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
                   {/* Listing fields */}
                   {s2.list_on_marketplace && (
                     <div className="space-y-3 pt-1">
-                      <div className="rounded-lg border border-purple-plasma/20 bg-purple-plasma/5 px-3 py-2 text-[11px] font-mono text-white/40">
-                        🏢 Listed under: LogisticOS Platform Fleet · auto-assigned carrier
-                      </div>
-
-                      {/* Vehicle Features */}
                       <div>
-                        <label className={labelCls}>Vehicle Features</label>
-                        <div className="flex gap-2 flex-wrap">
-                          {(["tail_lift", "chiller", "freezer"] as VehicleFeature[]).map((f) => {
-                            const meta    = FEATURE_META[f];
-                            const checked = s2.features.includes(f);
-                            return (
-                              <button
-                                key={f}
-                                type="button"
-                                onClick={() => toggleFeature(f)}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition-all ${
-                                  checked ? meta.activeClass : meta.inactiveClass
-                                }`}
-                              >
-                                <span>{FEATURE_ICONS[f]}</span>
-                                <span>{meta.label}</span>
-                                {checked && (
-                                  <span className="ml-0.5 opacity-70">✓</span>
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
+                        <label className={labelCls}>Carrier</label>
+                        <select
+                          className={inputCls}
+                          value={carrierId}
+                          onChange={(e) => setCarrierId(e.target.value)}
+                        >
+                          <option value="">Select a carrier…</option>
+                          {carriers.map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                        {carriersError && (
+                          <p className="mt-1 text-[11px] text-red-400">Carriers could not be loaded. Close and reopen to retry.</p>
+                        )}
                       </div>
 
                       {/* Weight + Pricing */}
@@ -886,14 +826,6 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
                           <span className="text-xs text-white/40 font-mono">Marketplace</span>
                           <span className="text-xs text-purple-plasma font-mono font-semibold">Listed · Active</span>
                         </div>
-                        {s2.features.length > 0 && (
-                          <div className="flex justify-between items-center">
-                            <span className="text-xs text-white/40 font-mono">Features</span>
-                            <span className="flex gap-1">
-                              {s2.features.map((f) => <FeatureBadge key={f} feature={f} />)}
-                            </span>
-                          </div>
-                        )}
                       </>
                     )}
                   </div>

@@ -55,6 +55,7 @@ aws-config.workspace  = true
 # test waits out the producer's 5s message timeout. Not feature-gated in 0.36;
 # the workspace's `cmake-build` is what supplies librdkafka's mock support.
 rdkafka.workspace = true
+tower.workspace = true
 tokio   = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # `ServiceExt::oneshot` for driving the real router in tests/integration.
 tower   = { workspace = true, features = ["util"] }
