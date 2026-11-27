@@ -156,7 +156,7 @@ pub fn build_context(tenant_id: Uuid, topic: &str, payload: &Value) -> RuleConte
         service_type: payload["service_type"].as_str().map(str::to_owned),
         zone:         payload["zone"].as_str().map(str::to_owned),
         attempt_count: payload["attempt_number"].as_u64().map(|n| n as u32),
-        shipment_value_cents: payload["cod_amount"].as_i64(),
+        shipment_value_cents: payload["cod_amount_cents"].as_i64().or_else(|| payload["cod_amount"].as_i64()),
         current_hour: chrono::Local::now().hour() as u8,
         current_day: chrono::Local::now().format("%A").to_string(),
         metadata: payload.clone(),
@@ -206,32 +206,73 @@ pub async fn enrich_segments(
 
 use chrono::Timelike;
 
+/// An action that could not run for this event, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedAction {
+    pub action: String,
+    pub reason: String,
+}
+
+/// What `execute_actions` actually did: actions that ran, and actions that
+/// were skipped because the event lacked what they need or no integration exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecutionReport {
+    pub ran: Vec<String>,
+    pub skipped: Vec<SkippedAction>,
+}
+
+impl ExecutionReport {
+    /// "skipped" when nothing ran and something was skipped; otherwise "success".
+    pub fn outcome(&self) -> &'static str {
+        if self.ran.is_empty() && !self.skipped.is_empty() { "skipped" } else { "success" }
+    }
+
+    /// Entries for the execution log: ran actions, then `skipped: <action> (<reason>)`.
+    pub fn logged_actions(&self) -> Vec<String> {
+        self.ran
+            .iter()
+            .cloned()
+            .chain(self.skipped.iter().map(|s| format!("skipped: {} ({})", s.action, s.reason)))
+            .collect()
+    }
+}
+
 /// Execute a rule's actions against the event context.
 pub async fn execute_actions(
     rule: &AutomationRule,
     ctx: &RuleContext,
     executor: &dyn ActionExecutor,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ExecutionReport> {
+    let mut report = ExecutionReport::default();
     for action in &rule.actions {
-        match action {
-            RuleAction::RescheduleDelivery { delay_hours } => {
-                if let Some(shipment_id) = ctx.shipment_id {
+        let label = format!("{action:?}");
+        // Some(reason) when the action cannot run for this event.
+        let skip_reason: Option<&str> = match action {
+            RuleAction::RescheduleDelivery { delay_hours } => match ctx.shipment_id {
+                Some(shipment_id) => {
                     executor.reschedule_delivery(shipment_id, *delay_hours).await?;
+                    None
                 }
-            }
+                None => Some("event has no shipment_id"),
+            },
             RuleAction::NotifyCustomer { channel, template_id } => {
-                if let (Some(customer_id), Some(_)) = (ctx.customer_id, ctx.shipment_id) {
-                    executor.notify_customer(
-                        ctx.tenant_id,
-                        customer_id,
-                        channel,
-                        template_id,
-                        ctx,
-                    ).await?;
+                match (ctx.customer_id, ctx.shipment_id) {
+                    (Some(customer_id), Some(_)) => {
+                        executor.notify_customer(
+                            ctx.tenant_id,
+                            customer_id,
+                            channel,
+                            template_id,
+                            ctx,
+                        ).await?;
+                        None
+                    }
+                    _ => Some("event has no customer_id and shipment_id"),
                 }
             }
             RuleAction::AlertDispatcher { message, priority } => {
                 executor.alert_dispatcher(ctx.tenant_id, message, priority).await?;
+                None
             }
             RuleAction::LogAuditEvent { event_type } => {
                 tracing::info!(
@@ -241,6 +282,7 @@ pub async fn execute_actions(
                     shipment_id = ?ctx.shipment_id,
                     "Rule action: audit event"
                 );
+                None
             }
             RuleAction::RunAiDispatch => {
                 // Signal to the ai-layer that autonomous dispatch is needed.
@@ -250,6 +292,7 @@ pub async fn execute_actions(
                     "trigger":     "rules_engine",
                 }))?;
                 executor.emit_event("logisticos.ai.dispatch.requested", "", &payload).await?;
+                None
             }
             RuleAction::EscalateToSupport { tier } => {
                 executor.alert_dispatcher(
@@ -257,6 +300,7 @@ pub async fn execute_actions(
                     &format!("Escalation tier {} required for shipment {:?}", tier, ctx.shipment_id),
                     "high",
                 ).await?;
+                None
             }
             RuleAction::TriggerCampaign { campaign_id } => {
                 executor.trigger_campaign(
@@ -265,30 +309,42 @@ pub async fn execute_actions(
                     *campaign_id,
                     ctx,
                 ).await?;
+                None
             }
-            RuleAction::AssignNewDriver => {
-                if let Some(shipment_id) = ctx.shipment_id {
+            RuleAction::AssignNewDriver => match ctx.shipment_id {
+                Some(shipment_id) => {
                     executor.assign_new_driver(ctx.tenant_id, shipment_id).await?;
+                    None
                 }
-            }
-            RuleAction::UpdateShipmentStatus { status } => {
-                if let Some(shipment_id) = ctx.shipment_id {
+                None => Some("event has no shipment_id"),
+            },
+            RuleAction::UpdateShipmentStatus { status } => match ctx.shipment_id {
+                Some(shipment_id) => {
                     executor.update_shipment_status(ctx.tenant_id, shipment_id, status).await?;
+                    None
                 }
-            }
+                None => Some("event has no shipment_id"),
+            },
             RuleAction::WebhookCall { url, method } => {
                 executor.webhook_call(url, method, ctx).await?;
+                None
             }
             RuleAction::NotifyMerchant { .. } | RuleAction::ApplyDiscount { .. } | RuleAction::CreateRefund { .. } => {
-                tracing::warn!(
-                    rule_id = %rule.id, action = ?action,
-                    "Rule action has no downstream integration yet — logged only, no side effect taken"
-                );
+                Some("no downstream integration yet")
+            }
+        };
+
+        match skip_reason {
+            None => report.ran.push(label),
+            Some(reason) => {
+                tracing::warn!(rule_id = %rule.id, action = %label, reason, "Rule action skipped");
+                report.skipped.push(SkippedAction { action: label, reason: reason.to_owned() });
             }
         }
     }
-    Ok(())
+    Ok(report)
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -381,5 +437,96 @@ mod tests {
         let ctx = build_context(t, topics::DELIVERY_FAILED, &data);
         assert_eq!(ctx.shipment_id, Some(shipment));
         assert!(ctx.driver_id.is_some());
+    }
+
+    fn rule_with(actions: Vec<RuleAction>) -> AutomationRule {
+        AutomationRule {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            name: "t".into(),
+            description: String::new(),
+            is_active: true,
+            priority: 1,
+            trigger: RuleTrigger::PaymentOverdue { days: 7 },
+            conditions: vec![],
+            actions,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[derive(Default)]
+    struct NoopExecutor {
+        alerts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ActionExecutor for NoopExecutor {
+        async fn notify_customer(&self, _: Uuid, _: Uuid, _: &str, _: &str, _: &RuleContext) -> anyhow::Result<()> { Ok(()) }
+        async fn reschedule_delivery(&self, _: Uuid, _: u32) -> anyhow::Result<()> { Ok(()) }
+        async fn alert_dispatcher(&self, _: Uuid, _: &str, _: &str) -> anyhow::Result<()> {
+            self.alerts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn emit_event(&self, _: &str, _: &str, _: &[u8]) -> anyhow::Result<()> { Ok(()) }
+        async fn trigger_campaign(&self, _: Uuid, _: &str, _: Uuid, _: &RuleContext) -> anyhow::Result<()> { Ok(()) }
+        async fn assign_new_driver(&self, _: Uuid, _: Uuid) -> anyhow::Result<()> { Ok(()) }
+        async fn update_shipment_status(&self, _: Uuid, _: Uuid, _: &str) -> anyhow::Result<()> { Ok(()) }
+        async fn webhook_call(&self, _: &str, _: &str, _: &RuleContext) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    fn overdue_ctx() -> RuleContext {
+        build_context(
+            Uuid::new_v4(),
+            topics::INVOICE_OVERDUE,
+            &json!({"merchant_id": Uuid::new_v4(), "previous_days_overdue": 6, "days_overdue": 7}),
+        )
+    }
+
+    #[tokio::test]
+    async fn notify_customer_without_ids_is_skipped_with_reason() {
+        let rule = rule_with(vec![RuleAction::NotifyCustomer { channel: "sms".into(), template_id: "t".into() }]);
+        let report = execute_actions(&rule, &overdue_ctx(), &NoopExecutor::default()).await.expect("runs");
+        assert!(report.ran.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+        assert!(report.skipped[0].reason.contains("customer_id"));
+        assert!(report.logged_actions()[0].starts_with("skipped: "));
+    }
+
+    #[tokio::test]
+    async fn all_skipped_execution_is_not_success() {
+        let rule = rule_with(vec![
+            RuleAction::NotifyMerchant { template_id: "t".into() },
+            RuleAction::NotifyCustomer { channel: "sms".into(), template_id: "t".into() },
+        ]);
+        let report = execute_actions(&rule, &overdue_ctx(), &NoopExecutor::default()).await.expect("runs");
+        assert_eq!(report.skipped.len(), 2);
+        assert_eq!(report.outcome(), "skipped");
+    }
+
+    #[tokio::test]
+    async fn mixed_ran_and_skipped_is_success_and_lists_both() {
+        let rule = rule_with(vec![
+            RuleAction::AlertDispatcher { message: "m".into(), priority: "high".into() },
+            RuleAction::NotifyMerchant { template_id: "t".into() },
+        ]);
+        let exec = NoopExecutor::default();
+        let report = execute_actions(&rule, &overdue_ctx(), &exec).await.expect("runs");
+        assert_eq!(exec.alerts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(report.outcome(), "success");
+        let logged = report.logged_actions();
+        assert_eq!(logged.len(), 2);
+        assert!(logged[0].starts_with("AlertDispatcher"));
+        assert!(logged[1].starts_with("skipped: NotifyMerchant"));
+    }
+
+    #[test]
+    fn build_context_reads_cod_amount_cents_and_falls_back() {
+        let t = Uuid::new_v4();
+        let ctx = build_context(t, topics::DELIVERY_FAILED, &json!({"cod_amount_cents": 12_500}));
+        assert_eq!(ctx.shipment_value_cents, Some(12_500));
+        let ctx = build_context(t, topics::DELIVERY_FAILED, &json!({"cod_amount": 900}));
+        assert_eq!(ctx.shipment_value_cents, Some(900));
+        let ctx = build_context(t, topics::DELIVERY_FAILED, &json!({"cod_amount_cents": 1, "cod_amount": 2}));
+        assert_eq!(ctx.shipment_value_cents, Some(1));
     }
 }

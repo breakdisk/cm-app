@@ -43,6 +43,40 @@ pub enum RuleTrigger {
     CampaignTriggered { campaign_id: Uuid },
 }
 
+impl RuleTrigger {
+    /// Whether anything in the platform can fire this trigger today.
+    ///
+    /// Exhaustive on purpose (no `_` arm): adding a variant forces a decision
+    /// here. Unavailable triggers are refused at rule create/update so a rule
+    /// that can never fire is never saved.
+    pub fn is_available(&self) -> bool {
+        match self {
+            // No publisher exists for these.
+            RuleTrigger::DeliveryAttempted { .. }
+            | RuleTrigger::PaymentReceived
+            | RuleTrigger::ShipmentDelayed { .. } => false,
+            RuleTrigger::DeliveryFailed
+            | RuleTrigger::DeliveryCompleted
+            | RuleTrigger::ShipmentCreated
+            | RuleTrigger::ShipmentRescheduled
+            | RuleTrigger::PickupCompleted
+            | RuleTrigger::CodCollected
+            | RuleTrigger::CustomerInactive { .. }
+            | RuleTrigger::DriverIdleExceeded { .. }
+            | RuleTrigger::HubCapacityExceeded { .. }
+            | RuleTrigger::PaymentOverdue { .. }
+            | RuleTrigger::SlaBreach { .. }
+            | RuleTrigger::CampaignTriggered { .. } => true,
+        }
+    }
+
+    /// Variant name without its fields, for error messages.
+    pub fn name(&self) -> String {
+        let dbg = format!("{self:?}");
+        dbg.split([' ', '{']).next().unwrap_or_default().to_owned()
+    }
+}
+
 // ── Conditions ───────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RuleCondition {
@@ -237,5 +271,41 @@ pub fn failed_delivery_rule(tenant_id: Uuid) -> AutomationRule {
         ],
         priority: 10,
         created_at: Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_available_covers_every_variant() {
+        let cases: Vec<(RuleTrigger, bool)> = vec![
+            (RuleTrigger::DeliveryFailed, true),
+            (RuleTrigger::DeliveryCompleted, true),
+            (RuleTrigger::DeliveryAttempted { attempts: 2 }, false),
+            (RuleTrigger::ShipmentCreated, true),
+            (RuleTrigger::ShipmentRescheduled, true),
+            (RuleTrigger::ShipmentDelayed { minutes_late: 30 }, false),
+            (RuleTrigger::PickupCompleted, true),
+            (RuleTrigger::CodCollected, true),
+            (RuleTrigger::PaymentReceived, false),
+            (RuleTrigger::CustomerInactive { days: 30 }, true),
+            (RuleTrigger::DriverIdleExceeded { minutes: 45 }, true),
+            (RuleTrigger::HubCapacityExceeded { threshold_pct: 80 }, true),
+            (RuleTrigger::PaymentOverdue { days: 7 }, true),
+            (RuleTrigger::SlaBreach { sla_type: "delivery".into() }, true),
+            (RuleTrigger::CampaignTriggered { campaign_id: Uuid::nil() }, true),
+        ];
+        assert_eq!(cases.len(), 15);
+        for (t, expected) in cases {
+            assert_eq!(t.is_available(), expected, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn name_strips_fields() {
+        assert_eq!(RuleTrigger::ShipmentDelayed { minutes_late: 5 }.name(), "ShipmentDelayed");
+        assert_eq!(RuleTrigger::PaymentReceived.name(), "PaymentReceived");
     }
 }

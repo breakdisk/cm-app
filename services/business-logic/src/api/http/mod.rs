@@ -116,6 +116,18 @@ struct CreateRuleBody {
     priority:    Option<u32>,
 }
 
+/// Refuse triggers nothing can fire, so a rule that can never run is never saved.
+pub fn ensure_trigger_available(trigger: &RuleTrigger) -> Result<(), AppError> {
+    if trigger.is_available() {
+        Ok(())
+    } else {
+        Err(AppError::BusinessRule(format!(
+            "Trigger {} is not yet available: no event source publishes it, so a rule using it could never fire.",
+            trigger.name()
+        )))
+    }
+}
+
 async fn create_rule(
     State(state): State<AppState>,
     claims: AuthClaims,
@@ -124,6 +136,7 @@ async fn create_rule(
     if body.actions.is_empty() {
         return Err(AppError::Validation("rules must have at least one action".into()));
     }
+    ensure_trigger_available(&body.trigger)?;
 
     let rule = AutomationRule {
         id:          Uuid::new_v4(),
@@ -193,6 +206,8 @@ async fn update_rule(
     if rule.tenant_id != claims.tenant_id {
         return Err(AppError::Forbidden { resource: "rule".to_owned() });
     }
+
+    ensure_trigger_available(&body.trigger)?;
 
     rule.name        = body.name;
     rule.description = body.description.unwrap_or_default();
@@ -452,6 +467,7 @@ async fn mcp_handler(
                         if actions.is_empty() {
                             return Err("actions must not be empty".to_owned());
                         }
+                        ensure_trigger_available(&trigger).map_err(|e| e.to_string())?;
                         let conditions: Vec<RuleCondition> = args["conditions"]
                             .as_array()
                             .map(|arr| serde_json::from_value(serde_json::Value::Array(arr.clone())).unwrap_or_default())
@@ -540,4 +556,32 @@ async fn reload_from_db(state: &AppState) -> Result<usize, AppError> {
     state.rule_repo.reload(rules).await;
     tracing::info!(count, "Rules engine hot-reloaded");
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_triggers_are_refused_by_name() {
+        for t in [
+            RuleTrigger::DeliveryAttempted { attempts: 3 },
+            RuleTrigger::PaymentReceived,
+            RuleTrigger::ShipmentDelayed { minutes_late: 15 },
+        ] {
+            match ensure_trigger_available(&t) {
+                Err(AppError::BusinessRule(msg)) => {
+                    assert!(msg.contains(&t.name()), "{msg}");
+                    assert!(msg.contains("not yet available"), "{msg}");
+                }
+                other => panic!("expected BusinessRule for {t:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn available_trigger_is_accepted() {
+        assert!(ensure_trigger_available(&RuleTrigger::PaymentOverdue { days: 7 }).is_ok());
+        assert!(ensure_trigger_available(&RuleTrigger::DeliveryFailed).is_ok());
+    }
 }

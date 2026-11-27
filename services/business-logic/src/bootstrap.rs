@@ -386,11 +386,11 @@ async fn run_consumer(
                                     if rule.conditions_met(&ctx) {
                                         tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
 
-                                        let outcome = match execute_actions(rule, &ctx, executor.as_ref()).await {
-                                            Ok(()) => "success",
+                                        let (outcome, actions_log) = match execute_actions(rule, &ctx, executor.as_ref()).await {
+                                            Ok(report) => (report.outcome(), report.logged_actions()),
                                             Err(e) => {
                                                 tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
-                                                "error"
+                                                ("error", rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>())
                                             }
                                         };
 
@@ -400,7 +400,7 @@ async fn run_consumer(
                                             &topic,
                                             ctx.shipment_id,
                                             true,
-                                            &rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>(),
+                                            &actions_log,
                                             outcome,
                                             None,
                                             chrono::Utc::now(),
@@ -783,11 +783,11 @@ async fn check_idle_drivers(
             for rule in rules {
                 if !rule.conditions_met(&ctx) { continue; }
                 tracing::info!(rule_id = %rule.id, driver_id = %d["driver_id"], "DriverIdleExceeded rule fired");
-                let outcome = match crate::application::services::execute_actions(rule, &ctx, executor).await {
-                    Ok(()) => "success",
+                let (outcome, actions_log) = match crate::application::services::execute_actions(rule, &ctx, executor).await {
+                    Ok(report) => (report.outcome(), report.logged_actions()),
                     Err(e) => {
                         tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
-                        "error"
+                        ("error", rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>())
                     }
                 };
                 if let Err(e) = pg_repo.log_execution(
@@ -796,7 +796,7 @@ async fn check_idle_drivers(
                     IDLE_TOPIC,
                     ctx.shipment_id,
                     true,
-                    &rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>(),
+                    &actions_log,
                     outcome,
                     None,
                     chrono::Utc::now(),
