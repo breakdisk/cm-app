@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchProfile, fetchDocumentBlobUrl, isStoredObject } from "@/lib/api/compliance";
 import type { DriverDocument } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
 import { entityLabel, initialsFor, typeLabel } from "@/lib/compliance/labels";
-import { Check, X, ExternalLink, Eye, Loader2, ShieldOff, ShieldCheck } from "lucide-react";
+import { Check, X, ExternalLink, Eye, Loader2, ShieldOff, ShieldCheck, Upload } from "lucide-react";
+import { UploadDocumentModal } from "./upload-document-modal";
 
 interface Props {
   profileId:   string;
@@ -15,6 +16,8 @@ interface Props {
   /** Only present for users with compliance:admin permission. */
   onSuspend?:   (profileId: string, reason?: string) => void;
   onReinstate?: (profileId: string) => void;
+  /** Pass true only for users with compliance:admin - shows "Upload document". */
+  canAdmin?:    boolean;
   /** `document_type_id → name`. Empty while the catalogue is loading. */
   typeNames:   Map<string, string>;
   /** `entity_id → person`. Empty when the roster could not be loaded. */
@@ -57,6 +60,7 @@ export function DocumentDetailPanel({
   onReject,
   onSuspend,
   onReinstate,
+  canAdmin,
   typeNames,
   entityNames,
 }: Props) {
@@ -66,9 +70,18 @@ export function DocumentDetailPanel({
   const [suspendReason,   setSuspendReason]   = useState("");
   const [suspendOpen,     setSuspendOpen]     = useState(false);
   const [views,           setViews]           = useState<Record<string, DocView>>({});
+  const [uploadOpen,      setUploadOpen]      = useState(false);
+  /** Bumped after an upload so the panel re-fetches without the parent's help. */
+  const [localRefresh,    setLocalRefresh]    = useState(0);
+
+  const loadedProfileRef = useRef<string | null>(null);
 
   useEffect(() => {
-    setDetail(null);
+    // After an upload the panel refreshes in place: blanking it would unmount
+    // the "Upload document" trigger and lose the focus the modal returns to.
+    const sameProfile = loadedProfileRef.current === profileId;
+    loadedProfileRef.current = profileId;
+    if (!sameProfile) setDetail(null);
     // Object URLs are held by the document, not the page. Release them when
     // the panel switches profiles, or one courier's licence stays resident in
     // memory behind another courier's row for as long as the tab is open.
@@ -79,7 +92,7 @@ export function DocumentDetailPanel({
     fetchProfile(profileId)
       .then(setDetail)
       .catch(() => setDetail({ profile: null, documents: [] }));
-  }, [profileId, refreshKey]);
+  }, [profileId, refreshKey, localRefresh]);
 
   /**
    * Fetch one document's bytes and show it inline.
@@ -220,6 +233,26 @@ export function DocumentDetailPanel({
           </>
         )}
       </div>
+      )}
+
+      {canAdmin && (
+        <div className="px-4 py-2.5 border-b border-glass-border flex items-center gap-2">
+          <button
+            onClick={() => setUploadOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-cyan-glow/35 bg-cyan-surface/10 px-3 py-1.5 text-xs font-bold text-cyan-neon hover:bg-cyan-surface/20 transition-colors"
+          >
+            <Upload className="h-3 w-3" /> Upload document
+          </button>
+        </div>
+      )}
+      {canAdmin && uploadOpen && (
+        <UploadDocumentModal
+          profileId={profileId}
+          profile={profile}
+          documents={documents}
+          onClose={() => setUploadOpen(false)}
+          onUploaded={() => setLocalRefresh((n) => n + 1)}
+        />
       )}
 
       {/* Document list */}
