@@ -99,7 +99,10 @@ impl From<InvoiceRow> for Invoice {
 
         // Re-parse the invoice number; fall back to a placeholder on corruption.
         let invoice_number = InvoiceNumber::parse(&r.invoice_number)
-            .unwrap_or_else(|_| InvoiceNumber::parse("IN-PH1-2026-01-00001").unwrap());
+            .unwrap_or_else(|_| {
+                InvoiceNumber::parse("IN-PH1-2026-01-00001")
+                    .expect("placeholder literal has a known prefix, a 3-char tenant, month 01 and sequence 00001")
+            });
 
         Invoice {
             id:             InvoiceId::from_uuid(r.id),

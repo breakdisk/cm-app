@@ -74,11 +74,11 @@ impl Route {
         // (`clippy::drain_collect`), and lint is `-D warnings`, so it failed
         // the whole workspace and skipped every downstream test job.
         let mut remaining = std::mem::take(&mut self.stops);
-        sorted.push(remaining.remove(0));
+        let first = remaining.remove(0);
+        let mut last_coords = first.address.coordinates.unwrap_or(Coordinates { lat: 0.0, lng: 0.0 });
+        sorted.push(first);
 
         while !remaining.is_empty() {
-            let last = sorted.last().unwrap();
-            let last_coords = last.address.coordinates.unwrap_or(Coordinates { lat: 0.0, lng: 0.0 });
             let nearest_idx = remaining
                 .iter()
                 .enumerate()
@@ -91,7 +91,9 @@ impl Route {
                 })
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            sorted.push(remaining.remove(nearest_idx));
+            let next = remaining.remove(nearest_idx);
+            last_coords = next.address.coordinates.unwrap_or(Coordinates { lat: 0.0, lng: 0.0 });
+            sorted.push(next);
         }
 
         self.stops = sorted;

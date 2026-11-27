@@ -378,27 +378,20 @@ jobs:
                -A clippy::missing_panics_doc \
                -A clippy::too_many_lines
 
-      # Advisory for now — same reasoning as the rustfmt step above, and the
-      # same instruction: flip this to a gate in the change that clears the
-      # backlog. There are 62 (41 on Result, 21 on Option) as of 2026-08-09.
+      # GATE since 2026-11-26. Production `unwrap()` was driven to zero across the
+      # workspace (R12), so any new `.unwrap()` in a lib or bin target now fails
+      # the build. Use `?` with thiserror/anyhow, `ok_or_else`/`map_err`, or, for
+      # a provably-present constant, `expect("<invariant>")`.
       #
       # The previous implementation was a line-based grep that excluded lines
-      # *containing* `#[cfg(test)]`. Inline `#[cfg(test)] mod tests { … }` is
-      # the dominant pattern here, and an unwrap 120 lines inside such a block
-      # is nowhere near the attribute — so the check reported test doubles and
-      # assertions as production violations. It could not have passed on a
-      # healthy repo, and it never ran, so nobody found out.
-      #
-      # Clippy knows what test code is. Without `--all-targets`, `cfg(test)` is
-      # off, so inline test modules are not compiled and not linted — which is
-      # exactly the boundary this check was trying and failing to express.
-      - name: Check for .unwrap() in production paths (advisory)
-        continue-on-error: true
+      # *containing* `#[cfg(test)]`; it reported test doubles and assertions as
+      # production violations and never ran. Clippy knows what test code is.
+      # Without `--all-targets`, `cfg(test)` is off, so inline test modules are
+      # not compiled and not linted, which is exactly the boundary wanted here.
+      - name: Check for .unwrap() in production paths
         run: |
           cargo clippy --workspace --lib --bins --all-features \
-            -- -W clippy::unwrap_used 2>&1 | grep -E "unwrap\(\) on" -A 2 || true
-          echo ""
-          echo "Use the ? operator with thiserror/anyhow instead."
+            -- -D clippy::unwrap_used
 
       # Replaces a check that could not fail: it grepped src/main.rs and
       # src/router.rs — files these services do not use for routing — and
@@ -753,7 +746,7 @@ jobs:
         run: cargo install cargo-deny --locked --quiet
 
       - name: Run cargo audit (RustSec CVE check)
-        # Three advisories are ignored, each because no fixed version is
+        # Nine advisories are ignored, each because no fixed version is
         # reachable from where the crate actually sits.
         # below re-derives the justification on every run and fails when it
         # stops holding:
@@ -767,6 +760,25 @@ jobs:
         #                      aws-sdk-s3's internals. No released lru fixes it
         #                      and aws-sdk-s3 pins the major version. Unsoundness
         #                      rather than a remotely reachable vulnerability.
+        #   RUSTSEC-2026-0258  h2 0.3 HTTP/2 DoS; internal gRPC only (see deny.toml).
+        # Added 2026-11-27, after rustc 1.100 / the advisory-db refresh:
+        #   RUSTSEC-2026-0387  crypto-bigint 0.5.5 timing variability. Compiled,
+        #                      but only through aws-sigv4's sigv4a feature (ECDSA
+        #                      signing for S3 multi-region access points), which
+        #                      nothing here calls; we sign with HMAC SigV4. The
+        #                      fix is 0.7.6 and aws-sigv4 1.x pins 0.5.
+        #   RUSTSEC-2026-0459  libsqlite3-sys (C SQLite CVE). Never compiled: in
+        #                      Cargo.lock only as sqlx-sqlite's optional dep; we
+        #                      are Postgres-only. Same shape as the rsa ignore.
+        #   RUSTSEC-2026-0543  chrono unmaintained. Informational, no fixed
+        #                      version and no drop-in successor; sqlx, the AWS
+        #                      SDK and every service depend on it.
+        #   RUSTSEC-2026-0555  chrono-tz unmaintained, via tera (payments
+        #   RUSTSEC-2026-0559  chrono-tz-build    invoice templates). Informational.
+        #   RUSTSEC-2026-0441  pin-utils unmaintained, via aws-smithy-http and
+        #                      aws-smithy-runtime. A macro-only crate.
+        # scripts/check-audit-ignores.sh re-checks every one of these and fails
+        # the job when a justification stops holding.
         run: |
           cargo audit \
             --deny warnings \
@@ -775,7 +787,13 @@ jobs:
             --deny yanked \
             --ignore RUSTSEC-2023-0071 \
             --ignore RUSTSEC-2026-0253 \
-            --ignore RUSTSEC-2026-0258
+            --ignore RUSTSEC-2026-0258 \
+            --ignore RUSTSEC-2026-0387 \
+            --ignore RUSTSEC-2026-0441 \
+            --ignore RUSTSEC-2026-0459 \
+            --ignore RUSTSEC-2026-0543 \
+            --ignore RUSTSEC-2026-0555 \
+            --ignore RUSTSEC-2026-0559
 
       # An --ignore never expires on its own: once upstream ships a fix, the flag
       # keeps suppressing the finding and the job stays green for a reason that

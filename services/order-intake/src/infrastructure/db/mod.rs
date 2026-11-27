@@ -169,11 +169,15 @@ impl ShipmentRow {
             _                    => ShipmentStatus::Pending,
         };
         // Parse AWB — fall back to a raw string representation if malformed
-        let awb = Awb::parse(&self.awb).unwrap_or_else(|_| {
-            // For legacy or test rows that don't follow the new format
-            let tenant = logisticos_types::awb::TenantCode::new("PH1").unwrap();
-            Awb::generate(&tenant, logisticos_types::awb::ServiceCode::Standard, 1)
-        });
+        let awb = match Awb::parse(&self.awb) {
+            Ok(awb) => awb,
+            Err(_) => {
+                // For legacy or test rows that don't follow the new format
+                let tenant = logisticos_types::awb::TenantCode::new("PH1")
+                    .map_err(|e| anyhow::anyhow!("fallback tenant code PH1 rejected: {e}"))?;
+                Awb::generate(&tenant, logisticos_types::awb::ServiceCode::Standard, 1)
+            }
+        };
         let payment_status = PaymentRequirement::parse(&self.payment_status).ok_or_else(|| {
             anyhow::anyhow!(
                 "shipment {} has unrecognized payment_status value: {:?}",

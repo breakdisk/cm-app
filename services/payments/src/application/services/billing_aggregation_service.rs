@@ -70,7 +70,8 @@ impl BillingAggregationService {
         // ── Compute period window [from, to) in UTC ───────────────────────────
         let period_start = NaiveDate::from_ymd_opt(cmd.year, cmd.month, 1)
             .ok_or_else(|| AppError::Validation(format!("invalid year/month: {}-{}", cmd.year, cmd.month)))?;
-        let period_end = end_of_month(period_start);
+        let period_end = end_of_month(period_start)
+            .ok_or_else(|| AppError::Validation(format!("invalid year/month: {}-{}", cmd.year, cmd.month)))?;
         let from_utc   = Utc.from_utc_datetime(&period_start.and_time(NaiveTime::MIN));
         let to_utc     = Utc.from_utc_datetime(
             &(period_end + Duration::days(1)).and_time(NaiveTime::MIN),
@@ -322,12 +323,12 @@ impl BillingAggregationService {
     }
 }
 
-fn end_of_month(start: NaiveDate) -> NaiveDate {
+fn end_of_month(start: NaiveDate) -> Option<NaiveDate> {
     let (y, m) = (start.year(), start.month());
     let first_of_next = if m == 12 {
         NaiveDate::from_ymd_opt(y + 1, 1, 1)
     } else {
         NaiveDate::from_ymd_opt(y, m + 1, 1)
-    }.unwrap();
-    first_of_next.pred_opt().unwrap()
+    }?;
+    first_of_next.pred_opt()
 }

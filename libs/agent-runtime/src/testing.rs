@@ -1,6 +1,11 @@
 //! Test doubles. Enabled by the `testing` feature so downstream crates can
 //! reuse them without shipping them in release builds.
 
+// Test doubles only (gated behind the `testing` feature, never in a release
+// build). A poisoned mutex here means a test thread already panicked, and
+// failing the test loudly is the intended behaviour.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

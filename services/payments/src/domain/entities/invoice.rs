@@ -40,12 +40,12 @@ impl BillingPeriod {
             .expect("invalid month");
         // Last day of the month
         let end = if month == 12 {
-            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap()
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)
         } else {
-            NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap()
+            NaiveDate::from_ymd_opt(year, month + 1, 1)
         }
-        .pred_opt()
-        .unwrap();
+        .and_then(|first_of_next| first_of_next.pred_opt())
+        .expect("first day of the following month is within chrono's supported date range");
         Self { start, end }
     }
 

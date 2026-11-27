@@ -57,7 +57,8 @@ impl FedexAdapter {
     async fn bearer_token(&self) -> Result<String, AdapterError> {
         // Return cached token if still valid (with 60-second buffer)
         {
-            let cache = self.token_cache.lock().unwrap();
+            let cache = self.token_cache.lock()
+                .map_err(|_| AdapterError::Auth("token cache lock poisoned".into()))?;
             if let Some(ref c) = *cache {
                 if c.expires > Instant::now() {
                     return Ok(c.token.clone());
@@ -87,7 +88,9 @@ impl FedexAdapter {
         let tr: TokenResp = resp.json().await?;
         let token  = tr.access_token.clone();
         let expiry = Instant::now() + Duration::from_secs(tr.expires_in.saturating_sub(60));
-        *self.token_cache.lock().unwrap() = Some(TokenCache { token: tr.access_token, expires: expiry });
+        *self.token_cache.lock()
+            .map_err(|_| AdapterError::Auth("token cache lock poisoned".into()))? =
+            Some(TokenCache { token: tr.access_token, expires: expiry });
         Ok(token)
     }
 
