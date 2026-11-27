@@ -66,3 +66,27 @@ export function nextFocusIndex(current: number, count: number, shift: boolean): 
   if (current < 0 || current >= count) return shift ? count - 1 : 0;
   return shift ? (current - 1 + count) % count : (current + 1) % count;
 }
+
+/**
+ * The document types that may be uploaded onto a profile: the ones asked of its
+ * entity type in its jurisdiction. The server refuses the rest, so listing them
+ * only invites a rejected upload.
+ */
+export function typesForProfile<T extends { jurisdiction: string; applicable_to: string[] }>(
+  types: T[],
+  profile: { entity_type: string; jurisdiction: string },
+): T[] {
+  return types.filter(
+    (t) =>
+      t.applicable_to.includes(profile.entity_type) &&
+      t.jurisdiction.toLowerCase() === profile.jurisdiction.toLowerCase(),
+  );
+}
+
+/** Does the profile already hold an approved document of this type? */
+export function replacesApproved(
+  documents: { document_type_id: string; status: string }[],
+  typeId: string,
+): boolean {
+  return !!typeId && documents.some((d) => d.document_type_id === typeId && d.status === "approved");
+}

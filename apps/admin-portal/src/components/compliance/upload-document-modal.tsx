@@ -9,11 +9,17 @@ import {
   MAX_DOCUMENT_NUMBER_LENGTH,
   nextFocusIndex,
   readFileAsBase64,
+  replacesApproved,
+  typesForProfile,
   validateUploadFile,
 } from "@/lib/compliance/upload";
 
 interface Props {
   profileId: string;
+  /** The profile being uploaded onto; only types that apply to it are offered. */
+  profile:   { entity_type: string; jurisdiction: string };
+  /** The profile's current documents, to warn when an upload replaces an approved one. */
+  documents: { document_type_id: string; status: string }[];
   onClose:   () => void;
   /** Called after a successful upload, before the modal closes. */
   onUploaded: () => void;
@@ -30,7 +36,7 @@ const LABEL = "text-[11px] uppercase tracking-wider text-white/40";
  * The parent decides whether to render this at all; the server enforces the
  * permission regardless.
  */
-export function UploadDocumentModal({ profileId, onClose, onUploaded }: Props) {
+export function UploadDocumentModal({ profileId, profile, documents, onClose, onUploaded }: Props) {
   const [types,     setTypes]     = useState<DocumentType[]>([]);
   const [typesErr,  setTypesErr]  = useState<string | null>(null);
   const [typeId,    setTypeId]    = useState("");
@@ -97,6 +103,8 @@ export function UploadDocumentModal({ profileId, onClose, onUploaded }: Props) {
     setFile(problem ? null : f);
   }
 
+  const offered = typesForProfile(types, profile);
+  const chosen = offered.find((t) => t.id === typeId);
   const trimmedNumber = number.trim();
   const canSubmit =
     !busy && !!typeId && trimmedNumber.length > 0 &&
@@ -168,11 +176,16 @@ export function UploadDocumentModal({ profileId, onClose, onUploaded }: Props) {
               className={INPUT}
             >
               <option value="">Select a type…</option>
-              {types.map((t) => (
+              {offered.map((t) => (
                 <option key={t.id} value={t.id}>{t.name} ({t.jurisdiction})</option>
               ))}
             </select>
             {typesErr && <span className="text-xs text-red-signal/80">{typesErr}</span>}
+            {chosen && replacesApproved(documents, chosen.id) && (
+              <span role="status" className="text-xs text-amber-300/90">
+                This replaces the courier&apos;s current {chosen.name} and returns them to review.
+              </span>
+            )}
           </div>
 
           <div className="flex flex-col gap-1">

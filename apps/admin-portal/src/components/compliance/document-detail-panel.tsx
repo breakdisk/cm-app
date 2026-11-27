@@ -248,6 +248,8 @@ export function DocumentDetailPanel({
       {canAdmin && uploadOpen && (
         <UploadDocumentModal
           profileId={profileId}
+          profile={profile}
+          documents={documents}
           onClose={() => setUploadOpen(false)}
           onUploaded={() => setLocalRefresh((n) => n + 1)}
         />

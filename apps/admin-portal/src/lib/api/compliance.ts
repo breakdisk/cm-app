@@ -53,6 +53,8 @@ export interface DocumentType {
   id:                string;
   code:              string;
   jurisdiction:      string;
+  /** Entity types this document is asked of, e.g. `["driver"]`. */
+  applicable_to:     string[];
   name:              string;
   description:       string | null;
   is_required:       boolean;

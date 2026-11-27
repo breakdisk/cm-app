@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
-import { MAX_UPLOAD_BYTES, nextFocusIndex, stripDataUrlPrefix, validateUploadFile } from "./upload";
+import { MAX_UPLOAD_BYTES, nextFocusIndex, replacesApproved, stripDataUrlPrefix, typesForProfile, validateUploadFile } from "./upload";
 
 describe("stripDataUrlPrefix", () => {
   it("removes the data: header and keeps the payload", () => {
@@ -58,5 +58,28 @@ describe("nextFocusIndex", () => {
 
   it("returns null when nothing is focusable", () => {
     expect(nextFocusIndex(-1, 0, false)).toBeNull();
+  });
+});
+
+describe("typesForProfile", () => {
+  const t = (id: string, jurisdiction: string, applicable_to: string[]) => ({ id, jurisdiction, applicable_to });
+  const all = [t("a", "PH", ["driver"]), t("b", "MY", ["driver"]), t("c", "PH", ["customer"]), t("d", "ph", ["driver", "customer"])];
+
+  it("keeps only types for the profile's entity type and jurisdiction", () => {
+    const got = typesForProfile(all, { entity_type: "driver", jurisdiction: "PH" }).map((x) => x.id);
+    expect(got).toEqual(["a", "d"]);
+  });
+});
+
+describe("replacesApproved", () => {
+  const docs = [
+    { document_type_id: "x", status: "approved" },
+    { document_type_id: "y", status: "rejected" },
+  ];
+  it("is true only for a type with an approved document", () => {
+    expect(replacesApproved(docs, "x")).toBe(true);
+    expect(replacesApproved(docs, "y")).toBe(false);
+    expect(replacesApproved(docs, "z")).toBe(false);
+    expect(replacesApproved(docs, "")).toBe(false);
   });
 });
