@@ -87,16 +87,20 @@ async function fetchTracking(tn: string): Promise<TrackingResult | null> {
 // ── Status config ─────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ElementType }> = {
-  pending:            { label: "Pending",           color: "#FFAB00", icon: Clock },
-  confirmed:          { label: "Confirmed",         color: "#00E5FF", icon: CheckCircle2 },
-  picked_up:          { label: "Picked Up",         color: "#00E5FF", icon: Package },
-  in_transit:         { label: "In Transit",        color: "#A855F7", icon: Truck },
-  at_hub:             { label: "At Hub",            color: "#A855F7", icon: MapPin },
-  out_for_delivery:   { label: "Out for Delivery",  color: "#00FF88", icon: Truck },
-  delivered:          { label: "Delivered",         color: "#00FF88", icon: CheckCircle2 },
-  failed:             { label: "Delivery Failed",   color: "#FF3B5C", icon: XCircle },
-  cancelled:          { label: "Cancelled",         color: "#6B7280", icon: XCircle },
-  returned:           { label: "Returned",          color: "#FFAB00", icon: AlertCircle },
+  pending:              { label: "Pending",              color: "#FFAB00", icon: Clock },
+  confirmed:            { label: "Confirmed",            color: "#00E5FF", icon: CheckCircle2 },
+  assigned_to_driver:   { label: "Driver Assigned",      color: "#00E5FF", icon: Truck },
+  out_for_pickup:       { label: "Driver On The Way",    color: "#00E5FF", icon: Truck },
+  picked_up:            { label: "Picked Up",            color: "#00E5FF", icon: Package },
+  in_transit:           { label: "In Transit",           color: "#A855F7", icon: Truck },
+  at_hub:               { label: "At Hub",               color: "#A855F7", icon: MapPin },
+  out_for_delivery:     { label: "Out for Delivery",     color: "#00FF88", icon: Truck },
+  delivery_attempted:   { label: "Delivery Attempted",   color: "#FFAB00", icon: AlertCircle },
+  delivered:            { label: "Delivered",            color: "#00FF88", icon: CheckCircle2 },
+  delivery_failed:      { label: "Delivery Failed",      color: "#FF3B5C", icon: XCircle },
+  cancelled:            { label: "Cancelled",            color: "#6B7280", icon: XCircle },
+  return_initiated:     { label: "Return Initiated",     color: "#FFAB00", icon: AlertCircle },
+  returned:             { label: "Returned",             color: "#FFAB00", icon: AlertCircle },
 };
 
 function getStatus(key: string) {
@@ -275,7 +279,7 @@ function TrackingCard({ result }: { result: TrackingResult }) {
 
       {/* CTA row */}
       <div className="px-6 pb-6 flex gap-3">
-        {result.status !== "delivered" && result.status !== "cancelled" && (
+        {!TERMINAL_STATUSES.has(result.status) && result.status !== "return_initiated" && (
           <a
             href={`/reschedule?tn=${result.tracking_number}`}
             className="flex-1 rounded-xl border border-white/10 py-2.5 text-sm text-center text-white/60 hover:text-white hover:border-white/20 transition-colors"
@@ -306,7 +310,7 @@ function TrackingCard({ result }: { result: TrackingResult }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-const TERMINAL_STATUSES = new Set(["delivered", "cancelled", "returned", "failed"]);
+const TERMINAL_STATUSES = new Set(["delivered", "cancelled", "returned"]);
 
 export default function TrackingPage() {
   const [query, setQuery]     = useState("");
