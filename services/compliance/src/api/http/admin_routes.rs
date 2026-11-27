@@ -5,6 +5,8 @@ use serde::Deserialize;
 use logisticos_auth::{middleware::AuthClaims, rbac::permissions, require_permission};
 use logisticos_errors::AppError;
 use crate::api::http::AppState;
+use crate::api::http::upload::{resolve_type_for_profile, store_upload_of_type, UploadDocumentRequest};
+use crate::application::services::DocumentActor;
 use crate::domain::entities::{ComplianceAuditLog, ComplianceProfile, DriverDocument};
 
 #[derive(Deserialize)]
@@ -280,7 +282,13 @@ pub async fn suspend_profile(
     Json(req): Json<SuspendRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, permissions::COMPLIANCE_ADMIN);
-    state.compliance.suspend(profile_id, claims.user_id, req.reason).await?;
+    // NotFound for a foreign tenant, before anything is mutated or published.
+    let profile = profile_in_tenant(
+        state.compliance.profiles.find_by_id(profile_id).await?,
+        profile_id,
+        claims.tenant_id,
+    )?;
+    state.compliance.suspend(claims.tenant_id, profile.id, claims.user_id, req.reason).await?;
     Ok(Json(serde_json::json!({ "data": { "ok": true } })))
 }
 
@@ -290,8 +298,67 @@ pub async fn reinstate_profile(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, permissions::COMPLIANCE_ADMIN);
-    state.compliance.reinstate(profile_id, claims.user_id, None).await?;
+    let profile = profile_in_tenant(
+        state.compliance.profiles.find_by_id(profile_id).await?,
+        profile_id,
+        claims.tenant_id,
+    )?;
+    state.compliance.reinstate(claims.tenant_id, profile.id, claims.user_id, None).await?;
     Ok(Json(serde_json::json!({ "data": { "ok": true } })))
+}
+
+/// The profile an admin may act on: it exists and is in their tenant.
+///
+/// A foreign profile is `NotFound`, not `Forbidden`, so an id from another
+/// tenant cannot be probed for existence on a route that writes.
+fn profile_in_tenant(
+    profile:    Option<ComplianceProfile>,
+    profile_id: Uuid,
+    tenant_id:  Uuid,
+) -> Result<ComplianceProfile, AppError> {
+    profile
+        .filter(|p| p.tenant_id == tenant_id)
+        .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: profile_id.to_string() })
+}
+
+/// `POST /admin/profiles/:profile_id/documents` -- an admin uploads a document
+/// on a courier's behalf.
+///
+/// The document lands as `Submitted` and is audited with the admin as actor.
+/// Nothing is approved here; a reviewer still has to.
+pub async fn upload_document_for_profile(
+    AuthClaims(claims): AuthClaims,
+    Path(profile_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UploadDocumentRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    require_permission!(claims, permissions::COMPLIANCE_ADMIN);
+    let profile = profile_in_tenant(
+        state.compliance.profiles.find_by_id(profile_id).await?,
+        profile_id,
+        claims.tenant_id,
+    )?;
+    // The type is checked against the profile before anything is stored, so a
+    // refused request leaves no orphaned object behind.
+    let doc_type = resolve_type_for_profile(
+        state.compliance.doc_types.as_ref(),
+        &profile,
+        req.document_type_id,
+        req.document_type_code.as_deref(),
+    ).await?;
+    let upload = store_upload_of_type(&state, profile.tenant_id, doc_type.id, req).await?;
+
+    let doc = state.compliance.submit_document(
+        profile.id,
+        upload.document_type_id,
+        upload.document_number,
+        upload.issue_date,
+        upload.expiry_date,
+        upload.file_url,
+        DocumentActor::Admin(claims.user_id),
+    ).await?;
+
+    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "data": doc }))))
 }
 
 #[cfg(test)]
@@ -365,5 +432,74 @@ mod tests {
         assert_eq!(sniff_content_type(&wave), "application/octet-stream");
         assert_eq!(sniff_content_type(b"RIFF"), "application/octet-stream");
         assert_eq!(sniff_content_type(&[b'R', b'I', b'F', b'F', 0, 0]), "application/octet-stream");
+    }
+
+    use super::profile_in_tenant;
+    use crate::domain::entities::{ComplianceProfile, ComplianceStatus};
+    use logisticos_auth::{claims::Claims, rbac::permissions};
+    use logisticos_errors::AppError;
+    use uuid::Uuid;
+
+    fn profile(tenant_id: Uuid) -> ComplianceProfile {
+        ComplianceProfile {
+            id: Uuid::new_v4(), tenant_id, entity_type: "driver".into(),
+            entity_id: Uuid::new_v4(), overall_status: ComplianceStatus::PendingSubmission,
+            jurisdiction: "PH".into(), last_reviewed_at: None, reviewed_by: None,
+            suspended_at: None, created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_profile_in_the_callers_tenant_is_allowed() {
+        let t = Uuid::new_v4();
+        let p = profile(t);
+        assert!(profile_in_tenant(Some(p.clone()), p.id, t).is_ok());
+    }
+
+    #[test]
+    fn a_profile_from_another_tenant_is_404() {
+        let p = profile(Uuid::new_v4());
+        let err = profile_in_tenant(Some(p.clone()), p.id, Uuid::new_v4()).unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+        assert_eq!(err.status_code(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_missing_profile_is_404() {
+        let err = profile_in_tenant(None, Uuid::new_v4(), Uuid::new_v4()).unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    /// The route's gate, run exactly as the handler runs it.
+    fn gate(claims: &Claims) -> Result<(), AppError> {
+        logisticos_auth::require_permission!(claims, permissions::COMPLIANCE_ADMIN);
+        Ok(())
+    }
+
+    fn claims_with(perms: &[&str]) -> Claims {
+        Claims::new(
+            Uuid::new_v4(), Uuid::new_v4(), "demo".into(), "growth".into(), "a@b.test".into(),
+            vec![], perms.iter().map(|p| (*p).to_string()).collect(), 3600,
+        )
+    }
+
+    #[test]
+    fn a_reviewer_without_admin_is_refused_403() {
+        let err = gate(&claims_with(&[permissions::COMPLIANCE_REVIEW])).unwrap_err();
+        assert_eq!(err.status_code(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn compliance_admin_passes_the_gate() {
+        assert!(gate(&claims_with(&[permissions::COMPLIANCE_ADMIN])).is_ok());
+    }
+
+    /// `suspend_profile` and `reinstate_profile` run exactly this before any
+    /// mutation; a foreign id is a 404, never a suspension.
+    #[test]
+    fn suspend_and_reinstate_refuse_a_foreign_tenants_profile_with_404() {
+        let theirs = profile(Uuid::new_v4());
+        let err = profile_in_tenant(Some(theirs.clone()), theirs.id, Uuid::new_v4()).unwrap_err();
+        assert_eq!(err.status_code(), axum::http::StatusCode::NOT_FOUND);
     }
 }

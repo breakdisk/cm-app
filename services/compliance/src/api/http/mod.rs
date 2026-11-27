@@ -89,6 +89,12 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(admin_routes::approve_document))
         .route("/api/v1/compliance/admin/documents/:doc_id/reject",
             post(admin_routes::reject_document))
+        // On behalf of a courier with no app: without this a field worker can
+        // never leave `pending_submission`. Same body limit as the self-upload
+        // route, scoped to this route alone.
+        .route("/api/v1/compliance/admin/profiles/:profile_id/documents",
+            post(admin_routes::upload_document_for_profile)
+                .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)))
         .route("/api/v1/compliance/admin/profiles/:profile_id/suspend",
             post(admin_routes::suspend_profile))
         .route("/api/v1/compliance/admin/profiles/:profile_id/reinstate",
@@ -101,5 +107,6 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
 mod health;
 mod driver_routes;
+mod upload;
 mod admin_routes;
 mod internal_routes;
