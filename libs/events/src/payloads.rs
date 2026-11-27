@@ -643,7 +643,8 @@ pub struct TierChanged {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobDropped {
     pub tenant_id:    Uuid,
-    /// Identity user id — dispatch keys assignments on it.
+    /// Identity user id — dispatch keys assignments on it. Equal to
+    /// driver_ops.drivers.id (enforced by driver-ops migration 0014).
     pub driver_id:    Uuid,
     pub route_id:     Uuid,
     pub shipment_ids: Vec<Uuid>,
