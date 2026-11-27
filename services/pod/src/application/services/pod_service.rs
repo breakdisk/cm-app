@@ -22,7 +22,8 @@ use crate::{
             MAX_PHOTOS_PER_POD, MAX_PHOTO_SIZE_BYTES,
             is_allowed_content_type, generate_otp, hash_otp, verify_otp,
             delivery_pin::{
-                attempts_left, issue_decision, DeliveryPinPolicy, IssueDecision, IssuedPin, PinRejection,
+                attempts_left, delivered_via, issue_decision, pin_requirement, DeliveryPinPolicy, IssueDecision,
+                IssuedPin, live_pin_state, supersede_decision, PinRejection, SupersedeDecision, PinRequirement,
             },
         },
     },
@@ -190,10 +191,8 @@ impl PodService {
         }
 
         let s3_key = format!(
-            "pod/{}/{}/{}/{}.{}",
-            tenant_id.inner(),
-            pod.shipment_id,
-            pod_id,
+            "{}{}.{}",
+            pod.upload_key_prefix(),
             Uuid::new_v4(),
             if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" }
         );
@@ -281,12 +280,60 @@ impl PodService {
         // Delivery PIN. Required unless DELIVERY_PIN__REQUIRED=false, and a PIN
         // that is supplied is always checked. Every POD is a delivery, so there
         // is no task type to exempt.
-        let pin = match cmd.otp_code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-            Some(code) => Some(self.check_delivery_pin(tenant_id.inner(), pod.shipment_id, code).await?),
-            None if self.pin_policy.required => {
+        //
+        // A PIN is demanded only if it reached the recipient. Shipments booked
+        // outside the customer app, with no SMS provider, never got one; those
+        // deliveries are waived on photo evidence and tagged PIN_UNDELIVERED.
+        let supplied_code = cmd.otp_code.as_deref().map(str::trim).filter(|c| !c.is_empty());
+        let live_pin = if supplied_code.is_none() && self.pin_policy.required {
+            self.otp_repo
+                .find_active_by_shipment(pod.shipment_id, tenant_id.inner()).await
+                .map_err(AppError::Internal)?
+                .filter(OtpCode::is_valid)
+                .map(|o| live_pin_state(o.delivered_via.as_deref()))
+        } else {
+            None
+        };
+        let mut pin_waived = false;
+        let pin = match (
+            pin_requirement(self.pin_policy.required, supplied_code.is_some(), live_pin),
+            supplied_code,
+        ) {
+            (PinRequirement::Check, Some(code)) => {
+                Some(self.check_delivery_pin(tenant_id.inner(), pod.shipment_id, code).await?)
+            }
+            // Unreachable (Check means a code was supplied); refuse rather than skip.
+            (PinRequirement::Check, None) | (PinRequirement::RefuseMissing, _) => {
                 return Err(AppError::BusinessRule(PinRejection::Missing.message()));
             }
-            None => None,
+            (PinRequirement::RefuseNotIssued, _) => {
+                return Err(AppError::BusinessRule(PinRejection::NotIssued.message()));
+            }
+            (PinRequirement::Waive, _) => {
+                pod.waive_undelivered_pin().map_err(|e| AppError::BusinessRule(e.into()))?;
+                // attach_photo records a client-asserted key. The waiver rests on
+                // the photo, so the object must really be in the bucket.
+                let mut stored = false;
+                for key in pod.minted_photo_keys() {
+                    if self.pod_storage.object_exists(&key).await.map_err(AppError::Internal)? {
+                        stored = true;
+                        break;
+                    }
+                }
+                if !stored {
+                    return Err(AppError::BusinessRule(
+                        "The delivery photo has not finished uploading. Wait for the upload, then submit again.".into(),
+                    ));
+                }
+                pin_waived = true;
+                tracing::warn!(
+                    shipment_id = %pod.shipment_id,
+                    pod_id      = %pod.id,
+                    "Delivery PIN never reached the recipient — waived on photo evidence (PIN_UNDELIVERED)"
+                );
+                None
+            }
+            (PinRequirement::NotRequired, _) => None,
         };
         if let Some(otp) = &pin {
             pod.mark_otp_verified(otp.id);
@@ -301,6 +348,23 @@ impl PodService {
         pod.submit().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         let pod_id = pod.id;
         self.pod_repo.save(&pod).await.map_err(AppError::Internal)?;
+
+        if pin_waived {
+            if let Err(e) = self.telemetry.append(TelemetryEntry {
+                tenant_id:        tenant_id.inner(),
+                shipment_id:      pod.shipment_id,
+                task_id:          Some(pod.task_id),
+                driver_id:        Some(driver_id.inner()),
+                event_type:       "POD_PIN_UNDELIVERED".into(),
+                device_timestamp: cmd.device_timestamp.unwrap_or(pod.captured_at),
+                server_timestamp: chrono::Utc::now(),
+                lat:              Some(pod.capture_lat),
+                lng:              Some(pod.capture_lng),
+                metadata:         serde_json::json!({ "pin_exception": crate::domain::entities::proof::PIN_UNDELIVERED, "photo_count": pod.photos.len() }),
+            }).await {
+                tracing::warn!(error = %e, pod_id = %pod_id, "Failed to append POD_PIN_UNDELIVERED telemetry — non-fatal");
+            }
+        }
 
         // The PIN is burned only now. Burning it before the evidence check and the
         // save meant a missing photo or a failed write consumed the recipient's
@@ -724,7 +788,7 @@ impl PodService {
 
         // A replaced PIN needs no delete: find_active_by_shipment takes the newest.
         let code = generate_otp();
-        let otp = OtpCode::new(
+        let mut otp = OtpCode::new(
             tenant_id.inner(),
             cmd.shipment_id,
             cmd.recipient_phone.clone(),
@@ -733,35 +797,53 @@ impl PodService {
         );
         let otp_id = otp.id;
 
-        self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
-
         // SMS is best-effort. A Twilio failure (wrong creds, network, rate-limit)
         // must NOT prevent the PIN from being issued — the customer app shows it
         // to the booking account, and the recipient can ask for a new one.
+        // It is sent before the single insert so the row records whether the PIN
+        // reached the recipient, without a second write.
         let message = format!(
             "Your LogisticOS delivery PIN is {code}. Give it to the driver only when your delivery is in your hands."
         );
-        match self.sms.send(&cmd.recipient_phone, &message).await {
+        let sms_sent = match self.sms.send(&cmd.recipient_phone, &message).await {
             Ok(()) => {
                 tracing::info!(
                     shipment_id = %cmd.shipment_id,
-                    phone       = %cmd.recipient_phone,
+                    phone       = %crate::infrastructure::external::sms::mask_recipient(&cmd.recipient_phone),
                     "OTP dispatched via SMS"
                 );
+                true
             }
             Err(e) => {
-                // Log at ERROR so it shows up in monitoring, but return 200 so
-                // the driver app can proceed using the code from the response.
                 tracing::error!(
                     error       = %e,
                     shipment_id = %cmd.shipment_id,
-                    phone       = %cmd.recipient_phone,
+                    phone       = %crate::infrastructure::external::sms::mask_recipient(&cmd.recipient_phone),
                     "SMS delivery failed — delivery PIN still issued"
                 );
+                false
             }
-        }
+        };
+        let via = delivered_via(sms_sent, cmd.reveal_to_caller);
 
-        Ok(IssuedPin::New { otp_id, code })
+        // The newest row wins in find_active_by_shipment, so an undelivered
+        // replacement would shadow a PIN the recipient holds and make the
+        // delivery waivable. Leave the delivered PIN authoritative.
+        let live_state = live.as_ref().map(|p| live_pin_state(p.delivered_via.as_deref()));
+        if supersede_decision(live_state, via.is_some()) == SupersedeDecision::Refuse {
+            tracing::warn!(
+                shipment_id = %cmd.shipment_id,
+                "New delivery PIN could not be delivered — keeping the recipient's existing PIN"
+            );
+            return Err(AppError::BusinessRule(
+                "The new PIN could not be delivered; the recipient's existing PIN is still valid.".into(),
+            ));
+        }
+        otp.record_delivery(via);
+
+        self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
+
+        Ok(IssuedPin::New { otp_id, code, via })
     }
 
     /// Retrieve a POD record by ID (for admin/ops views).
@@ -928,6 +1010,7 @@ impl PodService {
             "photo_url":           photo_url,
             "signature_url":       signature_url,
             "otp_verified":        pod.otp_verified,
+            "pin_exception":       pod.pin_exception,
             "cod_collected_cents": pod.cod_collected_cents,
             "captured_at":         pod.captured_at,
         })
