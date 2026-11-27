@@ -73,6 +73,7 @@ fn make_shipment(
         booking_currency:            None,
         dest_geocoding:              Default::default(),
         dest_parts:                  Default::default(),
+        sla_due_at:                  None,
         created_at:       Utc::now(),
         updated_at:       Utc::now(),
     }

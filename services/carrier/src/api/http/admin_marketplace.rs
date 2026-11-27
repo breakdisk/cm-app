@@ -184,6 +184,21 @@ mod tests {
             Ok(self.bookings.lock().unwrap().iter().filter(|b| b.tenant_id == t).cloned().collect())
         }
         async fn save_booking(&self, _b: &MarketplaceBooking) -> anyhow::Result<()> { Ok(()) }
+        async fn transition_booking(
+            &self,
+            b: &MarketplaceBooking,
+            expected_status: &crate::domain::entities::BookingStatus,
+            expected_payment: crate::domain::entities::BookingPaymentStatus,
+        ) -> anyhow::Result<bool> {
+            let mut all = self.bookings.lock().unwrap();
+            match all.iter_mut().find(|x| {
+                x.id == b.id && x.tenant_id == b.tenant_id
+                    && x.status == *expected_status && x.payment_status == expected_payment
+            }) {
+                Some(e) => { *e = b.clone(); Ok(true) }
+                None => Ok(false),
+            }
+        }
     }
 
     fn noop_kafka() -> Arc<KafkaProducer> {
