@@ -29,13 +29,20 @@ use logisticos_types::TenantId;
 
 use logisticos_cdp::{
     api::http::router as cdp_router,
-    application::services::ProfileService,
+    application::services::{ConsentService, ProfileService, SegmentService},
     domain::{
-        entities::{BehavioralEvent, CustomerProfile, CustomerId, EventType},
-        repositories::{CustomerProfileRepository, ProfileFilter},
+        entities::{
+            BehavioralEvent, ConsentRecord, CustomerProfile, CustomerId, EventType, Segment,
+            SegmentFilter, SegmentMember,
+        },
+        repositories::{
+            ConsentRepository, CustomerProfileRepository, ProfileFilter, SegmentRepository,
+        },
     },
     AppState,
 };
+use logisticos_events::producer::KafkaProducer;
+use rdkafka::mocking::MockCluster;
 
 // ---------------------------------------------------------------------------
 // In-memory mock repository
@@ -97,13 +104,13 @@ impl CustomerProfileRepository for MockProfileRepo {
             .values()
             .filter(|p| p.tenant_id.inner() == tenant_id.inner())
             .filter(|p| {
-                filter.name_contains.as_ref().map_or(true, |n| {
+                filter.name_contains.as_ref().is_none_or(|n| {
                     p.name.as_deref().unwrap_or("").to_lowercase().contains(&n.to_lowercase())
                 })
             })
-            .filter(|p| filter.email.as_ref().map_or(true, |e| p.email.as_deref() == Some(e)))
-            .filter(|p| filter.phone.as_ref().map_or(true, |ph| p.phone.as_deref() == Some(ph)))
-            .filter(|p| filter.min_clv.map_or(true, |min| p.clv_score >= min))
+            .filter(|p| filter.email.as_ref().is_none_or(|e| p.email.as_deref() == Some(e)))
+            .filter(|p| filter.phone.as_ref().is_none_or(|ph| p.phone.as_deref() == Some(ph)))
+            .filter(|p| filter.min_clv.is_none_or(|min| p.clv_score >= min))
             .cloned()
             .collect();
 
@@ -179,6 +186,168 @@ fn readonly_token() -> String {
     mint_jwt_token(Uuid::new_v4(), vec![permissions::CUSTOMERS_VIEW.to_owned()])
 }
 
+// ---------------------------------------------------------------------------
+// Segment / consent doubles
+//
+// None of the tests below reach the segment or consent routes — `AppState`
+// simply requires the services to exist. The doubles are still real, not
+// canned: CRUD and consent upsert are modelled faithfully, and the four
+// methods that evaluate a `SegmentFilter` against stored profiles (SQL in
+// production) return an error instead of a made-up answer, so a test that
+// starts to depend on them fails loudly rather than passing on a fiction.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct MockSegmentRepo {
+    store: Mutex<HashMap<Uuid, Segment>>,
+}
+
+fn unmodelled(method: &str) -> anyhow::Error {
+    anyhow::anyhow!("MockSegmentRepo::{method} evaluates a SegmentFilter against profiles and is not modelled")
+}
+
+#[async_trait]
+impl SegmentRepository for MockSegmentRepo {
+    async fn create(&self, segment: &Segment) -> anyhow::Result<()> {
+        let mut g = self.store.lock().unwrap();
+        if g.contains_key(&segment.id) {
+            anyhow::bail!("duplicate segment id {}", segment.id);
+        }
+        g.insert(segment.id, segment.clone());
+        Ok(())
+    }
+
+    async fn find_by_id(&self, tenant_id: &TenantId, id: Uuid) -> anyhow::Result<Option<Segment>> {
+        Ok(self
+            .store
+            .lock()
+            .unwrap()
+            .get(&id)
+            .filter(|s| s.tenant_id.inner() == tenant_id.inner())
+            .cloned())
+    }
+
+    async fn list(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Segment>> {
+        let mut v: Vec<Segment> = self
+            .store
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| s.tenant_id.inner() == tenant_id.inner())
+            .cloned()
+            .collect();
+        v.sort_by_key(|s| s.created_at);
+        Ok(v)
+    }
+
+    async fn update(&self, segment: &Segment) -> anyhow::Result<()> {
+        self.store.lock().unwrap().insert(segment.id, segment.clone());
+        Ok(())
+    }
+
+    async fn delete(&self, tenant_id: &TenantId, id: Uuid) -> anyhow::Result<()> {
+        let mut g = self.store.lock().unwrap();
+        if g.get(&id).is_some_and(|s| s.tenant_id.inner() == tenant_id.inner()) {
+            g.remove(&id);
+        }
+        Ok(())
+    }
+
+    async fn query_members(
+        &self,
+        _tenant_id: &TenantId,
+        _filter: &SegmentFilter,
+        _limit: i64,
+        _offset: i64,
+    ) -> anyhow::Result<Vec<SegmentMember>> {
+        Err(unmodelled("query_members"))
+    }
+
+    async fn count_members(&self, _tenant_id: &TenantId, _filter: &SegmentFilter) -> anyhow::Result<i64> {
+        Err(unmodelled("count_members"))
+    }
+
+    async fn refresh_count(&self, id: Uuid, count: i64) -> anyhow::Result<()> {
+        if let Some(s) = self.store.lock().unwrap().get_mut(&id) {
+            s.customer_count = count as i32;
+            s.last_computed = Some(Utc::now());
+        }
+        Ok(())
+    }
+
+    async fn is_member(&self, _tenant_id: &TenantId, _segment_id: Uuid, _customer_id: Uuid) -> anyhow::Result<bool> {
+        Err(unmodelled("is_member"))
+    }
+
+    async fn segment_ids_for_customer(
+        &self,
+        _tenant_id: &TenantId,
+        _customer_id: Uuid,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        Err(unmodelled("segment_ids_for_customer"))
+    }
+}
+
+#[derive(Default)]
+struct MockConsentRepo {
+    /// (tenant, customer, consent_type) -> record; one row per key, as in SQL.
+    store: Mutex<HashMap<(Uuid, Uuid, String), ConsentRecord>>,
+}
+
+#[async_trait]
+impl ConsentRepository for MockConsentRepo {
+    async fn upsert(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+        consent_type: &str,
+        granted: bool,
+        channel: Option<&str>,
+        _ip_address: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now();
+        self.store.lock().unwrap().insert(
+            (tenant_id.inner(), customer_id, consent_type.to_owned()),
+            ConsentRecord {
+                consent_type: consent_type.to_owned(),
+                granted,
+                channel: channel.map(str::to_owned),
+                granted_at: now,
+                revoked_at: if granted { None } else { Some(now) },
+            },
+        );
+        Ok(())
+    }
+
+    async fn list_for_customer(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Vec<ConsentRecord>> {
+        let mut v: Vec<ConsentRecord> = self
+            .store
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((t, c, _), _)| *t == tenant_id.inner() && *c == customer_id)
+            .map(|(_, r)| r.clone())
+            .collect();
+        v.sort_by(|a, b| a.consent_type.cmp(&b.consent_type));
+        Ok(v)
+    }
+}
+
+/// An in-process Kafka broker per app. `MockCluster` is neither `Send` nor
+/// `Sync`, so it cannot live in a static; it is leaked for the life of the test
+/// process instead, which is what keeps the producer's bootstrap address valid.
+fn mock_kafka() -> Arc<KafkaProducer> {
+    let cluster: &'static MockCluster<'static, rdkafka::producer::DefaultProducerContext> =
+        Box::leak(Box::new(MockCluster::new(1).expect("mock Kafka cluster starts")));
+    let brokers = cluster.bootstrap_servers();
+    assert!(!brokers.is_empty(), "mock cluster must expose bootstrap servers");
+    Arc::new(KafkaProducer::new(&brokers).expect("producer builds against mock cluster"))
+}
+
 /// Build a test `Router` from the provided mock repository.
 /// The test app adds the `require_auth` middleware layer so that `AuthClaims`
 /// extractors inside handlers receive the validated claims from request extensions.
@@ -186,7 +355,15 @@ fn build_test_app(repo: MockProfileRepo) -> Router {
     let jwt = Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400));
 
     let profile_svc = Arc::new(ProfileService::new(Arc::new(repo)));
-    let state = AppState { profile_svc };
+    let segment_svc = Arc::new(SegmentService::new(Arc::new(MockSegmentRepo::default())));
+    let consent_svc = Arc::new(ConsentService::new(Arc::new(MockConsentRepo::default())));
+    let state = AppState {
+        profile_svc,
+        segment_svc,
+        consent_svc,
+        jwt: Arc::clone(&jwt),
+        kafka: mock_kafka(),
+    };
 
     cdp_router()
         .layer(middleware::from_fn_with_state(
@@ -340,7 +517,7 @@ mod profile_upsert {
             app,
             Request::builder()
                 .method(Method::PUT)
-                .uri(&format!("/v1/customers/{external_id}"))
+                .uri(format!("/v1/customers/{external_id}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(b"{\"name\":\"x\"}".as_ref()))
                 .unwrap(),
@@ -413,6 +590,11 @@ mod get_profile {
     }
 
     #[tokio::test]
+    // `GET /v1/customers/:id` returns the raw `CustomerProfile`, which carries no
+    // computed `delivery_success_rate` / `preferred_address`; those live on
+    // `ProfileSummary`, which the API returns from the upsert. An empty-body PUT
+    // on an existing profile changes nothing and returns that summary, so these
+    // read the computed values there.
     async fn delivery_success_rate_computed_correctly() {
         // 8 successful / 10 total deliveries (8 successful + 2 failed) = 80 %
         let external_id = Uuid::new_v4();
@@ -451,7 +633,7 @@ mod get_profile {
         let token = ops_token();
         let app = build_test_app(repo);
 
-        let resp = send(app, get_request(&format!("/v1/customers/{external_id}"), &token)).await;
+        let resp = send(app, json_request(Method::PUT, &format!("/v1/customers/{external_id}"), serde_json::json!({}), &token)).await;
 
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp).await;
@@ -467,7 +649,7 @@ mod get_profile {
             app,
             Request::builder()
                 .method(Method::GET)
-                .uri(&format!("/v1/customers/{}", Uuid::new_v4()))
+                .uri(format!("/v1/customers/{}", Uuid::new_v4()))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -903,7 +1085,7 @@ mod preferred_address {
         let token = ops_token();
         let app = build_test_app(repo);
 
-        let resp = send(app, get_request(&format!("/v1/customers/{external_id}"), &token)).await;
+        let resp = send(app, json_request(Method::PUT, &format!("/v1/customers/{external_id}"), serde_json::json!({}), &token)).await;
 
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp).await;
@@ -1021,7 +1203,7 @@ mod delivery_success_rate {
 
         let resp = send(
             app,
-            get_request(&format!("/v1/customers/{external_id}"), &token),
+            json_request(Method::PUT, &format!("/v1/customers/{external_id}"), serde_json::json!({}), &token),
         )
         .await;
 
