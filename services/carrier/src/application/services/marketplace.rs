@@ -49,6 +49,24 @@ pub trait BookingPayments: Send + Sync {
     async fn void(&self, intent_id: Uuid) -> anyhow::Result<()>;
 }
 
+/// The compare-and-set lost: the booking moved (accepted, rejected, cancelled,
+/// or its payment state changed) between our read and our write. Surfaces as
+/// `AppError::BusinessRule`, never a 500, and the expiry sweep treats it as
+/// "someone else already dealt with it".
+#[derive(Debug, thiserror::Error)]
+#[error("booking {0} was changed by someone else while this request was in flight")]
+pub struct BookingTransitionConflict(pub Uuid);
+
+pub(crate) const CONFLICT_MESSAGE: &str =
+    "This booking was just updated by someone else. Refresh and check its current status.";
+
+/// Why a pending booking is being ended; picks the domain transition and the log line.
+#[derive(Clone, Copy)]
+enum CancelReason {
+    Expired,
+    MerchantCancelled,
+}
+
 // ── Input types ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -441,7 +459,42 @@ impl MarketplaceService {
     /// ring-fenced, which is the money-safety-critical direction, so the
     /// booking stays `Pending` and the next tick tries again rather than
     /// advancing past a hold that was never released.
-    async fn expire_booking(&self, mut booking: MarketplaceBooking) -> anyhow::Result<bool> {
+    async fn expire_booking(&self, booking: MarketplaceBooking) -> anyhow::Result<bool> {
+        match self.void_hold_and_cancel(booking, CancelReason::Expired).await {
+            Ok(_) => Ok(true),
+            // The carrier (or the merchant) answered first; nothing to expire.
+            Err(e) if e.downcast_ref::<BookingTransitionConflict>().is_some() => {
+                tracing::info!(err = %e, "booking expiry lost the race; leaving it to the winner");
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The one money path for ending a pending booking, shared by the expiry
+    /// sweep and the merchant's own cancel. Void first, then cancel: a failed
+    /// void leaves the booking `Pending` and saves nothing. A booking whose
+    /// payment is not `Authorized` holds nothing, so the void is skipped.
+    ///
+    /// Provider semantics (services/payments/src/application/services/
+    /// payment_intent_service.rs): `void_intent` bails unless the intent is
+    /// `Authorized` (:586), and `capture_intent` likewise (:488), each behind
+    /// an atomic `claim_for_*` (:592, :505) -- so void-after-capture and
+    /// capture-after-void both return Err, which `CarrierPaymentsClient`
+    /// surfaces as Err (non-2xx). The provider therefore serialises the
+    /// money; the compare-and-set below serialises our own status write, so a
+    /// lost race can never leave the row Cancelled with funds captured.
+    ///
+    /// A payment still `Pending` (checkout open) is cancelled without a void;
+    /// the compare-and-set pins that payment state, and a hold that lands
+    /// afterwards is voided by `booking_payment_consumer::handle_authorized`.
+    async fn void_hold_and_cancel(
+        &self,
+        mut booking: MarketplaceBooking,
+        reason: CancelReason,
+    ) -> anyhow::Result<MarketplaceBooking> {
+        let expected_status  = booking.status.clone();
+        let expected_payment = booking.payment_status;
         if booking.payment_status == BookingPaymentStatus::Authorized {
             let Some(intent_id) = booking.payment_intent_id else {
                 anyhow::bail!("booking {} is authorized with no intent id", booking.id);
@@ -454,11 +507,68 @@ impl MarketplaceService {
             booking.payment_voided().map_err(|e| anyhow::anyhow!("{e}"))?;
         }
 
-        booking.expire()?;
-        self.repo.save_booking(&booking).await?;
-        tracing::warn!(booking_id = %booking.id, carrier_id = %booking.carrier_id,
-            "carrier did not answer inside the response window — booking cancelled");
-        Ok(true)
+        match reason {
+            CancelReason::Expired => booking.expire()?,
+            CancelReason::MerchantCancelled => booking.cancel_by_consumer()?,
+        }
+        if !self.repo.transition_booking(&booking, &expected_status, expected_payment).await? {
+            return Err(BookingTransitionConflict(booking.id).into());
+        }
+        match reason {
+            CancelReason::Expired => tracing::warn!(booking_id = %booking.id, carrier_id = %booking.carrier_id,
+                "carrier did not answer inside the response window — booking cancelled"),
+            CancelReason::MerchantCancelled => tracing::info!(booking_id = %booking.id, carrier_id = %booking.carrier_id,
+                "merchant cancelled a booking the carrier had not accepted"),
+        }
+        Ok(booking)
+    }
+
+    /// A merchant withdraws a booking the carrier has not accepted. A booking
+    /// that is not the caller's is indistinguishable from a missing one.
+    pub async fn cancel_booking_by_merchant(
+        &self,
+        booking_id: Uuid,
+        tenant_id:  Uuid,
+        user_id:    Uuid,
+    ) -> AppResult<MarketplaceBooking> {
+        let not_found = || AppError::NotFound { resource: "MarketplaceBooking", id: booking_id.to_string() };
+        let booking = self
+            .repo
+            .find_booking_by_id(booking_id)
+            .await
+            .map_err(AppError::internal)?
+            .ok_or_else(not_found)?;
+
+        if booking.tenant_id != tenant_id || booking.booked_by_user_id != Some(user_id) {
+            return Err(not_found());
+        }
+        if booking.status != BookingStatus::Pending {
+            return Err(AppError::BusinessRule(
+                "Only a booking the carrier has not accepted yet can be cancelled.".into(),
+            ));
+        }
+
+        match self.void_hold_and_cancel(booking, CancelReason::MerchantCancelled).await
+        {
+            Ok(b) => Ok(b),
+            Err(e) if e.downcast_ref::<BookingTransitionConflict>().is_some() => {
+                Err(AppError::BusinessRule(CONFLICT_MESSAGE.into()))
+            }
+            Err(e) => {
+                // The provider void can fail because the carrier's capture won
+                // the claim: that is a lost race (409), not a server fault.
+                // Re-read; if the booking moved on, report the conflict.
+                let moved_on = matches!(
+                    self.repo.find_booking_by_id(booking_id).await,
+                    Ok(Some(b)) if b.tenant_id == tenant_id && b.status != BookingStatus::Pending
+                );
+                if moved_on {
+                    Err(AppError::BusinessRule(CONFLICT_MESSAGE.into()))
+                } else {
+                    Err(AppError::internal(e))
+                }
+            }
+        }
     }
 
     async fn publish_requested(&self, booking: &MarketplaceBooking) {
@@ -512,6 +622,8 @@ impl MarketplaceService {
             });
         }
 
+        let expected_status  = booking.status.clone();
+        let expected_payment = booking.payment_status;
         booking.accept().map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         // Capture BEFORE persisting the acceptance, mirroring the
@@ -530,7 +642,14 @@ impl MarketplaceService {
             booking.payment_captured().map_err(|e| AppError::internal(anyhow::anyhow!("{e}")))?;
         }
 
-        self.repo.save_booking(&booking).await.map_err(AppError::internal)?;
+        if !self
+            .repo
+            .transition_booking(&booking, &expected_status, expected_payment)
+            .await
+            .map_err(AppError::internal)?
+        {
+            return Err(AppError::BusinessRule(CONFLICT_MESSAGE.into()));
+        }
 
         let payload = logisticos_events::payloads::MarketplaceBookingAccepted {
             booking_id:  booking.id,
@@ -560,6 +679,8 @@ impl MarketplaceService {
             });
         }
 
+        let expected_status  = booking.status.clone();
+        let expected_payment = booking.payment_status;
         booking.reject().map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         // Release the hold before recording the rejection, for the same reason
@@ -577,7 +698,14 @@ impl MarketplaceService {
             booking.payment_voided().map_err(|e| AppError::internal(anyhow::anyhow!("{e}")))?;
         }
 
-        self.repo.save_booking(&booking).await.map_err(AppError::internal)?;
+        if !self
+            .repo
+            .transition_booking(&booking, &expected_status, expected_payment)
+            .await
+            .map_err(AppError::internal)?
+        {
+            return Err(AppError::BusinessRule(CONFLICT_MESSAGE.into()));
+        }
 
         let payload = logisticos_events::payloads::MarketplaceBookingRejected {
             booking_id:  booking.id,
@@ -711,6 +839,11 @@ mod booking_tests {
     struct FakeRepo {
         listings: Mutex<Vec<VehicleListing>>,
         bookings: Mutex<Vec<MarketplaceBooking>>,
+        /// The next N `transition_booking` calls lose the compare-and-set
+        /// (write nothing, return false), as if another writer got in first.
+        lose_transitions: std::sync::atomic::AtomicUsize,
+        /// Every `find_booking_by_id` fails -- a database outage.
+        fail_reads: std::sync::atomic::AtomicBool,
     }
 
     impl FakeRepo {
@@ -757,6 +890,9 @@ mod booking_tests {
             Ok(())
         }
         async fn find_booking_by_id(&self, id: Uuid) -> anyhow::Result<Option<MarketplaceBooking>> {
+            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("connection reset by peer");
+            }
             Ok(self.bookings.lock().unwrap().iter().find(|b| b.id == id).cloned())
         }
         async fn list_bookings_by_carrier(&self, c: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<MarketplaceBooking>> {
@@ -775,6 +911,28 @@ mod booking_tests {
             if let Some(e) = all.iter_mut().find(|x| x.id == b.id) { *e = b.clone(); }
             Ok(())
         }
+        /// Models the SQL guard: write only if the stored row still has the
+        /// expected status and payment status.
+        async fn transition_booking(
+            &self,
+            b: &MarketplaceBooking,
+            expected_status: &BookingStatus,
+            expected_payment: BookingPaymentStatus,
+        ) -> anyhow::Result<bool> {
+            let lose = self.lose_transitions.load(std::sync::atomic::Ordering::SeqCst);
+            if lose > 0 {
+                self.lose_transitions.store(lose - 1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(false);
+            }
+            let mut all = self.bookings.lock().unwrap();
+            match all.iter_mut().find(|x| {
+                x.id == b.id && x.tenant_id == b.tenant_id
+                    && x.status == *expected_status && x.payment_status == expected_payment
+            }) {
+                Some(e) => { *e = b.clone(); Ok(true) }
+                None => Ok(false),
+            }
+        }
     }
 
     // ── Fake gateway ──────────────────────────────────────────────────────
@@ -785,6 +943,17 @@ mod booking_tests {
         voids:         Mutex<Vec<Uuid>>,
         capture_fails: bool,
         void_fails:    bool,
+        /// Fail this many void calls, then succeed -- a flaky provider.
+        void_fail_first: std::sync::atomic::AtomicUsize,
+        /// Runs inside the provider call -- the window in which another
+        /// request can move the booking. Models a racing writer.
+        during_call:   Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    }
+
+    impl FakePayments {
+        fn race(&self) {
+            if let Some(f) = self.during_call.lock().unwrap().as_ref() { f() }
+        }
     }
 
     #[async_trait::async_trait]
@@ -799,12 +968,19 @@ mod booking_tests {
         }
         async fn capture(&self, intent_id: Uuid) -> anyhow::Result<()> {
             self.captures.lock().unwrap().push(intent_id);
+            self.race();
             if self.capture_fails { anyhow::bail!("gateway refused the capture") }
             Ok(())
         }
         async fn void(&self, intent_id: Uuid) -> anyhow::Result<()> {
             self.voids.lock().unwrap().push(intent_id);
+            self.race();
             if self.void_fails { anyhow::bail!("gateway refused the void") }
+            let left = self.void_fail_first.load(std::sync::atomic::Ordering::SeqCst);
+            if left > 0 {
+                self.void_fail_first.store(left - 1, std::sync::atomic::Ordering::SeqCst);
+                anyhow::bail!("gateway timed out on the void")
+            }
             Ok(())
         }
     }
@@ -1120,6 +1296,399 @@ mod booking_tests {
         b.created_at = Utc::now() - Duration::days(3);
         b.accept().unwrap();
         assert!(!b.response_window_expired(Utc::now()));
+    }
+
+    // ── Merchant cancel ───────────────────────────────────────────────────
+
+    #[test]
+    fn cancel_by_consumer_works_from_pending_and_fails_once_accepted() {
+        let l = listing(Uuid::new_v4());
+        let mut b = MarketplaceBooking::place(
+            &l, Uuid::new_v4(), Uuid::new_v4(), "AWB".into(), "N".into(), None,
+            "p".into(), "d".into(), 100.0, None, 5.0, Utc::now(),
+        );
+        let mut accepted = b.clone();
+        b.cancel_by_consumer().unwrap();
+        assert_eq!(b.status, BookingStatus::Cancelled);
+
+        accepted.accept().unwrap();
+        accepted.cancel_by_consumer().expect_err("accepted cannot be cancelled");
+        assert_eq!(accepted.status, BookingStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn merchant_cancel_voids_an_authorized_hold_then_cancels() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        let out = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(out.status, BookingStatus::Cancelled);
+        assert_eq!(pay.voids.lock().unwrap().as_slice(), &[b.payment_intent_id.unwrap()]);
+        let saved = repo.booking(b.id);
+        assert_eq!(saved.status, BookingStatus::Cancelled);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Voided);
+    }
+
+    #[tokio::test]
+    async fn a_failed_void_keeps_the_booking_pending_on_merchant_cancel() {
+        let pay = Arc::new(FakePayments { void_fails: true, ..Default::default() });
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        svc.cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .expect_err("void failed");
+
+        let saved = repo.booking(b.id);
+        assert_eq!(saved.status, BookingStatus::Pending);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Authorized);
+    }
+
+    /// Nothing is held for an unpaid booking, so the void is skipped.
+    #[tokio::test]
+    async fn merchant_cancel_skips_the_void_when_nothing_is_authorized() {
+        let tenant = Uuid::new_v4();
+        let l = listing(tenant);
+        let repo = FakeRepo::with_listing(l.clone());
+        let pay = Arc::new(FakePayments::default());
+        let svc = service(repo.clone(), Some(pay.clone()));
+        let user = Uuid::new_v4();
+        let placed = svc
+            .create_booking(tenant, user, cmd(l.id, BookingPaymentMethod::Online))
+            .await
+            .unwrap();
+        assert_ne!(repo.booking(placed.booking.id).payment_status, BookingPaymentStatus::Authorized);
+
+        svc.cancel_booking_by_merchant(placed.booking.id, tenant, user).await.unwrap();
+
+        assert!(pay.voids.lock().unwrap().is_empty());
+        assert_eq!(repo.booking(placed.booking.id).status, BookingStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn merchant_cancel_of_someone_elses_booking_is_not_found() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        let other_user = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, Uuid::new_v4()).await.unwrap_err();
+        let other_tenant = svc
+            .cancel_booking_by_merchant(b.id, Uuid::new_v4(), b.booked_by_user_id.unwrap()).await.unwrap_err();
+        let missing = svc
+            .cancel_booking_by_merchant(Uuid::new_v4(), b.tenant_id, b.booked_by_user_id.unwrap()).await.unwrap_err();
+
+        for e in [&other_user, &other_tenant, &missing] {
+            assert!(matches!(e, AppError::NotFound { resource: "MarketplaceBooking", .. }), "got {e:?}");
+        }
+        assert!(pay.voids.lock().unwrap().is_empty());
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn merchant_cannot_cancel_an_accepted_booking() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+        svc.accept_booking(b.id, b.carrier_id).await.unwrap();
+
+        let err = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::BusinessRule(_)), "got {err:?}");
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Accepted);
+    }
+
+    // ── Compare-and-set: a lost race is a conflict, not a 500 ─────────────
+
+    /// The carrier's accept lands inside the merchant's void-then-cancel.
+    /// Without the status guard the cancel overwrote it (last writer wins).
+    #[tokio::test]
+    async fn a_cancel_that_loses_the_race_to_an_accept_is_a_conflict_and_changes_nothing() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+        let r = repo.clone();
+        *pay.during_call.lock().unwrap() = Some(Box::new(move || {
+            let mut won = r.booking(b.id);
+            won.accept().unwrap();
+            won.payment_captured().unwrap();
+            r.bookings.lock().unwrap().iter_mut().find(|x| x.id == b.id).into_iter().for_each(|x| *x = won.clone());
+        }));
+
+        let err = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::BusinessRule(_)), "got {err:?}");
+        let saved = repo.booking(b.id);
+        assert_eq!(saved.status, BookingStatus::Accepted);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Captured);
+    }
+
+    /// The carrier's capture wins the provider claim, so the merchant's void is
+    /// refused. That is a lost race (409), not a 500.
+    #[tokio::test]
+    async fn a_merchant_void_refused_because_the_capture_won_is_a_conflict() {
+        let pay = Arc::new(FakePayments { void_fails: true, ..Default::default() });
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+        let r = repo.clone();
+        *pay.during_call.lock().unwrap() = Some(Box::new(move || {
+            let mut won = r.booking(b.id);
+            won.accept().unwrap();
+            won.payment_captured().unwrap();
+            r.bookings.lock().unwrap().iter_mut().find(|x| x.id == b.id).into_iter().for_each(|x| *x = won.clone());
+        }));
+
+        let err = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(&err, AppError::BusinessRule(m) if m == CONFLICT_MESSAGE), "got {err:?}");
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Accepted);
+    }
+
+    /// A void that fails with the booking still pending is a real fault.
+    #[tokio::test]
+    async fn a_merchant_void_that_fails_on_a_still_pending_booking_stays_an_error() {
+        let pay = Arc::new(FakePayments { void_fails: true, ..Default::default() });
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        let err = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(!matches!(err, AppError::BusinessRule(_)), "got {err:?}");
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn an_accept_that_loses_the_race_to_a_cancel_is_a_conflict_and_changes_nothing() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+        let r = repo.clone();
+        *pay.during_call.lock().unwrap() = Some(Box::new(move || {
+            let mut won = r.booking(b.id);
+            won.payment_voided().unwrap();
+            won.cancel_by_consumer().unwrap();
+            r.bookings.lock().unwrap().iter_mut().find(|x| x.id == b.id).into_iter().for_each(|x| *x = won.clone());
+        }));
+
+        let err = svc.accept_booking(b.id, b.carrier_id).await.unwrap_err();
+
+        assert!(matches!(err, AppError::BusinessRule(_)), "got {err:?}");
+        let saved = repo.booking(b.id);
+        assert_eq!(saved.status, BookingStatus::Cancelled);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Voided);
+    }
+
+    #[tokio::test]
+    async fn the_expiry_sweep_leaves_a_booking_it_lost_the_race_on() {
+        let pay = Arc::new(FakePayments::default());
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+        let mut aged = repo.booking(b.id);
+        aged.payment_authorized_at = Some(Utc::now() - Duration::minutes(16));
+        repo.save_booking(&aged).await.unwrap();
+        let r = repo.clone();
+        *pay.during_call.lock().unwrap() = Some(Box::new(move || {
+            let mut won = r.booking(b.id);
+            won.accept().unwrap();
+            won.payment_captured().unwrap();
+            r.bookings.lock().unwrap().iter_mut().find(|x| x.id == b.id).into_iter().for_each(|x| *x = won.clone());
+        }));
+
+        assert_eq!(svc.sweep_expired_bookings().await.unwrap(), 0);
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Accepted);
+    }
+
+    // ── A hold that lands after the merchant cancelled ─────────────────────
+
+    async fn cancelled_with_open_checkout() -> (Arc<FakeRepo>, Arc<FakePayments>, Uuid, Uuid) {
+        let tenant = Uuid::new_v4();
+        let l = listing(tenant);
+        let repo = FakeRepo::with_listing(l.clone());
+        let pay = Arc::new(FakePayments::default());
+        let svc = service(repo.clone(), Some(pay.clone()));
+        let user = Uuid::new_v4();
+        let placed = svc
+            .create_booking(tenant, user, cmd(l.id, BookingPaymentMethod::Online))
+            .await
+            .unwrap();
+        svc.cancel_booking_by_merchant(placed.booking.id, tenant, user).await.unwrap();
+        assert!(pay.voids.lock().unwrap().is_empty(), "nothing was held yet");
+        (repo, pay, placed.booking.id, tenant)
+    }
+
+    #[tokio::test]
+    async fn a_hold_landing_on_a_cancelled_booking_is_voided_not_authorized() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, pay, booking_id, _) = cancelled_with_open_checkout().await;
+        let intent = Uuid::new_v4();
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
+
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
+
+        assert_eq!(pay.voids.lock().unwrap().as_slice(), &[intent]);
+        let saved = repo.booking(booking_id);
+        assert_eq!(saved.status, BookingStatus::Cancelled);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Voided);
+
+        // A redelivery is a no-op: no second void.
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
+        assert_eq!(pay.voids.lock().unwrap().len(), 1);
+    }
+
+    /// Zero-length pauses, same attempt count as production (2 pauses = 3 tries).
+    const NO_WAIT: [std::time::Duration; 2] = [std::time::Duration::ZERO; 2];
+
+    #[tokio::test]
+    async fn a_late_hold_void_that_fails_once_is_retried_and_recorded() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, _, booking_id, _) = cancelled_with_open_checkout().await;
+        let flaky = Arc::new(FakePayments::default());
+        flaky.void_fail_first.store(1, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = flaky.clone();
+        let intent = Uuid::new_v4();
+
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
+
+        assert_eq!(flaky.voids.lock().unwrap().as_slice(), &[intent, intent]);
+        assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Voided);
+    }
+
+    /// A lost compare-and-set after the void must not void again: the provider
+    /// would reject it and we would raise a false manual-release alarm.
+    #[tokio::test]
+    async fn a_cas_conflict_after_a_successful_late_hold_void_does_not_void_again() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, pay, booking_id, _) = cancelled_with_open_checkout().await;
+        repo.lose_transitions.store(1, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
+        let intent = Uuid::new_v4();
+
+        handle_authorized(booking_id, intent, &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
+
+        assert_eq!(pay.voids.lock().unwrap().as_slice(), &[intent], "exactly one provider void");
+        assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Voided);
+    }
+
+    /// Money released, record never written: the error says reconcile, not
+    /// manual release, and the provider was still only asked once.
+    /// (The matching `error!` log is "... RECONCILE BOOKING"; the fakes cannot
+    /// capture tracing output, so the distinct error text stands in for it.)
+    #[tokio::test]
+    async fn a_late_hold_voided_but_never_recorded_errors_as_reconcile_after_one_void() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, pay, booking_id, _) = cancelled_with_open_checkout().await;
+        repo.lose_transitions.store(99, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
+
+        let err = handle_authorized(booking_id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay), &NO_WAIT)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(pay.voids.lock().unwrap().len(), 1, "exactly one provider void");
+        assert!(err.contains("reconcile"), "got {err}");
+        assert!(!err.contains("gateway"), "must not be the void-failed error: {err}");
+        assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Pending);
+    }
+
+    /// The consumer loop commits regardless, so this error is not redelivered:
+    /// three attempts are all the hold gets, and nothing is recorded.
+    #[tokio::test]
+    async fn a_late_hold_void_that_fails_all_three_attempts_errors_and_records_nothing() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let (repo, _, booking_id, _) = cancelled_with_open_checkout().await;
+        let failing = Arc::new(FakePayments { void_fails: true, ..Default::default() });
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = failing.clone();
+
+        handle_authorized(booking_id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay), &NO_WAIT)
+            .await
+            .expect_err("void failed");
+
+        assert_eq!(failing.voids.lock().unwrap().len(), 3);
+        assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Pending);
+    }
+
+    /// The error text must carry both ids, since the consumer's only trace of a
+    /// possibly-stranded hold is the log line built from it.
+    #[tokio::test]
+    async fn an_authorized_arm_error_carries_both_ids_for_a_cas_give_up() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let tenant = Uuid::new_v4();
+        let l = listing(tenant);
+        let repo = FakeRepo::with_listing(l.clone());
+        let pay = Arc::new(FakePayments::default());
+        let svc = service(repo.clone(), Some(pay.clone()));
+        let placed = svc
+            .create_booking(tenant, Uuid::new_v4(), cmd(l.id, BookingPaymentMethod::Online))
+            .await
+            .unwrap();
+        repo.lose_transitions.store(99, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let intent = Uuid::new_v4();
+
+        let err = handle_authorized(placed.booking.id, intent, &dyn_repo, None, &NO_WAIT)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains(&placed.booking.id.to_string()), "got {err}");
+        assert!(err.contains(&intent.to_string()), "got {err}");
+        assert!(err.contains("hold may be stranded"), "got {err}");
+        assert!(err.contains("MANUAL RELEASE / RECONCILE"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn an_authorized_arm_error_carries_both_ids_for_a_repo_error() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let repo = Arc::new(FakeRepo::default());
+        repo.fail_reads.store(true, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let (booking_id, intent) = (Uuid::new_v4(), Uuid::new_v4());
+
+        let err = handle_authorized(booking_id, intent, &dyn_repo, None, &NO_WAIT)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains(&booking_id.to_string()), "got {err}");
+        assert!(err.contains(&intent.to_string()), "got {err}");
+        assert!(err.contains("hold may be stranded"), "got {err}");
+        assert!(err.contains("connection reset"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn a_hold_landing_on_a_pending_booking_is_still_authorized_without_a_void() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let tenant = Uuid::new_v4();
+        let l = listing(tenant);
+        let repo = FakeRepo::with_listing(l.clone());
+        let pay = Arc::new(FakePayments::default());
+        let svc = service(repo.clone(), Some(pay.clone()));
+        let placed = svc
+            .create_booking(tenant, Uuid::new_v4(), cmd(l.id, BookingPaymentMethod::Online))
+            .await
+            .unwrap();
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let dyn_pay: Arc<dyn BookingPayments> = pay.clone();
+
+        handle_authorized(placed.booking.id, Uuid::new_v4(), &dyn_repo, Some(&dyn_pay), &NO_WAIT).await.unwrap();
+
+        let saved = repo.booking(placed.booking.id);
+        assert_eq!(saved.status, BookingStatus::Pending);
+        assert_eq!(saved.payment_status, BookingPaymentStatus::Authorized);
+        assert!(pay.voids.lock().unwrap().is_empty());
     }
 
     // ── Resuming an unfinished payment ────────────────────────────────────
