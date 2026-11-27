@@ -30,6 +30,59 @@ fn authed(req: reqwest::RequestBuilder, ctx: &ToolContext) -> reqwest::RequestBu
     }
 }
 
+/// Parse a caller-supplied id that will be interpolated into a URL path.
+///
+/// Anything that is not a canonical UUID is refused before a request is built:
+/// a raw string such as `<uuid>?tenant_id=<victim>`, `<uuid>/requeue#` or
+/// `../internal/...` would otherwise be re-interpreted by URL parsing (query,
+/// fragment, dot-segment) and could reach a different, unscoped route.
+fn path_uuid(input: &Value, field: &str) -> anyhow::Result<uuid::Uuid> {
+    let raw = input
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("`{field}` is required and must be a UUID string"))?;
+    uuid::Uuid::parse_str(raw.trim())
+        .map_err(|_| anyhow::anyhow!("`{field}` must be a valid UUID"))
+}
+
+/// Max characters of a downstream error body carried into the tool error.
+const ERROR_BODY_MAX: usize = 512;
+
+/// Pure status/body mapping for a downstream response: non-2xx is an error
+/// carrying the status and a truncated body; an empty 2xx body is `null`;
+/// otherwise the parsed JSON.
+fn interpret_response(status: reqwest::StatusCode, body: &[u8]) -> anyhow::Result<Value> {
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(body);
+        let snippet: String = text.chars().take(ERROR_BODY_MAX).collect();
+        anyhow::bail!("downstream returned HTTP {}: {}", status.as_u16(), snippet);
+    }
+    if body.iter().all(|b| b.is_ascii_whitespace()) {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(body)
+        .map_err(|e| anyhow::anyhow!("downstream returned a non-JSON body: {e}"))
+}
+
+/// Send a request and judge success by HTTP status, not by whether the body
+/// happens to parse as JSON.
+async fn send_json(req: reqwest::RequestBuilder) -> anyhow::Result<Value> {
+    let resp = req.send().await?;
+    let status = resp.status();
+    let body = resp.bytes().await?;
+    interpret_response(status, &body)
+}
+
+trait SendJson {
+    async fn send_json(self) -> anyhow::Result<Value>;
+}
+
+impl SendJson for reqwest::RequestBuilder {
+    async fn send_json(self) -> anyhow::Result<Value> {
+        send_json(self).await
+    }
+}
+
 /// Map the `send_notification` tool input onto engagement's
 /// `SendNotificationRequest` body: `variables` become `template_vars` (all
 /// values stringified, as that map is `String -> String`) and `recipient` is
@@ -162,8 +215,7 @@ impl ToolRegistry {
                                 ("radius_km", input.get("radius_km").and_then(|v| v.as_f64()).unwrap_or(10.0).to_string()),
                                 ("tenant_id", input["tenant_id"].as_str().unwrap_or("").to_string()),
                             ])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -192,12 +244,11 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let shipment_id = input["shipment_id"].as_str().unwrap_or("");
+                        let shipment_id = path_uuid(&input, "shipment_id")?;
                         let resp = http
                             .post(format!("{}/v1/internal/shipments/{}/assign", url, shipment_id))
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -228,10 +279,9 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["shipment_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "shipment_id")?;
                         let resp = authed(http.get(format!("{}/v1/shipments/{}", url, id)), &ctx)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -261,13 +311,12 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["shipment_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "shipment_id")?;
                         let resp = authed(
                             http.post(format!("{}/v1/shipments/{}/reschedule", url, id)).json(&input),
                             &ctx,
                         )
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -302,8 +351,7 @@ impl ToolRegistry {
                         let body = notification_request_body(&input);
                         let resp = authed(http.post(format!("{}/v1/notifications/send", url)), &ctx)
                             .json(&body)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -336,8 +384,7 @@ impl ToolRegistry {
                                 ("from", input["from"].as_str().unwrap_or("")),
                                 ("to",   input["to"].as_str().unwrap_or("")),
                             ])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -366,8 +413,7 @@ impl ToolRegistry {
                     Box::pin(async move {
                         let resp = authed(http.post(format!("{}/v1/cod/reconcile", url)), &ctx)
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -397,8 +443,7 @@ impl ToolRegistry {
                     Box::pin(async move {
                         let resp = authed(http.get(format!("{}/v1/analytics/driver-performance", url)), &ctx)
                             .query(&[("driver_id", input["driver_id"].as_str().unwrap_or(""))])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -425,15 +470,14 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let resp = if let Some(id) = input["customer_id"].as_str() {
+                        let resp = if input.get("customer_id").is_some_and(|v| !v.is_null()) {
+                            let id = path_uuid(&input, "customer_id")?;
                             authed(http.get(format!("{}/v1/customers/{}", url, id)), &ctx)
-                                .send().await?
-                                .json::<Value>().await?
+                                .send_json().await?
                         } else {
                             authed(http.get(format!("{}/v1/customers", url)), &ctx)
                                 .query(&[("phone", input["phone"].as_str().unwrap_or(""))])
-                                .send().await?
-                                .json::<Value>().await?
+                                .send_json().await?
                         };
                         Ok(resp)
                     })
@@ -461,10 +505,9 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["customer_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "customer_id")?;
                         let resp = authed(http.get(format!("{}/v1/customers/{}/churn-score", url, id)), &ctx)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -491,10 +534,9 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["customer_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "customer_id")?;
                         let resp = authed(http.get(format!("{}/v1/customers/{}/preferences", url, id)), &ctx)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -522,11 +564,10 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let shipment_id = input["shipment_id"].as_str().unwrap_or("");
+                        let shipment_id = path_uuid(&input, "shipment_id")?;
                         let resp = authed(http.post(format!("{}/v1/invoices", url)), &ctx)
                             .json(&json!({"shipment_id": shipment_id, "force": input.get("force").and_then(|v| v.as_bool()).unwrap_or(false)}))
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -554,13 +595,12 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let merchant_id = input["merchant_id"].as_str().unwrap_or("");
+                        let merchant_id = path_uuid(&input, "merchant_id")?;
                         let tenant_id   = input["tenant_id"].as_str().unwrap_or("");
                         let resp = http
                             .get(format!("{}/v1/internal/cod/balance/{}", url, merchant_id))
                             .query(&[("tenant_id", tenant_id)])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -594,8 +634,7 @@ impl ToolRegistry {
                                 ("zone_id",    input["zone_id"].as_str().unwrap_or("")),
                                 ("days_ahead", &input.get("days_ahead").and_then(|v| v.as_i64()).unwrap_or(7).to_string()),
                             ])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -622,10 +661,9 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["hub_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "hub_id")?;
                         let resp = authed(http.get(format!("{}/v1/hubs/{}/capacity", url, id)), &ctx)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -655,12 +693,11 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["hub_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "hub_id")?;
                         let resp = http
                             .post(format!("{}/v1/hubs/{}/dock-slots", url, id))
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -687,10 +724,9 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["vehicle_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "vehicle_id")?;
                         let resp = authed(http.get(format!("{}/v1/fleet/vehicles/{}", url, id)), &ctx)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -734,8 +770,7 @@ impl ToolRegistry {
                         }
                         let resp = authed(http.get(format!("{}/v1/fleet/vehicles", url)), &ctx)
                             .query(&query)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -762,10 +797,9 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["driver_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "driver_id")?;
                         let resp = authed(http.get(format!("{}/v1/drivers/{}/location", url, id)), &ctx)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -795,11 +829,10 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["driver_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "driver_id")?;
                         let resp = authed(http.post(format!("{}/v1/drivers/{}/instructions", url, id)), &ctx)
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -909,5 +942,69 @@ mod tests {
         assert_eq!(body["channel"], "sms");
         assert!(body.get("tenant_id").is_none());
         assert!(body.get("priority").is_none());
+    }
+
+    #[test]
+    fn path_uuid_accepts_a_uuid_and_refuses_url_metacharacters() {
+        let ok = "123e4567-e89b-12d3-a456-426614174000";
+        assert!(path_uuid(&json!({"id": ok}), "id").is_ok());
+        for bad in [
+            "../x",
+            "123e4567-e89b-12d3-a456-426614174000?tenant_id=victim",
+            "123e4567-e89b-12d3-a456-426614174000/requeue#",
+            "x#",
+            "../internal/shipments/123e4567-e89b-12d3-a456-426614174000/driver-contact#",
+            "",
+        ] {
+            assert!(path_uuid(&json!({"id": bad}), "id").is_err(), "accepted {bad:?}");
+        }
+        assert!(path_uuid(&json!({}), "id").is_err());
+        assert!(path_uuid(&json!({"id": 5}), "id").is_err());
+    }
+
+    fn registry() -> ToolRegistry {
+        // Unroutable port: if a refused input ever reached the network, the
+        // error text would be a connect error rather than the UUID message.
+        let u = "http://127.0.0.1:1".to_string();
+        ToolRegistry::new(ServiceUrls {
+            dispatch: u.clone(), order_intake: u.clone(), driver_ops: u.clone(),
+            payments: u.clone(), engagement: u.clone(), analytics: u.clone(),
+            cdp: u.clone(), hub_ops: u.clone(), fleet: u,
+        })
+    }
+
+    #[tokio::test]
+    async fn tools_refuse_path_injection_before_any_request() {
+        let reg = registry();
+        let cases = [
+            ("get_cod_balance", json!({"merchant_id": "123e4567-e89b-12d3-a456-426614174000?tenant_id=victim", "tenant_id": "123e4567-e89b-12d3-a456-426614174000"})),
+            ("assign_driver", json!({"shipment_id": "123e4567-e89b-12d3-a456-426614174000/requeue#", "tenant_id": "123e4567-e89b-12d3-a456-426614174000"})),
+            ("get_driver_location", json!({"driver_id": "../internal/shipments/123e4567-e89b-12d3-a456-426614174000/driver-contact#"})),
+            ("get_shipment", json!({"shipment_id": "x#"})),
+            ("get_customer_profile", json!({"customer_id": "../x"})),
+        ];
+        for (tool, input) in cases {
+            let r = reg.execute(tool, input, "t".into(), ToolContext::default()).await;
+            assert!(r.is_error, "{tool} should error");
+            let msg = r.content["error"].as_str().unwrap_or("");
+            assert!(msg.contains("UUID"), "{tool} failed for the wrong reason: {msg}");
+        }
+    }
+
+    #[test]
+    fn response_status_mapping() {
+        use reqwest::StatusCode as S;
+        assert_eq!(interpret_response(S::OK, br#"{"a":1}"#).unwrap(), json!({"a": 1}));
+        assert_eq!(interpret_response(S::NO_CONTENT, b"").unwrap(), Value::Null);
+        assert_eq!(interpret_response(S::OK, b"  
+").unwrap(), Value::Null);
+        for st in [S::UNAUTHORIZED, S::FORBIDDEN, S::UNPROCESSABLE_ENTITY, S::INTERNAL_SERVER_ERROR] {
+            let e = interpret_response(st, br#"{"error":"nope"}"#).unwrap_err().to_string();
+            assert!(e.contains(&st.as_u16().to_string()) && e.contains("nope"), "{e}");
+        }
+        let long = "x".repeat(5000);
+        let e = interpret_response(S::BAD_REQUEST, long.as_bytes()).unwrap_err().to_string();
+        assert!(e.len() < 600, "body not truncated: {}", e.len());
+        assert!(interpret_response(S::OK, b"<html>").is_err());
     }
 }
