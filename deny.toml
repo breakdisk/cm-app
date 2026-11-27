@@ -49,6 +49,16 @@ yanked = "deny"
 #                      mTLS and takes no traffic from the internet. Escaping it
 #                      means a tonic/hyper-1.x migration across ~20 services.
 #
+# Added 2026-11-27 (advisory-db refresh), same reasons as ci-rust.yml:
+#   RUSTSEC-2026-0387  crypto-bigint 0.5.5 timing variability — compiled only via
+#                      aws-sigv4's sigv4a feature (S3 multi-region access point
+#                      signing), never called; fix is 0.7.6, aws-sigv4 1.x pins 0.5.
+#   RUSTSEC-2026-0459  libsqlite3-sys — never compiled (sqlx-sqlite optional dep).
+#   RUSTSEC-2026-0543  chrono unmaintained — informational, no successor.
+#   RUSTSEC-2026-0555  chrono-tz unmaintained — via tera (payments templates).
+#   RUSTSEC-2026-0559  chrono-tz-build unmaintained — via tera.
+#   RUSTSEC-2026-0441  pin-utils unmaintained — via aws-smithy-*; macro-only.
+#
 # scripts/check-audit-ignores.sh re-derives both justifications on every CI run
 # and fails when either stops holding, so neither entry can quietly outlive it.
 #
@@ -62,6 +72,12 @@ ignore = [
   "RUSTSEC-2023-0071",
   "RUSTSEC-2026-0253",
   "RUSTSEC-2026-0258",
+  "RUSTSEC-2026-0387",
+  "RUSTSEC-2026-0441",
+  "RUSTSEC-2026-0459",
+  "RUSTSEC-2026-0543",
+  "RUSTSEC-2026-0555",
+  "RUSTSEC-2026-0559",
 ]
 
 # ─────────────────────────────────────────────────────────────

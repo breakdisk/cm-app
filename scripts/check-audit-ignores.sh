@@ -145,6 +145,79 @@ $(echo "$H2_TREE" | head -8)
   fi
 fi
 
+# ── RUSTSEC-2026-0387 — crypto-bigint 0.5.5 timing variability ──────────────
+# Compiled, but only through aws-sigv4's `sigv4a` feature: asymmetric (ECDSA)
+# signing for S3 multi-region access points. Nothing here uses those; every S3
+# call signs with HMAC SigV4. The fix is crypto-bigint 0.7.6 and aws-sigv4 1.x
+# pins 0.5, so there is nothing to upgrade to.
+# Expiry: still reported, AND every path to it still ends in aws-sigv4. The
+# chain is crypto-bigint 0.5 <- {aws-sigv4, elliptic-curve 0.13} <- ecdsa 0.16 /
+# primeorder <- p256 0.13 <- aws-sigv4. Each link is checked for its direct
+# dependents; a new consumer anywhere in it may really run the vulnerable code.
+if ! printf '%s\n' "$REPORTED" | grep -qx "RUSTSEC-2026-0387"; then
+  fail "RUSTSEC-2026-0387 is no longer reported — aws-sigv4 likely moved to a
+      fixed crypto-bigint. Remove the ignore from ci-rust.yml, deny.toml and here."
+else
+  dependents_of() {
+    cargo tree -i "$1" --all-features --depth 1 2>/dev/null \
+      | grep -oE '[a-z0-9_-]+ v[0-9.]+' | awk 'NR>1{print $1}' | sort -u | tr '\n' ' '
+  }
+  CB_BAD=""
+  check_link() {  # crate, allowed dependents (space-separated, sorted)
+    local got; got="$(dependents_of "$1")"
+    [ "$got" = "$2 " ] || CB_BAD="$CB_BAD
+      $1 <- ${got:-<none>} (expected: $2)"
+  }
+  check_link crypto-bigint@0.5.5  "aws-sigv4 elliptic-curve"
+  check_link elliptic-curve@0.13.8 "ecdsa p256 primeorder"
+  check_link ecdsa@0.16.9         "p256"
+  check_link primeorder           "p256"
+  check_link p256@0.13.2          "aws-sigv4"
+  if [ -z "$CB_BAD" ]; then
+    ok "RUSTSEC-2026-0387 (crypto-bigint) — still reported, still only via aws-sigv4."
+  else
+    fail "RUSTSEC-2026-0387 is ignored on the grounds that crypto-bigint 0.5 is
+      reachable only through aws-sigv4's sigv4a signing. A link changed:$CB_BAD
+      Review whether the new consumer runs the vulnerable constant-time code.
+      (A version bump of a link also lands here: update the pinned version.)"
+  fi
+fi
+
+# ── RUSTSEC-2026-0459 — libsqlite3-sys (bundled C SQLite CVE) ───────────────
+# Never compiled: it reaches Cargo.lock only as sqlx-sqlite's optional
+# dependency, and we build Postgres-only. Same shape as the rsa ignore.
+# Expiry: fails the moment it enters the build graph.
+if ! printf '%s\n' "$REPORTED" | grep -qx "RUSTSEC-2026-0459"; then
+  fail "RUSTSEC-2026-0459 is no longer reported — the ignore is stale, remove it."
+else
+  SQLITE_TREE="$(cargo tree -i libsqlite3-sys --all-features 2>&1 | grep -vE 'Downloading|Downloaded')"
+  if printf '%s' "$SQLITE_TREE" | grep -q "nothing to print"; then
+    ok "RUSTSEC-2026-0459 (libsqlite3-sys) — still reported, still not compiled."
+  else
+    fail "RUSTSEC-2026-0459 is ignored on the grounds that libsqlite3-sys is
+      never compiled, but it is now IN THE BUILD GRAPH:
+
+$(printf '%s' "$SQLITE_TREE" | head -6)
+
+      Something enabled sqlx's sqlite feature. Turn it off or treat the CVE as real."
+  fi
+fi
+
+# ── Unmaintained, informational, no fixed version ───────────────────────────
+#   RUSTSEC-2026-0543  chrono           — everywhere (sqlx, AWS SDK, services)
+#   RUSTSEC-2026-0555  chrono-tz        — via tera (payments invoice templates)
+#   RUSTSEC-2026-0559  chrono-tz-build  — via tera
+#   RUSTSEC-2026-0441  pin-utils        — via aws-smithy-*; macro-only
+# These are not vulnerabilities. Expiry: stops being reported, which is what a
+# maintained release or a dependency dropping the crate looks like.
+for ID in RUSTSEC-2026-0543 RUSTSEC-2026-0555 RUSTSEC-2026-0559 RUSTSEC-2026-0441; do
+  if ! printf '%s\n' "$REPORTED" | grep -qx "$ID"; then
+    fail "$ID is no longer reported — remove the ignore from ci-rust.yml, deny.toml and here."
+  else
+    ok "$ID — still reported (unmaintained, no fixed version)."
+  fi
+done
+
 # ── The list lives in three places and they must agree ──────────────────────
 # cargo-audit takes --ignore flags in ci-rust.yml; cargo-deny reads deny.toml
 # and knows nothing about those flags; this script hard-codes the justifications.
@@ -159,7 +232,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # What this script vouches for — keep in sync with the blocks above.
 VOUCHED="RUSTSEC-2023-0071
 RUSTSEC-2026-0253
-RUSTSEC-2026-0258"
+RUSTSEC-2026-0258
+RUSTSEC-2026-0387
+RUSTSEC-2026-0441
+RUSTSEC-2026-0459
+RUSTSEC-2026-0543
+RUSTSEC-2026-0555
+RUSTSEC-2026-0559"
 
 IN_WORKFLOW="$(grep -oE '\-\-ignore RUSTSEC-[0-9]{4}-[0-9]{4}' "$ROOT/.github/workflows/ci-rust.yml" \
   | sed 's/--ignore //' | sort -u)"
