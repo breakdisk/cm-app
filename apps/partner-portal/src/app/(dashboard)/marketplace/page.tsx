@@ -12,7 +12,7 @@
  * order-intake — this UI never short-circuits the shipment pipeline.
  */
 
-import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
@@ -48,25 +48,19 @@ import {
   deleteListing,
   acceptBooking,
   rejectBooking,
-  issueReceipt,
   recordPickup,
-  subscribeToMarketplaceUpdates,
   formatCentsPhp,
   SIZE_CLASS_CAPACITY_HINT,
   SIZE_CLASS_LABEL,
-  VEHICLE_FEATURE_LABEL,
   type BookingStatus,
   type ListingStatus,
   type MarketplaceBooking,
   type SizeClass,
-  type VehicleFeature,
   type VehicleListing,
 } from "@/lib/api/marketplace";
-import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
-import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
+import { ReceiptModal } from "@/components/marketplace/ReceiptModal";
 import { PickupModal, type PickupModalBooking } from "@/components/marketplace/PickupModal";
 import { useCarrier } from "@/contexts/carrier-context";
-import { CurrencySelect } from "@/components/balikbayan/CurrencySelect";
 
 // ── Status styling ────────────────────────────────────────────────────────────
 
@@ -183,10 +177,8 @@ type DrawerMode =
 interface DrawerFormState {
   vehicle_plate: string;
   size_class: SizeClass;
-  features: VehicleFeature[];
   max_weight_kg: number;
   max_volume_m3: number | null;
-  currency: string;
   base_price_cents: number;
   per_km_cents: number;
   per_kg_cents: number | null;
@@ -197,18 +189,14 @@ interface DrawerFormState {
   carrier_response_window_mins: number;
 }
 
-const ALL_FEATURES: VehicleFeature[] = ["tail_lift", "chiller", "freezer"];
-
 function defaultForm(): DrawerFormState {
   const now = new Date();
   const end = new Date(now.getTime() + 6 * 3_600_000);
   return {
     vehicle_plate: "",
     size_class: "van",
-    features: [],
     max_weight_kg: 800,
     max_volume_m3: 5,
-    currency: "PHP",
     base_price_cents: 90_000,
     per_km_cents: 1_800,
     per_kg_cents: null,
@@ -224,10 +212,8 @@ function fromListing(l: VehicleListing): DrawerFormState {
   return {
     vehicle_plate: l.vehicle_plate,
     size_class:    l.size_class,
-    features:      l.features ?? [],
     max_weight_kg: l.max_weight_kg,
     max_volume_m3: l.max_volume_m3,
-    currency:      l.currency ?? "PHP",
     base_price_cents: l.base_price_cents,
     per_km_cents:     l.per_km_cents,
     per_kg_cents:     l.per_kg_cents,
@@ -266,7 +252,6 @@ function ListingDrawer({
       if (mode.kind === "edit") {
         await updateListing(mode.listing.id, {
           status:                       form.status,
-          currency:                     form.currency,
           base_price_cents:             form.base_price_cents,
           per_km_cents:                 form.per_km_cents,
           per_kg_cents:                 form.per_kg_cents,
@@ -280,17 +265,14 @@ function ListingDrawer({
         await createListing({
           vehicle_plate:    form.vehicle_plate,
           size_class:       form.size_class,
-          features:         form.features,
           max_weight_kg:    form.max_weight_kg,
           max_volume_m3:    form.max_volume_m3,
-          currency:         form.currency,
           base_price_cents: form.base_price_cents,
           per_km_cents:     form.per_km_cents,
           per_kg_cents:     form.per_kg_cents,
           service_area_label: form.service_area_label,
           idle_from:  new Date(form.idle_from).toISOString(),
           idle_until: new Date(form.idle_until).toISOString(),
-          status:     form.status,
           carrier_response_window_mins: form.carrier_response_window_mins,
         });
       }
@@ -375,47 +357,6 @@ function ListingDrawer({
                   </p>
                 </Field>
 
-                <Field label="Vehicle features">
-                  <div className="flex flex-col gap-2">
-                    {ALL_FEATURES.map((feature) => {
-                      const checked = form.features.includes(feature);
-                      return (
-                        <label key={feature} className="flex items-center gap-2.5 cursor-pointer group">
-                          <div
-                            onClick={() =>
-                              setForm((f) => ({
-                                ...f,
-                                features: checked
-                                  ? f.features.filter((x) => x !== feature)
-                                  : [...f.features, feature],
-                              }))
-                            }
-                            className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-all ${
-                              checked
-                                ? "border-green-signal bg-green-signal/20 text-green-signal"
-                                : "border-glass-border bg-canvas-100 group-hover:border-glass-border-bright"
-                            }`}
-                          >
-                            {checked && (
-                              <svg className="h-2.5 w-2.5" viewBox="0 0 10 10" fill="none">
-                                <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                              </svg>
-                            )}
-                          </div>
-                          <div>
-                            <span className={`text-sm ${checked ? "text-white" : "text-white/60"}`}>
-                              {VEHICLE_FEATURE_LABEL[feature]}
-                            </span>
-                            {feature === "tail_lift" && <p className="text-2xs text-white/30">Hydraulic rear gate for loading/unloading at ground level</p>}
-                            {feature === "chiller"   && <p className="text-2xs text-white/30">Temperature-controlled: 0–8 °C — dairy, fresh produce, pharma</p>}
-                            {feature === "freezer"   && <p className="text-2xs text-white/30">Sub-zero freezer: −18 °C — meat, seafood, frozen goods</p>}
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </Field>
-
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="Max weight (kg)">
                     <input
@@ -438,27 +379,17 @@ function ListingDrawer({
                   </Field>
                 </div>
 
-                <Field label="Currency">
-                  <CurrencySelect
-                    value={form.currency}
-                    onChange={(code) => setForm((f) => ({ ...f, currency: code }))}
-                    className="input"
-                  />
-                  <p className="mt-1 text-2xs text-white/40">
-                    All prices below are denominated in this currency.
-                  </p>
-                </Field>
-
                 <div className="grid grid-cols-3 gap-4">
-                  <Field label={`Base price (${form.currency})`}>
+                  <Field label="Base price (PHP)">
                     <input
                       type="number"
+                      step="0.01"
                       value={form.base_price_cents / 100}
-                      onChange={(e) => setForm((f) => ({ ...f, base_price_cents: Number(e.target.value) * 100 }))}
+                      onChange={(e) => setForm((f) => ({ ...f, base_price_cents: Math.round(Number(e.target.value) * 100) }))}
                       className="input"
                     />
                   </Field>
-                  <Field label={`Per km (${form.currency})`}>
+                  <Field label="Per km (PHP)">
                     <input
                       type="number"
                       step="0.01"
@@ -467,7 +398,7 @@ function ListingDrawer({
                       className="input"
                     />
                   </Field>
-                  <Field label={`Per kg (${form.currency})`}>
+                  <Field label="Per kg (PHP)">
                     <input
                       type="number"
                       step="0.01"
@@ -526,6 +457,7 @@ function ListingDrawer({
                       className="input"
                     />
                   </Field>
+                  {isEdit && (
                   <Field label="Status">
                     <select
                       value={form.status}
@@ -536,6 +468,7 @@ function ListingDrawer({
                       <option value="paused" className="bg-canvas-100">Paused</option>
                     </select>
                   </Field>
+                  )}
                 </div>
 
                 {error && (
@@ -625,11 +558,32 @@ function MarketplacePageInner() {
   const [statusFilter, setStatusFilter] = useState<ListingStatus | "all">(qpStatus ?? "all");
   const [drawer, setDrawer] = useState<DrawerMode>(qpNew ? { kind: "create" } : { kind: "closed" });
 
+  // A failed refresh keeps the last good lists and flags the outage; the next success clears it.
+  const [loadError, setLoadError] = useState(false);
+  // The server's message for a failed accept / reject / pause / delete.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const mountedRef  = useRef(true);
+  const pollInFlightRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current      = false;
+      pollInFlightRef.current = false;   // a StrictMode remount must not skip its first poll
+    };
+  }, []);
+
   const refresh = useCallback(async () => {
-    const [l, b] = await Promise.all([fetchListings(), fetchBookings()]);
-    setListings(l);
-    setBookings(b);
-    setLoading(false);
+    try {
+      const [l, b] = await Promise.all([fetchListings(), fetchBookings()]);
+      if (!mountedRef.current) return;
+      setListings(l);
+      setBookings(b);
+      setLoadError(false);
+    } catch {
+      if (mountedRef.current) setLoadError(true);
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -644,70 +598,19 @@ function MarketplacePageInner() {
     if (event.type === "status_changed") refresh();
   });
   useEffect(() => {
-    const id = setInterval(refresh, 30_000);
-    // Cross-portal live refresh: merchant booking creation publishes to the
-    // bus (ADR-0013 §Booking flow — stand-in for `marketplace.booking_created`
-    // on Kafka); the storage event refreshes our table immediately.
-    const unsubscribeBus = subscribeToMarketplaceUpdates(() => refresh());
-    return () => {
-      clearInterval(id);
-      unsubscribeBus();
-    };
+    const id = setInterval(() => {
+      if (pollInFlightRef.current) return;   // skip a tick while a poll is outstanding
+      pollInFlightRef.current = true;
+      void refresh().finally(() => { pollInFlightRef.current = false; });
+    }, 30_000);
+    return () => clearInterval(id);
   }, [refresh]);
 
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
-  const [receiptsByBookingId, setReceiptsByBookingId] = useState<Record<string, BusReceipt>>({});
-  const [receiptModal, setReceiptModal] = useState<
-    { open: boolean; booking: ReceiptModalBooking | null; receipt: BusReceipt | null }
-  >({ open: false, booking: null, receipt: null });
+  const [receiptBooking, setReceiptBooking] = useState<MarketplaceBooking | null>(null);
   const [pickupModal, setPickupModal] = useState<
     { open: boolean; booking: PickupModalBooking | null }
   >({ open: false, booking: null });
-
-  // Hydrate receipt lookup whenever the bookings list changes. Cheap — same
-  // localStorage the bus lives in; O(bookings) + O(receipts).
-  useEffect(() => {
-    const next: Record<string, BusReceipt> = {};
-    bookings.forEach((b) => {
-      const r = findReceiptByBookingId(b.id);
-      if (r) next[b.id] = r;
-    });
-    setReceiptsByBookingId(next);
-  }, [bookings]);
-
-  function openReceiptFor(b: MarketplaceBooking) {
-    const receipt = receiptsByBookingId[b.id] ?? null;
-    const modalBooking: ReceiptModalBooking = {
-      id:                   b.id,
-      awb:                  b.awb,
-      partner_display_name: carrier?.name ?? "Carrier",
-      merchant_display:     b.consumer_name,  // partner's pre-accept mask; admin/merchant see real merchant_display
-      consumer_display:     b.consumer_name,
-      pickup_label:         b.pickup_label,
-      dropoff_label:        b.dropoff_label,
-      pickup_at:            b.pickup_at,
-      cargo_weight_kg:      b.cargo_weight_kg,
-      quoted_price_cents:   b.quoted_price_cents,
-      status:               b.status,
-    };
-    setReceiptModal({ open: true, booking: modalBooking, receipt });
-  }
-
-  async function handleIssueReceipt(input: { signed_by: string; notes: string }) {
-    if (!receiptModal.booking) return;
-    const created = await issueReceipt({
-      booking_id:   receiptModal.booking.id,
-      booking:      receiptModal.booking,
-      carrier_id:   carrier ? String(carrier.id) : null,
-      carrier_name: carrier?.name ?? null,
-      signed_by:    input.signed_by || null,
-      notes:        input.notes     || null,
-    });
-    if (created) {
-      setReceiptsByBookingId((prev) => ({ ...prev, [created.booking_id]: created }));
-      setReceiptModal((prev) => ({ ...prev, receipt: created }));
-    }
-  }
 
   function openPickupFor(b: MarketplaceBooking) {
     setPickupModal({
@@ -738,20 +641,26 @@ function MarketplacePageInner() {
 
   async function handleAccept(b: MarketplaceBooking) {
     setRespondingTo(b.id);
+    setActionError(null);
     try {
       await acceptBooking(b.id);
-      await refresh();
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not accept the booking.");
     } finally {
+      await refresh();
       setRespondingTo(null);
     }
   }
 
   async function handleReject(b: MarketplaceBooking) {
     setRespondingTo(b.id);
+    setActionError(null);
     try {
       await rejectBooking(b.id);
-      await refresh();
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not reject the booking.");
     } finally {
+      await refresh();
       setRespondingTo(null);
     }
   }
@@ -784,14 +693,24 @@ function MarketplacePageInner() {
 
   async function handleTogglePause(l: VehicleListing) {
     const next: ListingStatus = l.status === "active" ? "paused" : "active";
-    await updateListing(l.id, { status: next });
-    refresh();
+    setActionError(null);
+    try {
+      await updateListing(l.id, { status: next });
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not update the listing.");
+    }
+    void refresh();
   }
 
   async function handleDelete(l: VehicleListing) {
     if (!confirm(`Remove listing for ${l.vehicle_plate}? Active bookings remain valid.`)) return;
-    await deleteListing(l.id);
-    refresh();
+    setActionError(null);
+    try {
+      await deleteListing(l.id);
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not remove the listing.");
+    }
+    void refresh();
   }
 
   return (
@@ -855,6 +774,26 @@ function MarketplacePageInner() {
           >
             <X className="h-3 w-3" />
           </a>
+        </div>
+      )}
+
+      {actionError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-signal/40 bg-red-surface px-4 py-2.5 text-xs text-red-signal"
+        >
+          {actionError}
+        </div>
+      )}
+
+      {loadError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-signal/40 bg-red-surface px-4 py-2.5 text-xs text-red-signal"
+        >
+          Could not load marketplace data. {bookings.length > 0 || listings.length > 0
+            ? "Showing the last data received; retrying automatically."
+            : "Retrying automatically."}
         </div>
       )}
 
@@ -1167,25 +1106,14 @@ function MarketplacePageInner() {
                           </button>
                         )}
                         {b.status !== "pending" && b.status !== "rejected" && b.status !== "cancelled" && (
-                          receiptsByBookingId[b.id] ? (
-                            <button
-                              onClick={() => openReceiptFor(b)}
-                              className="flex h-7 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-2 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
-                              title="View shipment receipt"
-                            >
-                              <ReceiptIcon className="h-3 w-3" />
-                              View Receipt
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => openReceiptFor(b)}
-                              className="flex h-7 items-center gap-1 rounded-md border border-green-signal/40 bg-green-surface px-2 text-2xs font-mono text-green-signal transition-all hover:shadow-[0_0_8px_rgba(0,255,136,0.4)]"
-                              title="Issue shipment receipt to customer"
-                            >
-                              <ReceiptIcon className="h-3 w-3" />
-                              Issue Receipt
-                            </button>
-                          )
+                          <button
+                            onClick={() => setReceiptBooking(b)}
+                            className="flex h-7 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-2 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
+                            title="View booking receipt"
+                          >
+                            <ReceiptIcon className="h-3 w-3" />
+                            View Receipt
+                          </button>
                         )}
                       </div>
                     </td>
@@ -1204,13 +1132,11 @@ function MarketplacePageInner() {
         onSaved={refresh}
       />
 
-      {/* ── Shipment Receipt modal ────────────────────────────────────────── */}
+      {/* ── Booking receipt modal ─────────────────────────────────────────── */}
       <ReceiptModal
-        open={receiptModal.open}
-        onClose={() => setReceiptModal({ open: false, booking: null, receipt: null })}
-        booking={receiptModal.booking}
-        receipt={receiptModal.receipt}
-        onIssue={handleIssueReceipt}
+        open={receiptBooking !== null}
+        onClose={() => setReceiptBooking(null)}
+        booking={receiptBooking}
       />
 
       {/* ── Pickup transition modal ──────────────────────────────────────── */}

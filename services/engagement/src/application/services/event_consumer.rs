@@ -157,6 +157,19 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &["whatsapp", "push"],
         }),
+        // A completed move lifted the customer a loyalty tier. Push only: it
+        // is good news, not something worth an SMS.
+        topics::TIER_CHANGED => Some(EventNotificationMapping {
+            template_id: "tier_upgraded",
+            priority: NotificationPriority::Normal,
+            channels: &["push"],
+        }),
+        // A home-move notice; the template is chosen by its kind below.
+        topics::HOME_NOTICE => Some(EventNotificationMapping {
+            template_id: "home_notice",
+            priority: NotificationPriority::High,
+            channels: &["push"],
+        }),
         _ => None,
     }
 }
@@ -237,12 +250,22 @@ pub async fn process_event(
     let is_tenant_finalized   = event_type == topics::TENANT_FINALIZED;
     let is_otp_event          = event_type == topics::OTP_REQUESTED;
     let is_support_resolution = event_type == topics::AGENT_ESCALATION_RESOLVED;
+    let is_tier_changed       = event_type == topics::TIER_CHANGED;
+    let is_home_notice        = event_type == topics::HOME_NOTICE;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
     let (resolved_template, resolved_channels): (&str, &[&str]) = if is_otp_event || is_withdrawal_event {
         // Template/channels already set correctly in get_mapping(); pass through.
         (mapping.template_id, mapping.channels)
+    } else if is_home_notice {
+        match home_notice_template(data["kind"].as_str().unwrap_or("")) {
+            Some(t) => (t, &["push"]),
+            None => {
+                warn!(kind = data["kind"].as_str().unwrap_or(""), "HOME_NOTICE of an unknown kind — skipping");
+                return;
+            }
+        }
     } else if is_invoice_event {
         let recipient_type = data["recipient_type"].as_str().unwrap_or("merchant");
         if recipient_type == "customer" {
@@ -254,7 +277,29 @@ pub async fn process_event(
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_support_resolution {
+    let (customer_id, phone, email, vars) = if is_home_notice {
+        let Some(account_id) = data["account_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok()) else {
+            warn!(event_type, "HOME_NOTICE missing account_id — skipping notification");
+            return;
+        };
+        (account_id, String::new(), String::new(), data["vars"].clone())
+    } else if is_tier_changed {
+        // `account_id` is the identity user id promotions keys an account
+        // by — the same key the push channel looks device tokens up with.
+        let Some(account_id) = data["account_id"].as_str()
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        else {
+            warn!(event_type, "TIER_CHANGED missing account_id — skipping notification");
+            return;
+        };
+        let vars = serde_json::json!({
+            "tier_name": data["tier_name"].as_str().unwrap_or("a new tier"),
+            "perk":      data["perk"].as_str().unwrap_or("member benefits"),
+            // Opens Offers, where the tier card and the ladder are.
+            "deep_link": "logisticos://offers",
+        });
+        (account_id, String::new(), String::new(), vars)
+    } else if is_support_resolution {
         // Escalated AI chat answered by a human. `customer_id` here is the
         // identity user_id of whoever was chatting — the same key the push
         // channel uses for its device-token lookup.
@@ -511,6 +556,18 @@ pub async fn process_event(
                  This code expires in 5 minutes. Do not share it with anyone.\n\n\
                  — CargoMarket".to_owned(),
             ),
+            "tier_upgraded" => (
+                Some(format!("You're now {}", vars["tier_name"].as_str().unwrap_or("a member"))),
+                "You've reached {{tier_name}}: {{perk}}. It comes off your moves by itself — no code needed.".to_owned(),
+            ),
+            "home_waitlist_offered" => (
+                Some("A moving team just opened up".to_owned()),
+                "{{window}} is yours for {{hold_minutes}} minutes. Open the app to book it before it goes to the next in line.".to_owned(),
+            ),
+            "home_addendum_pending" => (
+                Some("Your survey found more to move".to_owned()),
+                "Your crew lead's survey adds {{amount}} to your move. Approve it in the app, or give your crew lead the code {{code}} to approve on their phone. Nothing extra is loaded until you do.".to_owned(),
+            ),
             "support_resolution" => (
                 Some("Your support request has an answer".to_owned()),
                 "A member of our support team has replied to your request:\n\n\
@@ -695,6 +752,16 @@ pub async fn process_event(
                 continue;
             }
         };
+
+        // A push carries its deep link in the payload's data, which is where
+        // the app reads it on tap. Until this, only campaigns set it — the
+        // invoice-receipt and support-answer pushes named a link in their
+        // variables that never reached the phone.
+        if *channel == "push" {
+            if let Some(link) = vars["deep_link"].as_str().filter(|l| !l.is_empty()) {
+                notification.extra_data = Some(serde_json::json!({ "deep_link": link }));
+            }
+        }
 
         let outcome = notification_service.dispatch(&mut notification).await;
 
@@ -918,7 +985,15 @@ pub async fn handle_campaign_triggered(
         let recipient = match channel_str {
             "whatsapp" | "sms" => r["phone"].as_str().unwrap_or("").to_owned(),
             "email"            => r["email"].as_str().unwrap_or("").to_owned(),
-            "push"             => customer_id.to_string(),
+            // A campaign addresses a CDP profile, whose id is not the app
+            // user's. Its phone and email are the customer's login, so the
+            // device is found by those; the profile id is the fallback.
+            "push" => crate::infrastructure::channels::push::Recipient::contact(
+                tenant_id,
+                r["phone"].as_str().unwrap_or(""),
+                r["email"].as_str().unwrap_or(""),
+            )
+            .unwrap_or_else(|| customer_id.to_string()),
             // Social channels use platform_id (Facebook PSID, Telegram chat_id,
             // Slack user_id, etc.). Falls back to customer_id for stub dispatch.
             "messenger" | "telegram" | "x" | "viber" | "wechat" | "line" | "slack" => {
@@ -1006,6 +1081,32 @@ pub async fn handle_campaign_triggered(
             }
         };
 
+        // The inbox copy, kept whether or not the channel delivers it. Found
+        // by the customer id, or by the email/phone it went to — campaign
+        // recipients are CDP profiles, not app users.
+        {
+            use crate::api::http::inbox::{entry_for, normalise_address};
+            let (title, inbox_body) = entry_for(
+                notification.subject.as_deref(),
+                campaign_name,
+                &notification.rendered_body,
+            );
+            let deep_link = data["variables"]["deep_link"].as_str().filter(|s| !s.is_empty());
+            // The address the send went to; for push and the social channels,
+            // the profile's phone or email, so a push campaign reaches the inbox too.
+            let address = match channel_str {
+                "email" | "sms" | "whatsapp" => normalise_address(&recipient),
+                _ => r["phone"].as_str().and_then(normalise_address)
+                    .or_else(|| r["email"].as_str().and_then(normalise_address)),
+            };
+            if let Err(e) = db
+                .set_campaign_send_inbox(send_id, tenant_id, &title, &inbox_body, deep_link, address.as_deref())
+                .await
+            {
+                warn!(campaign_id = %campaign_id, err = %e, "Failed to keep the inbox copy — the send goes ahead");
+            }
+        }
+
         // For push campaigns, forward any deep_link (or other metadata) from the
         // campaign's template variables so the push adapter can attach it to the
         // Expo notification's `data` field and the customer app can deep-navigate.
@@ -1089,5 +1190,27 @@ pub async fn handle_campaign_triggered(
         &serde_json::to_vec(&completed_payload).unwrap_or_default(),
     ).await {
         error!(campaign_id = %campaign_id, err = %e, "Failed to publish CAMPAIGN_COMPLETED");
+    }
+}
+
+/// The template for a home-move notice's kind. None for a kind this build
+/// does not know: dropped with a warning, never sent as something else.
+fn home_notice_template(kind: &str) -> Option<&'static str> {
+    match kind {
+        "waitlist_offered" => Some("home_waitlist_offered"),
+        "addendum_pending" => Some("home_addendum_pending"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod home_notice_tests {
+    use super::home_notice_template;
+
+    #[test]
+    fn each_kind_has_its_message_and_an_unknown_one_none() {
+        assert_eq!(home_notice_template("waitlist_offered"), Some("home_waitlist_offered"));
+        assert_eq!(home_notice_template("addendum_pending"), Some("home_addendum_pending"));
+        assert_eq!(home_notice_template("something_new"), None);
     }
 }

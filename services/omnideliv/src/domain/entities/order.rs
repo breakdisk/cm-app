@@ -32,11 +32,21 @@ impl OrderStatus {
     }
 }
 
+/// Where one vendor's half of an order stands.
+///
+/// `Rejected` is distinct from `Failed` on purpose: a store refusing an order
+/// and a pickup going wrong are different events with different money
+/// consequences, and collapsing them makes "why did this die" unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LegStatus {
     Pending,
+    Accepted,
+    Preparing,
+    Ready,
     PickedUp,
+    Served,
+    Rejected,
     Failed,
     Settled,
 }
@@ -44,12 +54,117 @@ pub enum LegStatus {
 impl LegStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            LegStatus::Pending  => "pending",
-            LegStatus::PickedUp => "picked_up",
-            LegStatus::Failed   => "failed",
-            LegStatus::Settled  => "settled",
+            LegStatus::Pending   => "pending",
+            LegStatus::Accepted  => "accepted",
+            LegStatus::Preparing => "preparing",
+            LegStatus::Ready     => "ready",
+            LegStatus::PickedUp  => "picked_up",
+            LegStatus::Served    => "served",
+            LegStatus::Rejected  => "rejected",
+            LegStatus::Failed    => "failed",
+            LegStatus::Settled   => "settled",
         }
     }
+
+    /// Parses the wire/database form. `None` for anything unrecognised, so a
+    /// row written by a newer deploy fails loudly instead of silently
+    /// decoding as `Pending` and re-offering work that is already underway.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending"   => LegStatus::Pending,
+            "accepted"  => LegStatus::Accepted,
+            "preparing" => LegStatus::Preparing,
+            "ready"     => LegStatus::Ready,
+            "picked_up" => LegStatus::PickedUp,
+            "served"    => LegStatus::Served,
+            "rejected"  => LegStatus::Rejected,
+            "failed"    => LegStatus::Failed,
+            "settled"   => LegStatus::Settled,
+            _ => return None,
+        })
+    }
+
+    /// Every variant. The repository derives its legal-predecessor list from
+    /// this rather than hand-writing one per route, so `can_transition_to`
+    /// stays the only statement of the graph.
+    pub const ALL: [LegStatus; 9] = [
+        LegStatus::Pending,  LegStatus::Accepted, LegStatus::Preparing,
+        LegStatus::Ready,    LegStatus::PickedUp, LegStatus::Served,
+        LegStatus::Rejected, LegStatus::Failed,   LegStatus::Settled,
+    ];
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, LegStatus::Rejected | LegStatus::Failed | LegStatus::Settled)
+    }
+
+    /// Whether this leg has answered the acceptance question at all. Drives the
+    /// acceptance barrier — see `Order::acceptance_state`.
+    pub fn has_answered(self) -> bool {
+        self != LegStatus::Pending
+    }
+
+    /// Whether this leg still owes the courier something.
+    ///
+    /// Not the same question as `has_answered`: a leg can have answered the
+    /// vendor's accept/reject question and still be sitting on the counter.
+    /// Before the acceptance states existed, "not pending" happened to mean
+    /// "resolved" — it does not any more, and `all_legs_collected` is the
+    /// caller that would otherwise advance an order whose goods never moved.
+    pub fn blocks_collection(self) -> bool {
+        matches!(
+            self,
+            LegStatus::Pending | LegStatus::Accepted | LegStatus::Preparing | LegStatus::Ready
+        )
+    }
+
+    /// Whether this leg will not be fulfilled — refused by the store, or
+    /// broken later. The acceptance barrier excludes exactly these from the
+    /// amount it captures, so the rule lives here rather than in a closure
+    /// that a later plan would have to re-derive.
+    pub fn declined(self) -> bool {
+        matches!(self, LegStatus::Rejected | LegStatus::Failed)
+    }
+
+    /// The legal transition graph. Enforced here rather than only in SQL so the
+    /// rule is testable without a database and stated in exactly one place.
+    pub fn can_transition_to(self, next: LegStatus) -> bool {
+        use LegStatus::*;
+        if self.is_terminal() {
+            return false;
+        }
+        // An operator can fail any live leg; there is no single legal
+        // predecessor for a pickup that went wrong.
+        if next == Failed {
+            return true;
+        }
+        matches!(
+            (self, next),
+            (Pending,   Accepted)  | (Pending,   Rejected)
+          | (Accepted,  Preparing) | (Accepted,  Ready)
+          | (Preparing, Ready)
+          | (Ready,     PickedUp)  | (Ready,     Served)
+          | (PickedUp,  Settled)   | (Served,    Settled)
+        )
+    }
+}
+
+/// How far an order has got through asking its vendors.
+///
+/// Deliberately separate from `OrderStatus`: that field is written by the
+/// courier-event path, and a second writer on the same field is how two
+/// sources of truth disagree about one order. This is derived on read and
+/// stored nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum AcceptanceState {
+    /// At least one vendor has not answered yet.
+    Awaiting { outstanding: usize },
+    /// Every leg has answered. `accepted_subtotal_cents` is the amount that may
+    /// be captured; the rest of the authorization is voided.
+    ///
+    /// `accepted + rejected` does not necessarily equal the leg count: a
+    /// `Failed` leg is in neither bucket, because it was not refused.
+    Resolved { accepted: usize, rejected: usize, accepted_subtotal_cents: i64 },
 }
 
 /// How the customer pays. `Cod` is every order this service has ever placed;
@@ -74,6 +189,50 @@ impl PaymentMethod {
             PaymentMethod::Cod    => "cod",
             PaymentMethod::Online => "online",
         }
+    }
+}
+
+/// How the food reaches the person who ordered it.
+///
+/// `DineIn` is an order with N vendor legs and ZERO courier legs — the food
+/// crosses a room, not a city. Nothing dispatches and no delivery fee is
+/// charged.
+///
+/// Recorded rather than inferred from "has no courier task": an absent courier
+/// task also describes a delivery order nobody has accepted yet, and code that
+/// could not tell those apart would chase couriers for food already on a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Fulfilment {
+    /// Every order this service placed before QR table ordering existed.
+    #[default]
+    Delivery,
+    DineIn,
+}
+
+impl Fulfilment {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Fulfilment::Delivery => "delivery",
+            Fulfilment::DineIn => "dine_in",
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "delivery" => Some(Fulfilment::Delivery),
+            "dine_in" => Some(Fulfilment::DineIn),
+            _ => None,
+        }
+    }
+
+    /// Whether a courier is ever offered this order.
+    ///
+    /// The single question every dispatch-shaped code path should ask, rather
+    /// than each one re-deriving it from the enum and one of them getting it
+    /// backwards.
+    pub fn needs_a_courier(&self) -> bool {
+        matches!(self, Fulfilment::Delivery)
     }
 }
 
@@ -140,6 +299,16 @@ pub struct VendorLeg {
     pub payout_cents:         i64,
     pub status:               LegStatus,
     pub picked_up_at:         Option<DateTime<Utc>>,
+    /// When the store accepted, and what it promised. Written only by the
+    /// guarded transition in `leg_repo` — `OrderRepository::save` deliberately
+    /// does not touch these, so a whole-order write can never clobber an
+    /// acceptance a tablet made a moment earlier.
+    pub accepted_at:          Option<DateTime<Utc>>,
+    pub ready_at:             Option<DateTime<Utc>>,
+    /// The store's own estimate, not `vendors.prep_time_minutes`. That is a
+    /// static per-store default nothing reconciles against reality; this is
+    /// what a person said about this order.
+    pub ready_in_minutes:     Option<i32>,
     pub created_at:           DateTime<Utc>,
 }
 
@@ -166,6 +335,9 @@ impl VendorLeg {
             payout_cents: goods_subtotal_cents - commission_cents,
             status: LegStatus::Pending,
             picked_up_at: None,
+            accepted_at: None,
+            ready_at: None,
+            ready_in_minutes: None,
             created_at: Utc::now(),
         }
     }
@@ -248,6 +420,8 @@ pub struct Order {
     pub basket_id:          Uuid,
     pub plan_id:            Uuid,
     pub status:             OrderStatus,
+    /// See `Fulfilment`. `Delivery` for every order placed before dine-in.
+    pub fulfilment:         Fulfilment,
     pub goods_total_cents:  i64,
     pub delivery_fee_cents: i64,
     pub tip_cents:          i64,
@@ -534,6 +708,8 @@ impl Order {
             basket_id,
             plan_id,
             status: OrderStatus::Placed,
+            // Delivery unless a caller says otherwise — `for_dine_in()` below.
+            fulfilment: Fulfilment::Delivery,
             goods_total_cents,
             delivery_fee_cents,
             tip_cents,
@@ -748,14 +924,35 @@ impl Order {
 
     /// Every leg has reached a terminal state and at least one was collected.
     ///
-    /// A failed leg is resolved, not pending — the courier delivers what they
-    /// have and the failed leg is refunded separately. Only a still-`Pending`
-    /// leg blocks, because delivering then would pay a vendor whose goods were
-    /// never picked up.
+    /// A failed or rejected leg is resolved; a leg still being prepared is
+    /// not.
+    /// Rebuilds this order as dine-in: no courier, and therefore no delivery
+    /// economics.
+    ///
+    /// One method rather than letting a caller set the enum, because the
+    /// migration's CHECK refuses a `dine_in` row that still carries a delivery
+    /// fee or a courier trip cost. Setting the flag alone would produce a row
+    /// the database rejects at the very end of checkout, after money has
+    /// already moved.
+    #[must_use]
+    pub fn for_dine_in(mut self) -> Self {
+        self.fulfilment = Fulfilment::DineIn;
+        // Recompute rather than assume the caller passed zeroes.
+        self.grand_total_cents -= self.delivery_fee_cents;
+        self.delivery_fee_cents = 0;
+        self.courier_trip_cents = 0;
+        self
+    }
+
     pub fn all_legs_collected(&mut self) -> Result<(), TransitionError> {
-        let pending = self.legs.iter().filter(|l| l.status == LegStatus::Pending).count();
-        if pending > 0 {
-            return Err(TransitionError::LegsPending(pending));
+        // Was: a count of `Pending` legs. That was equivalent to "unresolved"
+        // only while `Pending | PickedUp | Failed | Settled` were the only
+        // states. A leg at `Ready` is accepted and cooked and still on the
+        // counter — advancing here would deliver an order whose goods were
+        // never handed over.
+        let outstanding = self.legs.iter().filter(|l| l.status.blocks_collection()).count();
+        if outstanding > 0 {
+            return Err(TransitionError::LegsPending(outstanding));
         }
         if !self.legs.iter().any(|l| l.status == LegStatus::PickedUp) {
             return Err(TransitionError::NothingCollected);
@@ -786,6 +983,35 @@ impl Order {
         }
         self.status = OrderStatus::Cancelled;
         Ok(())
+    }
+
+    /// How far this order has got through asking its vendors, derived from the
+    /// legs and stored nowhere. See `AcceptanceState`.
+    ///
+    /// This is what the acceptance barrier reads to decide how much of the
+    /// authorization to capture: once every leg has answered, capture
+    /// `accepted_subtotal_cents` and void the rest.
+    pub fn acceptance_state(&self) -> AcceptanceState {
+        let outstanding = self.legs.iter().filter(|l| !l.status.has_answered()).count();
+        if outstanding > 0 {
+            return AcceptanceState::Awaiting { outstanding };
+        }
+
+        // "Accepted" here means the leg survived the ask — anything that is not
+        // an outright refusal or failure. A leg already picked up or served is
+        // emphatically accepted.
+        let survived = |l: &&VendorLeg| !l.status.declined();
+
+        AcceptanceState::Resolved {
+            accepted: self.legs.iter().filter(survived).count(),
+            rejected: self.legs.iter().filter(|l| l.status == LegStatus::Rejected).count(),
+            accepted_subtotal_cents: self
+                .legs
+                .iter()
+                .filter(survived)
+                .map(|l| l.goods_subtotal_cents)
+                .sum(),
+        }
     }
 
     /// Where every cent the customer paid goes.

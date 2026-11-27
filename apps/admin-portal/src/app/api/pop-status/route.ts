@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { COOKIE_LOS_ACCESS } from "@/lib/auth/los-cookies";
 
 /**
  * Server-side proxy for batch Proof of Pickup completion status.
@@ -14,6 +15,7 @@ import { NextRequest, NextResponse } from "next/server";
  * Request shape
  * ─────────────
  * GET /api/pop-status?shipment_ids=<uuid>&shipment_ids=<uuid>...
+ * (the tenant is taken from the session cookie and passed to the pod service)
  *
  * Response shape (mirrors pod service)
  * ─────────────────────────────────────
@@ -32,6 +34,31 @@ const POD_INTERNAL_URL =
 const INTERNAL_GATEWAY_URL =
   process.env.INTERNAL_GATEWAY_URL ?? "http://logisticos-api-gateway:8000";
 
+/**
+ * The signed-in user's tenant, verified. The pod service answers only for the
+ * tenant this route names, so the name must not come from an unchecked cookie:
+ * anyone can hand-craft an unsigned token that claims another tenant. The
+ * access token is checked by identity's JWT-protected `GET /v1/users/me`
+ * (through the gateway). Only a 2xx answer counts, and the tenant is taken
+ * from that answer, never from the cookie's own payload.
+ */
+async function verifiedTenant(request: NextRequest): Promise<string | null> {
+  const token = request.cookies.get(COOKIE_LOS_ACCESS)?.value;
+  if (!token) return null;
+  try {
+    const res = await fetch(`${INTERNAL_GATEWAY_URL}/v1/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: { tenant_id?: unknown } };
+    const tenant = body.data?.tenant_id;
+    return typeof tenant === "string" ? tenant : null;
+  } catch {
+    return null;
+  }
+}
+
 async function tryFetch(url: string): Promise<Response | null> {
   try {
     return await fetch(url, { cache: "no-store" });
@@ -47,7 +74,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ statuses: [], all_completed: true });
   }
 
-  const qs = ids.map((id) => `shipment_ids=${encodeURIComponent(id)}`).join("&");
+  const tenantId = await verifiedTenant(request);
+  if (!tenantId) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
+  const qs = `tenant_id=${encodeURIComponent(tenantId)}&` + ids.map((id) => `shipment_ids=${encodeURIComponent(id)}`).join("&");
 
   // Try pod service directly first (fastest; no gateway hop)
   let res = await tryFetch(`${POD_INTERNAL_URL}/v1/internal/pop-status?${qs}`);

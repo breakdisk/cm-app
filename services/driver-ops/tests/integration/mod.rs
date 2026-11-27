@@ -326,6 +326,7 @@ impl TestApp {
             jwt: Arc::clone(&jwt_svc),
             roster_tx,
             fcm: None,
+            providers: Arc::new(logisticos_driver_ops::infrastructure::db::InMemoryProviderStore::default()),
         });
 
         let router = logisticos_driver_ops::api::http::router(state);

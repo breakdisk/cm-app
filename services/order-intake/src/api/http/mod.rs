@@ -12,6 +12,7 @@ use uuid::Uuid;
 use sqlx::{PgPool, Row};
 
 use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::partner::partner_access;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
@@ -21,7 +22,31 @@ use crate::application::{
     services::shipment_service::ShipmentService,
 };
 use crate::domain::entities::address_code::AddressCode;
+use crate::domain::value_objects::cancel_authority::{is_tenant_wide, ActingAs, Actor};
+use crate::domain::value_objects::cancellation_policy::CancelTier;
 
+/// The by-id actor for this token. Tenant is always enforced. Merchants and
+/// customers (create without update) are limited to shipments they booked:
+/// `create_shipment` stamps `merchant_id = claims.user_id` for every caller.
+fn actor_of(claims: &AuthClaims) -> Actor {
+    Actor {
+        tenant_id: claims.tenant_id,
+        user_id: claims.user_id,
+        tenant_wide: is_tenant_wide(
+            claims.has_permission(permissions::SHIPMENT_CREATE),
+            claims.has_permission(permissions::SHIPMENT_UPDATE),
+        ),
+    }
+}
+
+fn acting_as(claims: &AuthClaims) -> ActingAs {
+    ActingAs::User(actor_of(claims))
+}
+
+pub mod accessorials;
+pub mod home_move;
+pub mod home_waitlist;
+pub mod home_photos;
 pub mod quote;
 
 // ---------------------------------------------------------------------------
@@ -156,7 +181,8 @@ async fn get_shipment(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let shipment = s.query.get_by_id(id).await?;
+    let partner = partner_access(&claims)?;
+    let shipment = s.query.get_for(id, &acting_as(&claims), partner).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(shipment)))
 }
 
@@ -166,10 +192,48 @@ async fn cancel_shipment(
     Path(id): Path<Uuid>,
     Json(mut cmd): Json<CancelShipmentCommand>,
 ) -> impl IntoResponse {
-    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    // Customers and merchants hold SHIPMENT_CANCEL, not SHIPMENT_UPDATE, so
+    // requiring UPDATE made cancel a guaranteed 403 in both the customer app and
+    // the merchant portal, while operators could cancel across tenants.
+    if !(claims.has_permission(permissions::SHIPMENT_CANCEL)
+        || claims.has_permission(permissions::SHIPMENT_UPDATE))
+    {
+        return Err(AppError::Forbidden { resource: permissions::SHIPMENT_CANCEL.to_owned() });
+    }
     cmd.shipment_id = id;
+    cmd.acting_as = acting_as(&claims);
     s.svc.cancel(cmd).await?;
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
+}
+
+/// `GET /v1/shipments/:id/cancellation-preview`
+///
+/// What cancelling now would cost, computed on the server so the app renders
+/// the server's numbers rather than doing arithmetic on a device clock. The
+/// amounts are an estimate from the quoted total; payments computes the real
+/// retention at the same rate, on what it actually captured.
+async fn cancellation_preview(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let partner = partner_access(&claims)?;
+    let shipment = s.query.get_for(id, &acting_as(&claims), partner).await?;
+    let (quote, survey_kept) = s.svc.cancellation_quote(&shipment, chrono::Utc::now()).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "cancellable":     shipment.can_cancel(),
+        "policy_applies":  quote.tier != CancelTier::Unscheduled,
+        "tier":            quote.tier.as_str(),
+        "hours_to_pickup": quote.minutes_to_pickup.map(|m| m as f64 / 60.0),
+        "fee_bps":         quote.retention_bps,
+        "fee_cents":       quote.fee_cents,
+        "refund_cents":    quote.refund_cents,
+        // A whole-home move's survey deposit kept, inside fee_cents.
+        "survey_kept_cents": survey_kept,
+        "currency":        shipment.booking_currency,
+        "policy_version":  shipment.cancellation_policy_version,
+    }))))
 }
 
 async fn reschedule_shipment(
@@ -180,6 +244,7 @@ async fn reschedule_shipment(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
     cmd.shipment_id = id;
+    cmd.acting_as = acting_as(&claims);
     s.svc.reschedule(cmd).await?;
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
 }
@@ -232,7 +297,7 @@ async fn admin_override_status(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
-    s.svc.override_status(id, new_status, &actor).await?;
+    s.svc.override_status(id, new_status, &actor, &acting_as(&claims)).await?;
 
     // Stamp the manual transition into the immutable timeline (date/time/location).
     let _ = sqlx::query(
@@ -247,7 +312,7 @@ async fn admin_override_status(
                       'override', true
                   )
            FROM order_intake.shipments s
-           WHERE s.id = $2"#,
+           WHERE s.id = $2 AND s.tenant_id = $1"#,
     )
     .bind(claims.tenant_id)
     .bind(id)
@@ -307,7 +372,7 @@ async fn internal_override_status(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
-    s.svc.override_status(id, new_status, "automation_rule").await?;
+    s.svc.override_status(id, new_status, "automation_rule", &ActingAs::System).await?;
 
     let _ = sqlx::query(
         r#"INSERT INTO order_intake.shipment_events
@@ -321,7 +386,7 @@ async fn internal_override_status(
                       'override', true
                   )
            FROM order_intake.shipments s
-           WHERE s.id = $2"#,
+           WHERE s.id = $2 AND s.tenant_id = $1"#,
     )
     .bind(body.tenant_id)
     .bind(id)
@@ -395,6 +460,12 @@ async fn list_shipment_events(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    // The timeline is the shipment's, so the same by-id rule applies: tenant, the
+    // booker for merchants and customers, and the linked partner for a
+    // partner-bound token. It used to check the tenant only, so any holder of
+    // shipments:read could read any shipment's events by id.
+    let partner = partner_access(&claims)?;
+    s.query.get_for(id, &acting_as(&claims), partner).await?;
     let rows = sqlx::query(
         r#"SELECT event_type, from_status, to_status, actor_type, metadata, created_at
              FROM order_intake.shipment_events
@@ -425,9 +496,27 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments",        post(create_shipment).get(list_shipments))
         .route("/shipments/bulk",   post(bulk_create_shipments))
         .route("/shipments/quote",  post(quote::get_quote))
+        // Whole-home moving: the catalogue, the calendar, a signed quote.
+        .route("/shipments/home/catalogue", get(home_move::catalogue))
+        .route("/shipments/home/slots",     get(home_move::slots))
+        .route("/shipments/home/quote",     post(home_move::quote))
+        .route("/shipments/home",           post(home_move::book))
+        // The priority waitlist for fully booked dates.
+        .route("/shipments/home/waitlist",   post(home_waitlist::join).get(home_waitlist::mine))
+        .route("/shipments/home/waitlist/:id",       axum::routing::delete(home_waitlist::withdraw))
+        .route("/shipments/home/waitlist/:id/claim", post(home_waitlist::claim))
+        .route("/accessorials",     get(accessorials::list_accessorials))
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
+        .route("/shipments/:id/home",       get(home_move::detail))
+        .route("/shipments/:id/home/survey",   post(home_move::submit_survey))
+        .route("/shipments/:id/home/addendum", get(home_move::get_addendum))
+        .route("/shipments/:id/home/addendum/:addendum_id/approve", post(home_move::approve_addendum))
+        .route("/shipments/:id/home/addendum/:addendum_id/decline", post(home_move::decline_addendum))
+        .route("/shipments/:id/home/addendum/:addendum_id/approve-on-site", post(home_move::approve_on_site))
+        .route("/shipments/:id/home/photos",   post(home_photos::add).get(home_photos::list))
         .route("/shipments/:id/cancel",     post(cancel_shipment))
+        .route("/shipments/:id/cancellation-preview", get(cancellation_preview))
         .route("/shipments/:id/reschedule", post(reschedule_shipment))
         .route("/shipments/:id/status",     put(admin_override_status))
         .route("/address/lookup",           get(lookup_address))
@@ -494,6 +583,8 @@ async fn internal_create_shipment(
         merchant_name:     None,
         delivery_category: None,
         quote_token:       None,
+        home_booking:      None,
+        intake:            None,
         idempotency_key:   None,
     };
 
@@ -536,6 +627,9 @@ async fn get_shipment_billing(
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "shipment_id":          id,
+        // The booking's tenant. pod compares it with the caller's tenant, so a
+        // shipment that exists but belongs to someone else reads as not found.
+        "tenant_id":            shipment.tenant_id.inner(),
         "awb":                  shipment.awb.as_str(),
         "merchant_id":          shipment.merchant_id.inner(),
         "currency":             format!("{:?}", base_freight.currency),
@@ -545,6 +639,9 @@ async fn get_shipment_billing(
         "total":                total,
         // Booking-time classification — "balikbayan" is the exact string the
         // payments pickup consumer gates the Track A ledger debit on.
+        // Read by pod to resolve the delivery PIN recipient from the booking
+        // record rather than from whatever phone the caller put in the body.
+        "customer_phone":       shipment.customer_phone,
         "service_code":         shipment.service_type.as_str(),
         "declared_value_cents": shipment.declared_value.map(|v| v.amount),
     }))))
@@ -556,7 +653,8 @@ async fn list_shipments(
     Query(q): Query<crate::application::queries::ListShipmentsQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let (shipments, total) = s.query.list(claims.tenant_id, q).await?;
+    let partner = partner_access(&claims)?;
+    let (shipments, total) = s.query.list(&actor_of(&claims), partner, q).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "shipments": shipments,
         "total": total,

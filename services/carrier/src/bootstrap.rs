@@ -176,10 +176,21 @@ pub async fn run() -> anyhow::Result<()> {
         let repo     = Arc::clone(&marketplace_repo)
             as Arc<dyn crate::domain::repositories::MarketplaceRepository>;
         let rx       = shutdown_rx.clone();
+        // The same provider client the service uses, so a hold that lands on an
+        // already-cancelled booking can be voided. Unset leaves online booking
+        // off entirely, so there is nothing to void.
+        let payments: Option<Arc<dyn crate::application::services::BookingPayments>> =
+            if cfg.services.payments_url.is_empty() {
+                None
+            } else {
+                Some(Arc::new(crate::infrastructure::payments_client::CarrierPaymentsClient::new(
+                    cfg.services.payments_url.clone(),
+                )))
+            };
         tokio::spawn(async move {
             if let Err(e) =
                 crate::infrastructure::booking_payment_consumer::start_booking_payment_consumer(
-                    &brokers, &group_id, repo, rx,
+                    &brokers, &group_id, repo, payments, rx,
                 ).await
             {
                 tracing::error!("Booking-payment consumer exited with error: {e}");
@@ -316,6 +327,9 @@ pub async fn run() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .merge(http::observability_router())
         .merge(http::webhook_router())
+        // Mesh-internal, mounted after the JWT layer so Istio mTLS is the only
+        // gate — order-intake calls this to price a consumer move.
+        .merge(http::internal_router())
         .layer(axum::middleware::from_fn(propagate_request_id))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);

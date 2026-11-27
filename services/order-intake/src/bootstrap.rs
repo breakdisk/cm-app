@@ -15,7 +15,7 @@ use crate::{
         awb::{FallbackAwbGenerator, PostgresAwbGenerator, RedisAwbGenerator},
         db::PgShipmentRepository,
         external::{MapboxGeocoder, PassthroughNormalizer},
-        http::PaymentsClient,
+        http::{CarrierClient, PaymentsClient},
         messaging::{
             payment_consumer::PaymentConsumer, status_consumer::start_status_consumer,
             KafkaEventPublisher,
@@ -31,6 +31,8 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: None,
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
+    tracing::info!(permanent_geocoding = cfg.mapbox.permanent_geocoding, "geocoding mode (MAPBOX__PERMANENT_GEOCODING)");
 
     // Database
     let pool = PgPoolOptions::new()
@@ -54,7 +56,7 @@ pub async fn run() -> anyhow::Result<()> {
     let normalizer: Arc<dyn AddressNormalizer> = match cfg.geocoder.mapbox_access_token.as_deref() {
         Some(token) if !token.is_empty() => {
             tracing::info!("address normalizer: Mapbox geocoder");
-            Arc::new(MapboxGeocoder::new(token.to_string()))
+            Arc::new(MapboxGeocoder::new(token.to_string()).with_permanent(cfg.mapbox.permanent_geocoding))
         }
         _ => {
             tracing::warn!(
@@ -77,7 +79,15 @@ pub async fn run() -> anyhow::Result<()> {
             Arc::new(PostgresAwbGenerator::new(pool.clone())),
         ));
 
-    // Spawn Kafka status consumer in background
+    // Spawn Kafka status consumer in background. On a home move's delivery it
+    // also credits the shares that are not the primary lead's task payout.
+    let home_delivery = cfg.home_move.offered().then(|| crate::infrastructure::messaging::status_consumer::HomeDelivery {
+        teams: crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(
+            cfg.services.driver_ops_url.clone().filter(|u| !u.trim().is_empty()),
+            cfg.services.dispatch_url.clone().filter(|u| !u.trim().is_empty()),
+        ),
+        rates: cfg.home_move.clone(),
+    });
     let pool_for_consumer = pool.clone();
     let brokers_for_consumer = cfg.kafka.brokers.clone();
     let group_for_consumer = cfg.kafka.group_id.clone();
@@ -86,10 +96,27 @@ pub async fn run() -> anyhow::Result<()> {
             &brokers_for_consumer,
             &group_for_consumer,
             pool_for_consumer,
+            home_delivery,
         )
         .await
         {
             tracing::error!("Status consumer error: {e}");
+        }
+    });
+
+    // Which partner handles each shipment, projected from allocations and tasks.
+    let pool_for_links = pool.clone();
+    let brokers_for_links = cfg.kafka.brokers.clone();
+    let group_for_links = cfg.kafka.group_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::infrastructure::messaging::partner_link_consumer::start_partner_link_consumer(
+            &brokers_for_links,
+            &group_for_links,
+            pool_for_links,
+        )
+        .await
+        {
+            tracing::error!("Partner link consumer error: {e}");
         }
     });
 
@@ -123,14 +150,87 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
     let payment_enabled = payment.is_some();
-    let svc = Arc::new(ShipmentService::new(
-        repo.clone(),
-        publisher,
-        normalizer,
-        awb_generator,
-        payment,
-    ));
+
+    // Rate-card pricing for consumer moves. Logged either way: a missing URL
+    // means every move quote 503s, and that is worth seeing at startup rather
+    // than discovering from the app.
+    let carrier = match cfg.services.carrier_url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() => {
+            tracing::info!(carrier_url = %url, "rate-card quoting ENABLED for consumer moves");
+            Some(Arc::new(CarrierClient::new(url)))
+        }
+        _ => {
+            tracing::warn!(
+                "SERVICES__CARRIER_URL not set - rate-card quoting is DISABLED: a quote \
+                 carrying origin and destination will return 503. Parcel quotes are \
+                 unaffected."
+            );
+            None
+        }
+    };
+
+    // A card that pays more than it bills loses money on every job. Stop the
+    // deploy here rather than let every quote carry it.
+    cfg.accessorials
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e} - refusing to start order-intake"))?;
+    // A rate above 100% or crossed windows stops the deploy here, rather than
+    // mispricing every cancellation.
+    cfg.cancellation_policy
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e} - refusing to start order-intake"))?;
+    tracing::info!(
+        version = %cfg.cancellation_policy.version,
+        late_bps = cfg.cancellation_policy.late_bps,
+        same_day_bps = cfg.cancellation_policy.same_day_bps,
+        "cancellation policy loaded (applies to scheduled jobs only)"
+    );
+
+    // Promo codes. Logged either way: unset, a quote that asks for a code is
+    // priced without it and says promotions is unavailable.
+    let promotions = match cfg.services.promotions_url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() => {
+            tracing::info!(promotions_url = %url, "promo codes ENABLED on quotes and bookings");
+            Some(Arc::new(crate::infrastructure::http::PromotionsClient::new(url)))
+        }
+        _ => {
+            tracing::warn!("SERVICES__PROMOTIONS_URL not set - promo codes are DISABLED on quotes");
+            None
+        }
+    };
+
+    let publisher_for_sla: Arc<dyn crate::application::services::shipment_service::EventPublisher> = publisher.clone();
+    let svc = Arc::new(
+        ShipmentService::new(
+            repo.clone(),
+            publisher,
+            normalizer,
+            awb_generator,
+            payment,
+            carrier,
+            cfg.accessorials.clone(),
+            cfg.cancellation_policy.clone(),
+        )
+        .with_promotions(promotions)
+        .with_router(road_router(cfg.geocoder.mapbox_access_token.as_deref()))
+        .with_home_rates(cfg.home_move.clone())
+        .with_sla_offset(cfg.sla.offset())
+        .with_home_teams(
+            crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(
+                cfg.services.driver_ops_url.clone().filter(|u| !u.trim().is_empty()),
+                cfg.services.dispatch_url.clone().filter(|u| !u.trim().is_empty()),
+            )
+            .with_pod(cfg.services.pod_url.clone().filter(|u| !u.trim().is_empty())),
+        ),
+    );
+    if cfg.home_move.offered() {
+        tracing::info!(trip_cents = cfg.home_move.trip_cents, "whole-home moves ENABLED");
+    } else {
+        tracing::info!("whole-home moves disabled — HOME_MOVE__TRIP_CENTS unset");
+    }
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
+    // Delivery-deadline breaches: mark and publish so SlaBreach rules can fire.
+    tokio::spawn(crate::infrastructure::sla_sweep::run(pool.clone(), publisher_for_sla, cfg.sla.sweep_secs));
     let pool_for_dims = pool.clone();
 
     // Spawn Kafka payment consumer — closes the loop `create()` opens when a
@@ -220,6 +320,20 @@ pub async fn run() -> anyhow::Result<()> {
         jwt,
         pool: pool_for_dims,
     };
+    // The priority waitlist: every minute, lapse unclaimed holds and offer
+    // opened windows to the queue, first come first served.
+    if cfg.home_move.offered() {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                if let Err(e) = crate::api::http::home_waitlist::sweep(&sweep_state).await {
+                    tracing::warn!(err = %e, "home waitlist sweep failed — next minute");
+                }
+            }
+        });
+    }
     let app = router(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors);
@@ -247,4 +361,23 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
+/// Quotes are priced on the road where there is a Mapbox token (the geocoder's).
+fn road_router(token: Option<&str>) -> Arc<dyn crate::infrastructure::external::RoadRouter> {
+    use crate::infrastructure::external::{DirectRouter, MapboxDirections};
+    match token.filter(|t| !t.is_empty()).map(|t| MapboxDirections::new(t.to_string())) {
+        Some(Ok(router)) => {
+            tracing::info!("quote distance: Mapbox driving directions");
+            Arc::new(router)
+        }
+        Some(Err(e)) => {
+            tracing::error!(err = %e, "Mapbox directions client did not build — quotes fall back to the straight line");
+            Arc::new(DirectRouter)
+        }
+        None => {
+            tracing::warn!("GEOCODER__MAPBOX_ACCESS_TOKEN not set — quotes are priced on the straight line, not the road");
+            Arc::new(DirectRouter)
+        }
+    }
 }

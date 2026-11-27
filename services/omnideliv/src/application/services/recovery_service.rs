@@ -451,7 +451,7 @@ mod sweep_tests {
             -> anyhow::Result<AuthorizedIntent> {
             unreachable!("the recovery sweep never opens a new authorization")
         }
-        async fn capture(&self, _intent_id: Uuid) -> anyhow::Result<()> {
+        async fn capture(&self, _intent_id: Uuid, _amount_cents: Option<i64>) -> anyhow::Result<()> {
             unreachable!("the recovery sweep never captures")
         }
         async fn void(&self, intent_id: Uuid) -> anyhow::Result<()> {

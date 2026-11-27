@@ -62,8 +62,18 @@ pub async fn delete_push_token(
 
 #[derive(Debug, Deserialize)]
 pub struct ListPushTokensQuery {
-    pub user_id: uuid::Uuid,
     pub app: String,
+    /// By user id — the app's own pushes.
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
+    /// Or by the email/phone of a login in this tenant — campaign pushes,
+    /// which address a CDP profile rather than a user.
+    #[serde(default)]
+    pub tenant_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
 }
 
 /// Internal endpoint — called by engagement service to fetch push tokens for
@@ -76,9 +86,15 @@ pub async fn list_push_tokens_internal(
     if !matches!(q.app.as_str(), "customer" | "driver") {
         return Err(AppError::Validation("app must be customer|driver".into()));
     }
-    let tokens = state.push_token_repo
-        .list_by_user(q.user_id, &q.app)
-        .await
-        .map_err(AppError::Internal)?;
+    let email = q.email.as_deref().map(str::trim).filter(|e| e.contains('@'));
+    let phones = q.phone.as_deref().map(crate::api::http::users::phone_candidates).unwrap_or_default();
+    let tokens = match (q.user_id, q.tenant_id) {
+        (Some(user_id), _) => state.push_token_repo.list_by_user(user_id, &q.app).await,
+        (None, Some(tenant_id)) if email.is_some() || !phones.is_empty() => {
+            state.push_token_repo.list_by_contact(tenant_id, &q.app, email, &phones).await
+        }
+        _ => return Err(AppError::Validation("user_id, or tenant_id with an email or phone".into())),
+    }
+    .map_err(AppError::Internal)?;
     Ok(Json(serde_json::json!({ "data": { "tokens": tokens } })))
 }

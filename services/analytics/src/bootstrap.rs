@@ -21,6 +21,7 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: otlp.as_deref(),
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
 
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
@@ -63,10 +64,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
-            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+            HeaderValue::from_static("http://localhost:3001"),
+            HeaderValue::from_static("http://localhost:3002"),
+            HeaderValue::from_static("http://localhost:3003"),
+            HeaderValue::from_static("http://localhost:8083"),
         ])
         .allow_methods([
             Method::GET, Method::POST, Method::PUT,

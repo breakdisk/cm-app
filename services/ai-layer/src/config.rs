@@ -47,7 +47,12 @@ pub struct AnthropicConfig {
     pub model: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// Routes the Move app's prompt box, once per send. `ANTHROPIC__CLASSIFY_MODEL`.
+    #[serde(default = "default_classify_model")]
+    pub classify_model: String,
 }
+
+fn default_classify_model() -> String { "claude-haiku-4-5-20251001".to_string() }
 
 fn default_claude_model() -> String { "claude-opus-4-6".to_string() }
 fn default_max_tokens() -> u32 { 4096 }

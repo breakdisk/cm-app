@@ -1,17 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import {
   Target,
   Truck,
-  DollarSign,
   TrendingUp,
   ArrowRight,
-  CheckCircle2,
-  AlertTriangle,
   Store,
   Clock,
   Plus,
@@ -29,18 +25,11 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
-import { carriersApi, fmtPhp, carrierIdOf } from "@/lib/api/carriers";
+import { carriersApi, fmtPhp, carrierIdOf, type ZoneSlaRow, type SlaRecord } from "@/lib/api/carriers";
+import { dailyOnTimeRate } from "@/lib/sla-trend";
 
-const DISPATCH_URL    = process.env.NEXT_PUBLIC_DISPATCH_URL    ?? "http://localhost:8005";
-const PAYMENTS_URL    = process.env.NEXT_PUBLIC_PAYMENTS_URL    ?? "http://localhost:8012";
 const DRIVER_OPS_URL  = process.env.NEXT_PUBLIC_DRIVER_OPS_URL  ?? "http://localhost:8006";
-const ANALYTICS_URL   = process.env.NEXT_PUBLIC_ANALYTICS_URL   ?? "http://localhost:8013";
 const MARKETPLACE_URL = process.env.NEXT_PUBLIC_MARKETPLACE_URL ?? "http://localhost:8016";
-
-const CURRENT_MONTH = new Intl.DateTimeFormat("en-US", {
-  month: "long",
-  year:  "numeric",
-}).format(new Date());
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function daysAgoStr(n: number) {
@@ -52,15 +41,10 @@ function daysAgoStr(n: number) {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface PartnerKpis {
-  slaPct:            number | null;
-  slaTarget:         number | null;
-  activeRoutes:      number;
-  todayDeliveries:   number;
-  pendingRemittance: number;
-  grossEarnings:     number;
-  platformFee:       number;
-  netEarnings:       number;
-  alreadyPaid:       number;
+  slaPct:          number | null;
+  slaTarget:       number | null;
+  activeRoutes:    number;
+  todayDeliveries: number;
 }
 
 interface SlaPoint { day: string; sla: number }
@@ -96,13 +80,9 @@ function SlaTooltip({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function PartnerOverviewPage() {
-  const router = useRouter();
-
   const [kpis, setKpis] = useState<PartnerKpis>({
     slaPct: null, slaTarget: null,
     activeRoutes: 0, todayDeliveries: 0,
-    pendingRemittance: 0, grossEarnings: 0,
-    platformFee: 0, netEarnings: 0, alreadyPaid: 0,
   });
   const [loading,        setLoading]        = useState(true);
   const [topZones,       setTopZones]       = useState<Array<{ rank: number; zone: string; delivered: number; total: number; rate: number }>>([]);
@@ -128,17 +108,23 @@ export default function PartnerOverviewPage() {
     const onTime         = carrier?.on_time_count   ?? 0;
     const slaPct         = totalShipments > 0 ? (onTime / totalShipments) * 100 : null;
 
-    // ── 2. Parallel fetch of all live data ─────────────────────────────────
-    const [queueRes, driversRes, manifestRes, invRes, walletRes, timeseriesRes, marketplaceRes] =
+    // ── 2. Parallel fetch of the partner's own live data ──────────────────
+    // Everything here is scoped to the signed-in partner's carrier. The
+    // dispatch queue, tenant invoices, wallet and analytics were removed: they
+    // are tenant-wide, and a partner token is no longer allowed to read them.
+    const since = daysAgoStr(30);
+    const [driversRes, manifestRes, summaryRes, historyRes, marketplaceRes] =
       await Promise.allSettled([
-        authFetch(`${DISPATCH_URL}/v1/queue?status=all`),
         authFetch(`${DRIVER_OPS_URL}/v1/drivers`),
         carrierId
           ? authFetch(`${DRIVER_OPS_URL}/v1/tasks/manifest?date=${today}&carrier_id=${carrierId}`)
           : Promise.resolve(null),
-        authFetch(`${PAYMENTS_URL}/v1/invoices`),
-        authFetch(`${PAYMENTS_URL}/v1/wallet`),
-        authFetch(`${ANALYTICS_URL}/v1/analytics/timeseries?from=${daysAgoStr(30)}&to=${new Date().toISOString()}`),
+        carrierId
+          ? carriersApi.slaSummary(carrierId, since, new Date().toISOString())
+          : Promise.resolve([] as ZoneSlaRow[]),
+        carrierId
+          ? carriersApi.slaHistory(carrierId, 500, 0)
+          : Promise.resolve({ records: [] as SlaRecord[], count: 0 }),
         authFetch(`${MARKETPLACE_URL}/v1/marketplace/listings?limit=100`),
       ]);
 
@@ -150,10 +136,8 @@ export default function PartnerOverviewPage() {
       activeRoutes = list.filter((d) => d.active_route_id).length;
     }
 
-    // ── Today's deliveries + zone breakdown ───────────────────────────────
+    // ── Today's deliveries ─────────────────────────────────────────────────
     let todayDeliveries = 0;
-    const zoneCounts = new Map<string, { delivered: number; total: number }>();
-
     if (manifestRes.status === "fulfilled" && manifestRes.value) {
       // authFetch returns a Response; parse it only when the call was made (carrierId non-null).
       const res = manifestRes.value as Response;
@@ -166,85 +150,29 @@ export default function PartnerOverviewPage() {
       }
     }
 
-    if (queueRes.status === "fulfilled" && queueRes.value.ok) {
-      const j = await queueRes.value.json();
-      const items: Array<{ dest_city?: string; status?: string }> = j.data ?? [];
-      for (const it of items) {
-        const city = (it.dest_city ?? "").trim() || "Unknown";
-        const e = zoneCounts.get(city) ?? { delivered: 0, total: 0 };
-        e.total += 1;
-        if (it.status === "dispatched") e.delivered += 1;
-        zoneCounts.set(city, e);
-      }
+    // ── Top zones: the partner's own SLA by zone, busiest first ────────────
+    const zoneRows = summaryRes.status === "fulfilled" ? summaryRes.value : [];
+    setTopZones(
+      [...zoneRows]
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 5)
+        .map((z, i) => ({ rank: i + 1, zone: z.zone, delivered: z.on_time, total: z.total, rate: z.on_time_rate })),
+    );
+
+    // ── 30-day SLA trend: the partner's own delivery history ───────────────
+    // Left empty when there is none: no invented points.
+    if (historyRes.status === "fulfilled") {
+      const cutoff = since.slice(0, 10);
+      const recent = historyRes.value.records.filter((r) => (r.delivered_at ?? r.created_at).slice(0, 10) >= cutoff);
+      setSlaChartData(
+        dailyOnTimeRate(recent).map((p) => ({
+          day: new Date(`${p.date}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
+          sla: p.rate,
+        })),
+      );
     }
 
-    const zones = Array.from(zoneCounts.entries())
-      .map(([city, c]) => ({
-        zone:      city,
-        delivered: c.delivered,
-        total:     c.total,
-        rate:      c.total > 0 ? (c.delivered / c.total) * 100 : 0,
-      }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 5)
-      .map((z, i) => ({ rank: i + 1, ...z }));
-    setTopZones(zones);
-
-    // ── 30-day SLA trend (from analytics timeseries) ───────────────────────
-    if (timeseriesRes.status === "fulfilled" && timeseriesRes.value.ok) {
-      const j = await timeseriesRes.value.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const buckets: Array<any> = j.data?.buckets ?? j.data ?? [];
-      if (buckets.length > 0) {
-        const trend = buckets.map((b) => {
-          const del   = Number(b.delivered ?? b.completed ?? 0);
-          const fail  = Number(b.failed ?? 0);
-          const total = del + fail;
-          return {
-            day: new Date(b.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-            sla: total > 0 ? parseFloat(((del / total) * 100).toFixed(1)) : 0,
-          };
-        });
-        setSlaChartData(trend);
-      }
-    }
-    // If analytics returned nothing, leave chart empty — no fake data.
-
-    // ── Financials ─────────────────────────────────────────────────────────
-    let billedMtd = 0, paid = 0, outstanding = 0;
-    if (invRes.status === "fulfilled" && invRes.value.ok) {
-      const j = await invRes.value.json();
-      const list: Array<{ status?: string; total_cents?: number; billing_period?: string }> = j.data ?? [];
-      const now      = new Date();
-      const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-      for (const inv of list) {
-        const cents = inv.total_cents ?? 0;
-        if (inv.billing_period === monthKey) billedMtd += cents;
-        if (inv.status === "paid")    paid        += cents;
-        if (inv.status === "issued" || inv.status === "overdue") outstanding += cents;
-      }
-    }
-    let walletBalance = 0;
-    if (walletRes.status === "fulfilled" && walletRes.value.ok) {
-      const j = await walletRes.value.json();
-      walletBalance = j.data?.balance_cents ?? 0;
-    }
-    // Platform fee: prefer invoice line item `fee_cents` when available;
-    // fall back to 10% estimate until the payments service exposes it.
-    const platformFee  = Math.round(billedMtd * 0.10);
-    const netEarnings  = billedMtd - platformFee;
-
-    setKpis({
-      slaPct,
-      slaTarget:         carrier?.sla.on_time_target_pct ?? null,
-      activeRoutes,
-      todayDeliveries,
-      pendingRemittance: Math.max(outstanding, walletBalance),
-      grossEarnings:     billedMtd,
-      platformFee,
-      netEarnings,
-      alreadyPaid:       paid,
-    });
+    setKpis({ slaPct, slaTarget: carrier?.sla.on_time_target_pct ?? null, activeRoutes, todayDeliveries });
 
     // ── Marketplace stats ──────────────────────────────────────────────────
     if (marketplaceRes.status === "fulfilled" && marketplaceRes.value.ok) {
@@ -300,7 +228,7 @@ export default function PartnerOverviewPage() {
       {/* ── KPI Cards ─────────────────────────────────────────────────── */}
       <motion.div
         variants={variants.staggerContainer}
-        className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
       >
         {/* SLA Rate */}
         <motion.div variants={variants.fadeInUp}>
@@ -374,24 +302,6 @@ export default function PartnerOverviewPage() {
           </GlassCard>
         </motion.div>
 
-        {/* Pending Remittance */}
-        <motion.div variants={variants.fadeInUp}>
-          <GlassCard glow="amber" accent className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-white/50">Pending Remittance</span>
-              <DollarSign className="h-4 w-4 text-amber-signal/60" />
-            </div>
-            <div className="flex items-end justify-between">
-              <span
-                className="font-heading text-3xl font-bold tabular-nums text-white"
-                style={{ textShadow: "0 0 16px rgba(255,171,0,0.3)" }}
-              >
-                {fmtPhp(kpis.pendingRemittance)}
-              </span>
-              <NeonBadge variant="amber">due</NeonBadge>
-            </div>
-          </GlassCard>
-        </motion.div>
       </motion.div>
 
       {/* ── Marketplace strip ─────────────────────────────────────────── */}
@@ -564,73 +474,6 @@ export default function PartnerOverviewPage() {
         </motion.div>
       </div>
 
-      {/* ── Payout Summary ────────────────────────────────────────────── */}
-      <motion.div variants={variants.fadeInUp}>
-        <GlassCard padding="none" className="p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-white">
-                Payout Summary — {CURRENT_MONTH}
-              </p>
-              <p className="text-xs text-white/40">Earnings breakdown for the current billing cycle</p>
-            </div>
-            <button
-              onClick={() => router.push("/payouts")}
-              className="flex items-center gap-1.5 rounded-lg border border-green-signal/30 bg-green-surface px-3 py-1.5 text-xs font-medium text-green-signal transition-all hover:border-green-signal/60 hover:shadow-[0_0_10px_rgba(0,255,136,0.2)]"
-            >
-              <DollarSign className="h-3.5 w-3.5" />
-              Request Payout
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {[
-              { label: "Gross Earnings", value: fmtPhp(kpis.grossEarnings), color: "#00FF88", icon: TrendingUp    },
-              { label: "Platform Fee",   value: fmtPhp(kpis.platformFee),   color: "#FF3B5C", icon: AlertTriangle },
-              { label: "Net Earnings",   value: fmtPhp(kpis.netEarnings),   color: "#00E5FF", icon: DollarSign    },
-              { label: "Already Paid",   value: fmtPhp(kpis.alreadyPaid),   color: "#A855F7", icon: CheckCircle2  },
-            ].map(({ label, value, color, icon: Icon }) => (
-              <div
-                key={label}
-                className="rounded-lg border p-4"
-                style={{ borderColor: `${color}20`, background: `${color}06` }}
-              >
-                <div className="mb-2 flex items-center gap-1.5">
-                  <Icon className="h-3.5 w-3.5" style={{ color }} />
-                  <span className="text-xs text-white/40">{label}</span>
-                </div>
-                <p className="font-heading text-xl font-bold tabular-nums" style={{ color }}>
-                  {value}
-                </p>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-4 space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-white/40">Payout progress</span>
-              <span className="font-mono text-white/60">
-                {fmtPhp(kpis.alreadyPaid)} / {fmtPhp(kpis.netEarnings)}
-              </span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-glass-200">
-              <div
-                className="h-full rounded-full"
-                style={{
-                  width: kpis.netEarnings > 0
-                    ? `${Math.min(100, Math.round((kpis.alreadyPaid / kpis.netEarnings) * 100))}%`
-                    : "0%",
-                  background: "linear-gradient(90deg, #00CC6A, #00FF88)",
-                  boxShadow: "0 0 6px rgba(0,255,136,0.4)",
-                }}
-              />
-            </div>
-            <p className="text-2xs text-white/30 font-mono">
-              {fmtPhp(Math.max(0, kpis.netEarnings - kpis.alreadyPaid))} remaining
-            </p>
-          </div>
-        </GlassCard>
-      </motion.div>
     </motion.div>
   );
 }

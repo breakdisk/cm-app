@@ -146,6 +146,19 @@ create_topic "fieldops.courier" 1
 create_topic "omnideliv.order.placed" 1
 create_topic "omnideliv.order.delivered" 1
 
+# OmniDeliv vendor legs (ADR-0017) — one message per vendor per order, keyed on
+# vendor_id so a stall's own work arrives in order. Created here for the same
+# reason as fieldops.courier above: the vendor console and the notification
+# consumers subscribe at startup, and a topic that does not exist yet leaves
+# them logging UnknownTopicOrPartition with no recovery short of a restart.
+#
+# One partition. Ordering per vendor is what matters, these are keyed on
+# vendor_id, and a single partition gives total order for free at this volume —
+# a stall must never see "accepted" before the "received" it answers.
+create_topic "omnideliv.vendor.leg.received" 1
+create_topic "omnideliv.vendor.leg.accepted" 1
+create_topic "omnideliv.vendor.leg.rejected" 1
+
 # ── Topics that had consumers but no topic ───────────────────────────────────
 #
 # A topic is created by its first PUBLISH. A consumer that subscribes before
@@ -203,6 +216,66 @@ create_topic "logisticos.carrier.marketplace.booking.requested"
 create_topic "logisticos.carrier.marketplace.booking.accepted"
 create_topic "logisticos.carrier.marketplace.booking.rejected"
 create_topic "logisticos.carrier.marketplace.pickup.recorded"
+
+# ---------------------------------------------------------------------------
+# Found 2026-08-31, all by the same defect in check-kafka-topics.sh.
+#
+# That guard matched `subscribe(&[...])` WITHOUT `-z`, so it only ever saw a
+# single-line call -- and every real subscribe in this repo spans lines. It also
+# required a literal `topics::` prefix, so a bare imported constant was
+# invisible. Between them it was reading almost nothing while reporting a clean
+# bill of health. Both holes are closed; these are the topics that were hiding
+# behind them, twelve of which did not exist on the live broker either.
+#
+# Each line below is a feature that was inert with no symptom past one startup
+# line, exactly as in the 2026-08-09 sweep.
+
+# Proof of Pickup. Published by pod; subscribed by payments (Track A driver
+# ledger debit -- money), order-intake and delivery-experience (the canonical
+# chain-of-custody transition to picked_up).
+create_topic "logisticos.pod.pickup.captured"
+
+# Money out. COD remittance and wallet withdrawal settlement.
+create_topic "logisticos.payments.cod.remitted"
+create_topic "logisticos.payments.wallet.withdrawal_disbursed"
+create_topic "logisticos.payments.wallet.withdrawal_rejected"
+
+# Hub: consolidation, inbound piece scans, and the cross-border customs legs.
+create_topic "logisticos.hub.consolidation.plan_loaded"
+create_topic "logisticos.hub.piece.scanned_inbound"
+create_topic "logisticos.hub.container.arrived_at_port"
+create_topic "logisticos.hub.container.customs_hold"
+create_topic "logisticos.hub.container.deconsolidated"
+
+# Support tickets and the AI escalation loop that closes them.
+create_topic "logisticos.support.ticket.opened"
+create_topic "logisticos.support.ticket.closed"
+create_topic "logisticos.ai.escalation.resolved"
+
+# A driver leaving an accepted job (the mover drop). Consumed by dispatch
+# (re-queue) and delivery-experience (clear the driver off the tracking).
+create_topic "logisticos.driver.job.dropped"
+
+# A completed move lifted an account to a higher loyalty tier. Published by
+# promotions, consumed by engagement (the push to the customer).
+create_topic "logisticos.promotions.tier.changed"
+
+# A notice about a customer's whole-home move (a waitlisted window opening, a
+# survey addendum to approve). Published by order-intake, consumed by
+# engagement (the push).
+create_topic "logisticos.order.home.notice"
+
+# Identity. Both of these DID exist on the broker -- auto-created because a
+# publish happened to land before the consumer subscribed. That is the coin
+# flip this script exists to remove, not a reprieve.
+create_topic "logisticos.identity.otp.requested"
+create_topic "logisticos.identity.tenant.finalized"
+
+# Threshold signals consumed by business-logic triggers (HubCapacityExceeded,
+# PaymentOverdue, SlaBreach). Published by hub-ops, payments, order-intake.
+create_topic "logisticos.hub.load.changed"
+create_topic "logisticos.payments.invoice.overdue"
+create_topic "logisticos.order.shipment.sla_breached"
 
 echo ""
 echo "=== Done. Verify with: ==="

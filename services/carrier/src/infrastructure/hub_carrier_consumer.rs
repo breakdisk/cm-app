@@ -18,6 +18,8 @@ use rdkafka::{
 };
 use tokio::sync::watch;
 
+use logisticos_errors::AppError;
+
 use crate::application::services::CarrierService;
 use crate::domain::entities::SlaRecord;
 
@@ -100,10 +102,24 @@ async fn handle(payload: &[u8], carrier_svc: &CarrierService) -> anyhow::Result<
         promised_by,
     );
 
-    carrier_svc
+    match carrier_svc
         .create_sla_record(record, d.total_cost_cents, "hub_auto".to_string())
         .await
-        .map_err(|e| anyhow::anyhow!("create_sla_record failed: {e}"))?;
+    {
+        Ok(_) => {}
+        // The carrier is unknown, or belongs to another tenant. Retrying cannot
+        // change that, so log it loudly and let the offset commit.
+        Err(AppError::NotFound { .. }) => {
+            tracing::error!(
+                tenant_id   = %d.tenant_id,
+                shipment_id = %d.shipment_id,
+                carrier_id  = %carrier_id,
+                "hub-carrier booking refused: carrier not found for this tenant"
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(anyhow::anyhow!("create_sla_record failed: {e}")),
+    }
 
     tracing::info!(
         shipment_id = %d.shipment_id,

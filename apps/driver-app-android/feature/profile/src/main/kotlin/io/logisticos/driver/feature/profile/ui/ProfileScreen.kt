@@ -12,6 +12,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size as GeoSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -60,6 +61,7 @@ private fun EarningsSparkline(daily: List<DailyEarningItem>, modifier: Modifier 
 fun ProfileScreen(
     onNavigateToCompliance: () -> Unit = {},
     onNavigateToEarnings: () -> Unit = {},
+    onNavigateToHomeMoves: () -> Unit = {},
     onLogout: () -> Unit,
     viewModel: ProfileViewModel = hiltViewModel()
 ) {
@@ -316,6 +318,58 @@ fun ProfileScreen(
                     tint = Color.White.copy(alpha = 0.4f),
                     modifier = Modifier.size(20.dp)
                 )
+            }
+        }
+
+        // ── Whole-home moves (onboarded leads only) ───────────────────────────
+        if (state.isHomeLead) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !state.isOfflineMode, onClick = onNavigateToHomeMoves),
+                colors = CardDefaults.cardColors(containerColor = ProfileGlass),
+                border = BorderStroke(1.dp, ProfileGreen.copy(alpha = 0.3f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(20.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Home,
+                            contentDescription = null,
+                            tint = ProfileGreen,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Column {
+                            Text(
+                                "Whole-home moves",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                when (state.reservedHomeMoves) {
+                                    0 -> "Surveys, reserved moves, working days"
+                                    1 -> "1 reserved · surveys, working days"
+                                    else -> "${state.reservedHomeMoves} reserved · surveys, working days"
+                                },
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.4f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
 

@@ -9,6 +9,8 @@ use crate::application::services::CarrierService;
 
 // ── Generated proto types ────────────────────────────────────────────────────
 
+// tonic-build output; the generated code is not ours to edit.
+#[allow(clippy::unwrap_used)]
 pub mod proto {
     tonic::include_proto!("logisticos.carrier.v1");
 }

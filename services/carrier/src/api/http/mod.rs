@@ -24,6 +24,9 @@ use crate::application::services::{
 use crate::domain::entities::{Carrier, SlaRecord};
 use crate::AppState;
 
+pub mod admin_marketplace;
+pub mod internal_quote;
+
 // ── Carrier authorization helpers ─────────────────────────────────────────────
 //
 // Every `/v1/carriers/:id` route funnels through these so the tenant guard and
@@ -134,6 +137,10 @@ pub fn router() -> Router<AppState> {
         // Marketplace — vehicle listings
         .route("/v1/marketplace/listings",                     get(list_listings).post(create_listing))
         .route("/v1/marketplace/listings/:listing_id",         put(update_listing).delete(delete_listing))
+        // Marketplace — tenant-wide operator view (carriers:manage). Its own
+        // prefix, so none of these collide with `/listings/:listing_id` above.
+        .route("/v1/marketplace/admin/listings",               get(admin_marketplace::admin_list_listings).post(admin_marketplace::admin_create_listing))
+        .route("/v1/marketplace/admin/bookings",               get(admin_marketplace::admin_list_bookings))
         // Marketplace — bookings
         .route("/v1/marketplace/available",                    get(list_available_listings))
         // Two audiences on one path, and that is deliberate: GET is the
@@ -142,11 +149,27 @@ pub fn router() -> Router<AppState> {
         // panic at startup, so they share one.
         .route("/v1/marketplace/bookings",                     get(list_bookings).post(create_booking))
         .route("/v1/marketplace/my-bookings",                  get(list_my_bookings))
+        .route("/v1/marketplace/bookings/:booking_id/cancel",  post(cancel_booking))
         .route("/v1/marketplace/bookings/:booking_id/accept",  post(accept_booking))
         .route("/v1/marketplace/bookings/:booking_id/reject",  post(reject_booking))
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
-        // Internal — called by dispatch when allocating a carrier to a shipment
+        // Internal — called by dispatch when allocating a carrier to a shipment.
+        // JWT-protected like the rest of router(); body tenant_id must match it.
         .route("/v1/internal/sla-records",                     post(create_sla_record))
+}
+
+/// Mesh-internal routes, mounted *outside* the JWT layer in bootstrap.
+///
+/// Note the asymmetry with `/v1/internal/sla-records` above, which sits inside
+/// `router()` and therefore requires a JWT — carrier layers `require_auth` over
+/// the whole of `router()`, unlike order-intake, which applies it to a
+/// sub-router and nests `/v1/internal` outside it. The api-gateway refuses
+/// `/v1/internal` paths, and the handler binds the body's tenant to the JWT's.
+pub fn internal_router() -> Router<AppState> {
+    Router::new()
+        // Called by order-intake to price a consumer move off a carrier rate
+        // card, so the consumer never needs marketplace:book.
+        .route("/v1/internal/quote-breakdown", post(internal_quote::internal_quote_breakdown))
 }
 
 /// Unauthenticated webhook routes — 3PL systems authenticate with a per-carrier
@@ -406,8 +429,9 @@ async fn breach_reasons(
 // ── Internal endpoints ────────────────────────────────────────────────────────
 
 /// Body for `POST /v1/internal/sla-records` — sent by dispatch when it allocates
-/// a carrier to a shipment. Not authenticated via JWT; trusted internal call
-/// (mTLS in production, same cluster in dev).
+/// a carrier to a shipment. The route sits inside the JWT-protected `router()`;
+/// `tenant_id` stays in the body for request-shape compatibility but must equal
+/// the caller's tenant.
 #[derive(Debug, Deserialize)]
 struct CreateSlaRecordBody {
     tenant_id:        Uuid,
@@ -424,13 +448,26 @@ struct CreateSlaRecordBody {
 
 fn default_allocation_method() -> String { "rate_shop".into() }
 
+/// The body's `tenant_id` must be the caller's own. A mismatch is the same
+/// `NotFound` the service gives for a missing or foreign carrier, so the
+/// response reveals nothing about other tenants' carriers.
+fn ensure_body_tenant(body_tenant: Uuid, claims_tenant: Uuid, carrier_id: Uuid) -> Result<(), AppError> {
+    if body_tenant == claims_tenant {
+        Ok(())
+    } else {
+        Err(AppError::NotFound { resource: "Carrier", id: carrier_id.to_string() })
+    }
+}
+
 /// POST /v1/internal/sla-records
 /// Creates a per-shipment SLA commitment record and emits `carrier.allocated`.
 /// Called by dispatch immediately after carrier selection.
 async fn create_sla_record(
     State(state): State<AppState>,
+    claims: AuthClaims,
     Json(body): Json<CreateSlaRecordBody>,
 ) -> impl IntoResponse {
+    ensure_body_tenant(body.tenant_id, claims.tenant_id, body.carrier_id)?;
     let record = SlaRecord::new(
         body.tenant_id,
         body.carrier_id,
@@ -644,6 +681,22 @@ async fn create_booking(
     ))
 }
 
+/// POST /v1/marketplace/bookings/:booking_id/cancel
+/// A merchant withdraws a booking the carrier has not accepted yet. Any hold is
+/// voided first; a booking that is not the caller's answers 404 like a missing one.
+async fn cancel_booking(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(booking_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::MARKETPLACE_BOOK)?;
+    let booking = state
+        .marketplace_svc
+        .cancel_booking_by_merchant(booking_id, claims.tenant_id, claims.user_id)
+        .await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "booking": booking }))))
+}
+
 /// GET /v1/marketplace/my-bookings
 /// The caller's own bookings. Scoped to the user, not the tenant — another
 /// merchant's freight rates and destinations are not theirs to read.
@@ -802,4 +855,17 @@ async fn carrier_tracking_webhook(
     ).await?;
 
     Ok((StatusCode::OK, Json(serde_json::json!({"received": true, "event": body.event}))))
+}
+
+#[cfg(test)]
+mod sla_route_tests {
+    use super::*;
+
+    #[test]
+    fn body_tenant_must_match_the_callers_tenant() {
+        let (a, b, carrier) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        assert!(ensure_body_tenant(a, a, carrier).is_ok());
+        let err = ensure_body_tenant(b, a, carrier).expect_err("another tenant's id is refused");
+        assert!(matches!(err, AppError::NotFound { resource: "Carrier", .. }), "got {err:?}");
+    }
 }

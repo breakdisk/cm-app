@@ -42,6 +42,10 @@ use crate::domain::entities::shipment::PaymentRequirement;
 /// creates, and therefore the only kind this consumer acts on.
 const SHIPPING_FEE_PURPOSE: &str = "shipping_fee";
 
+/// A whole-home move's survey addendum, paid on its own; reference_id is
+/// the addendum's id, never a shipment's.
+const HOME_ADDENDUM_PURPOSE: &str = "home_addendum";
+
 pub struct PaymentConsumer {
     inner: KafkaConsumer,
     svc: Arc<ShipmentService>,
@@ -81,6 +85,12 @@ pub async fn handle(topic: &str, json: serde_json::Value, svc: &ShipmentService)
         topics::PAYMENT_INTENT_CAPTURED => {
             let evt: Event<PaymentIntentCaptured> = serde_json::from_value(json)
                 .context("failed to deserialize payment.intent.captured event")?;
+            if evt.data.purpose == HOME_ADDENDUM_PURPOSE {
+                if let Some(settled) = svc.repo.settle_home_addendum(evt.data.reference_id, true).await? {
+                    emergency_trucks(svc, &settled).await;
+                }
+                return Ok(());
+            }
             if evt.data.purpose != SHIPPING_FEE_PURPOSE {
                 return Ok(());
             }
@@ -89,6 +99,10 @@ pub async fn handle(topic: &str, json: serde_json::Value, svc: &ShipmentService)
         topics::PAYMENT_INTENT_FAILED => {
             let evt: Event<PaymentIntentFailed> = serde_json::from_value(json)
                 .context("failed to deserialize payment.intent.failed event")?;
+            if evt.data.purpose == HOME_ADDENDUM_PURPOSE {
+                svc.repo.settle_home_addendum(evt.data.reference_id, false).await?;
+                return Ok(());
+            }
             if evt.data.purpose != SHIPPING_FEE_PURPOSE {
                 return Ok(());
             }
@@ -223,7 +237,33 @@ async fn handle_failed(shipment_id: Uuid, reason: &str, svc: &ShipmentService) -
         return Ok(());
     }
 
-    svc.cancel(CancelShipmentCommand { shipment_id, reason: reason.to_string() })
+    svc.cancel(CancelShipmentCommand {
+        shipment_id,
+        reason: reason.to_string(),
+        // No user: payments reported the intent failed. Mesh-internal, trusted.
+        acting_as: crate::domain::value_objects::cancel_authority::ActingAs::System,
+    })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// A paid addendum that needs more trucks than were booked (a major
+/// overflow): an Emergency Secondary Dispatch — the extra trucks offered at
+/// once to leads free today, each at their share of the addendum's pay. The
+/// money is settled either way; a failure here is ops' to chase, logged.
+async fn emergency_trucks(svc: &ShipmentService, settled: &crate::application::services::shipment_service::SettledAddendum) {
+    let needed = i64::from(settled.trucks_after - settled.trucks_before);
+    if needed <= 0 {
+        return;
+    }
+    let (_, per_truck) = crate::domain::value_objects::home_move::addendum_split(&svc.home_rates, settled.total_cents, needed, needed);
+    match svc
+        .home_teams
+        .side_slots(settled.tenant_id, settled.shipment_id, "emergency", needed, Some(per_truck.net_cents).filter(|p| *p > 0))
+        .await
+    {
+        Ok(_) => tracing::info!(shipment_id = %settled.shipment_id, trucks = needed, "addendum outgrew the trucks: emergency secondary dispatch"),
+        Err(e) => tracing::error!(shipment_id = %settled.shipment_id, trucks = needed, err = %e,
+            "addendum outgrew the trucks and no extra truck was offered — ops must send one"),
+    }
 }

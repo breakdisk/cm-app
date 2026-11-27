@@ -23,6 +23,8 @@ import io.logisticos.driver.feature.boxmeasure.presentation.BoxMeasureMode
 import io.logisticos.driver.feature.boxmeasure.ui.BookShipmentScreen
 import io.logisticos.driver.feature.boxmeasure.ui.BoxMeasureScreen
 import io.logisticos.driver.feature.delivery.ui.ArrivalScreen
+import io.logisticos.driver.feature.delivery.ui.ChatScreen
+import io.logisticos.driver.feature.delivery.ui.LeaveScreen
 import io.logisticos.driver.feature.home.ui.HomeScreen
 import io.logisticos.driver.feature.home.ui.HubScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
@@ -32,15 +34,23 @@ import io.logisticos.driver.feature.pickup.presentation.BoxAuditDims
 import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
+import io.logisticos.driver.feature.profile.ui.AvailabilityScreen
 import io.logisticos.driver.feature.profile.ui.ComplianceScreen
 import io.logisticos.driver.feature.profile.ui.EarningsScreen
+import io.logisticos.driver.feature.profile.ui.HomeMovesScreen
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
+import io.logisticos.driver.feature.profile.ui.SurveyScreen
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.core.location.LocationForegroundService
 import io.logisticos.driver.feature.hub.domain.HubScanType
 import io.logisticos.driver.feature.hub.ui.HubScanScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
+import io.logisticos.driver.BuildConfig
+import io.logisticos.driver.move.LoadsBoardScreen
+import io.logisticos.driver.move.MoveBottomBar
+import io.logisticos.driver.core.designsystem.LocalMoveColors
+import io.logisticos.driver.core.designsystem.LocalSunMode
 
 // ── Route constants ───────────────────────────────────────────────────────────
 private const val HOME_ROUTE             = "home"
@@ -51,8 +61,17 @@ private const val NOTIFICATIONS_ROUTE    = "notifications"
 private const val PROFILE_ROUTE          = "profile"
 private const val COMPLIANCE_ROUTE       = "compliance"
 private const val EARNINGS_ROUTE         = "earnings"
+// Whole-home moves — the lead's reservations, the survey, working days.
+private const val HOME_MOVES_ROUTE       = "home_moves"
+private const val HOME_SURVEY_ROUTE      = "home_survey/{shipmentId}"
+private const val AVAILABILITY_ROUTE     = "availability"
 private const val NAVIGATE_TO_STOP_ROUTE = "navigate/{taskId}"
 private const val ARRIVAL_ROUTE          = "arrival/{taskId}"
+/** Drop or release — the server decides which. */
+private const val LEAVE_ROUTE            = "leave/{taskId}"
+/** The customer thread for one job. Name and phone ride along so the header
+  * reads right before the first message arrives. */
+private const val CHAT_ROUTE             = "chat/{shipmentId}?name={name}&phone={phone}"
 private const val PICKUP_ROUTE           = "pickup/{taskId}"
 /** Assignment screen uses saved state (pendingPayload) rather than nav args. */
 private const val ASSIGNMENT_ROUTE       = "assignment"
@@ -104,10 +123,18 @@ fun ShiftScaffold(rootNavController: NavHostController) {
         }
     }
 
+    // Sun mode (Move build) is held by AppNavGraph and read from the theme.
+    val sunMode = LocalSunMode.current
+    val moveColors = LocalMoveColors.current
+
     Scaffold(
-        containerColor = NavCanvas,
+        containerColor = if (BuildConfig.MOVE_UI) moveColors.ground else NavCanvas,
         bottomBar = {
-            BottomNavBar(navController = shiftNavController, unreadCount = unreadCount)
+            if (BuildConfig.MOVE_UI) {
+                MoveBottomBar(navController = shiftNavController)
+            } else {
+                BottomNavBar(navController = shiftNavController, unreadCount = unreadCount)
+            }
         }
     ) { innerPadding ->
         NavHost(
@@ -118,16 +145,28 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             // ── Bottom tab destinations ───────────────────────────────────
             composable(HOME_ROUTE) {
-                HomeScreen(
-                    onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
-                    onNavigateToTask  = { taskId ->
-                        shiftNavController.navigate(ARRIVAL_ROUTE.replace("{taskId}", taskId))
-                    },
-                    onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
-                    onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
-                    onNavigateToHub = { shiftNavController.navigate(HUB_ROUTE) },
-                    onNavigateToHubScan = { hubId -> shiftNavController.navigateToHubScan(hubId = hubId) },
-                )
+                if (BuildConfig.MOVE_UI) {
+                    LoadsBoardScreen(
+                        sun = sunMode.on,
+                        onToggleSun = { sunMode.toggle?.invoke() },
+                        onNavigateToTask = { taskId ->
+                            shiftNavController.navigate(NAVIGATE_TO_STOP_ROUTE.replace("{taskId}", taskId))
+                        },
+                        onOpenNotifications = { shiftNavController.navigate(NOTIFICATIONS_ROUTE) },
+                        onOpenProfile = { shiftNavController.navigate(PROFILE_ROUTE) },
+                    )
+                } else {
+                    HomeScreen(
+                        onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
+                        onNavigateToTask  = { taskId ->
+                            shiftNavController.navigate(ARRIVAL_ROUTE.replace("{taskId}", taskId))
+                        },
+                        onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
+                        onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
+                        onNavigateToHub = { shiftNavController.navigate(HUB_ROUTE) },
+                        onNavigateToHubScan = { hubId -> shiftNavController.navigateToHubScan(hubId = hubId) },
+                    )
+                }
             }
 
             composable(HUB_ROUTE) {
@@ -138,7 +177,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onSelectTask = { taskId ->
                         shiftNavController.navigate("navigate/$taskId")
                     },
-                    onBack = { shiftNavController.popBackStack() },
+                    // A bottom tab in the Move build: no back affordance there.
+                    onBack = if (BuildConfig.MOVE_UI) null else ({ shiftNavController.popBackStack() }),
+                    onOpenHubScan = { shiftNavController.navigateToHubScan() },
                 )
             }
 
@@ -148,6 +189,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToStop = { taskId ->
                         shiftNavController.navigate("navigate/$taskId")
                     },
+                    onScanManifest = { shiftNavController.navigateToHubScan() },
                 )
             }
 
@@ -179,6 +221,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToEarnings = {
                         shiftNavController.navigate(EARNINGS_ROUTE)
                     },
+                    onNavigateToHomeMoves = {
+                        shiftNavController.navigate(HOME_MOVES_ROUTE)
+                    },
                     onLogout = {
                         // 1. Cancel all in-flight OkHttp calls + clear session tokens.
                         //    This unblocks any TokenAuthenticator.runBlocking threads that
@@ -207,13 +252,33 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 )
             }
 
+            // Compliance and the wallet are bottom tabs in the Move build, so
+            // they carry no back affordance there.
             composable(COMPLIANCE_ROUTE) {
-                ComplianceScreen(onBack = { shiftNavController.popBackStack() })
+                ComplianceScreen(onBack = if (BuildConfig.MOVE_UI) null else ({ shiftNavController.popBackStack() }))
             }
 
             // ── Earnings & COD cash history (Profile → Earnings) ──────────
             composable(EARNINGS_ROUTE) {
-                EarningsScreen(onBack = { shiftNavController.popBackStack() })
+                EarningsScreen(onBack = if (BuildConfig.MOVE_UI) null else ({ shiftNavController.popBackStack() }))
+            }
+
+            // ── Whole-home moves (Profile → Whole-home moves) ─────────────
+            composable(HOME_MOVES_ROUTE) {
+                HomeMovesScreen(
+                    onBack = { shiftNavController.popBackStack() },
+                    onOpenSurvey = { id -> shiftNavController.navigate(HOME_SURVEY_ROUTE.replace("{shipmentId}", id)) },
+                    onOpenAvailability = { shiftNavController.navigate(AVAILABILITY_ROUTE) },
+                )
+            }
+            composable(HOME_SURVEY_ROUTE) { backStack ->
+                SurveyScreen(
+                    shipmentId = backStack.arguments?.getString("shipmentId") ?: "",
+                    onBack = { shiftNavController.popBackStack() },
+                )
+            }
+            composable(AVAILABILITY_ROUTE) {
+                AvailabilityScreen(onBack = { shiftNavController.popBackStack() })
             }
 
             // ── Assignment accept/reject ──────────────────────────────────
@@ -271,6 +336,38 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                             )
                         }
                     },
+                    onOpenChat = { shipmentId, name, phone ->
+                        shiftNavController.navigate(
+                            "chat/$shipmentId?name=${java.net.URLEncoder.encode(name, "UTF-8")}" +
+                                "&phone=${java.net.URLEncoder.encode(phone, "UTF-8")}",
+                        )
+                    },
+                    onLeave = { id -> shiftNavController.navigate(LEAVE_ROUTE.replace("{taskId}", id)) },
+                    onBack = { shiftNavController.popBackStack() },
+                )
+            }
+
+            composable(LEAVE_ROUTE) { backStack ->
+                LeaveScreen(
+                    taskId = backStack.arguments?.getString("taskId") ?: "",
+                    // The job is gone from this driver: back to the board, not
+                    // to a stop screen for a task they no longer hold.
+                    onDone = { shiftNavController.popBackStack(HOME_ROUTE, inclusive = false) },
+                    onBack = { shiftNavController.popBackStack() },
+                )
+            }
+
+            composable(
+                route = CHAT_ROUTE,
+                arguments = listOf(
+                    navArgument("name")  { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("phone") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
+            ) { backStack ->
+                ChatScreen(
+                    shipmentId   = backStack.arguments?.getString("shipmentId") ?: "",
+                    customerName = backStack.arguments?.getString("name").orEmpty(),
+                    customerPhone = backStack.arguments?.getString("phone").orEmpty(),
                     onBack = { shiftNavController.popBackStack() },
                 )
             }
@@ -399,14 +496,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 val taskId    = args?.getString("taskId") ?: ""
                 val photo     = args?.getString("requiresPhoto") == "true"
                 val sig       = args?.getString("requiresSignature") == "true"
-                val otp       = args?.getString("requiresOtp") == "true"
                 val isCod     = args?.getString("isCod") == "true"
                 val codAmount = args?.getString("codAmount")?.toDoubleOrNull() ?: 0.0
                 PodScreen(
                     taskId            = taskId,
                     requiresPhoto     = photo,
                     requiresSignature = sig,
-                    requiresOtp       = otp,
+                    // Always. pod refuses every POD without the recipient's PIN, and
+                    // task rows cached before driver-ops changed still carry false.
+                    requiresOtp       = true,
                     isCod             = isCod,
                     codAmount         = codAmount,
                     onCompleted = {

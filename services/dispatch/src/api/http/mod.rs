@@ -16,6 +16,8 @@ pub struct AppState {
     pub jwt:              Arc<logisticos_auth::jwt::JwtService>,
     pub queue_repo:       Arc<dyn DispatchQueueRepository>,
     pub drivers_repo:     Arc<dyn DriverProfilesRepository>,
+    /// Whole-home moves: requirements and lead reservations.
+    pub home:             Option<Arc<crate::infrastructure::db::HomeRepo>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -27,6 +29,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/internal/shipments/:shipment_id/requeue", post(dispatch_ops::requeue_shipment))
         .route("/v1/internal/shipments/:shipment_id/assign",  post(dispatch_ops::internal_assign))
         .route("/v1/internal/drivers/available",              get(dispatch_ops::internal_available_drivers))
+        .route("/v1/internal/home-reservations/:shipment_id", get(dispatch_ops::internal_home_reservation))
+        .route("/v1/internal/home-moves/:shipment_id/slots", post(dispatch_ops::internal_side_slots))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }
@@ -52,6 +56,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers", get(queue::list_drivers))
         // Gig offer broadcast ("grab") — driver-facing surface
         .route("/offers/open",      get(offers::list_open))
+        .route("/home-reservations/mine", get(offers::my_home_moves))
         .route("/offers/:id/claim", post(offers::claim))
         .route("/offers/:id/pass",  post(offers::pass))
         .route("/offers/:id/seen",  post(offers::seen))
@@ -59,6 +64,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/queue/:shipment_id/dispatch",        post(dispatch_ops::quick_dispatch))
         // Ops-console action: broadcast to the gig pool instead of 1:1 dispatch
         .route("/queue/:shipment_id/broadcast",       post(offers::broadcast))
+        // Ops: offer a home move's support or extra truck again
+        .route("/home-moves/:shipment_id/slots",      post(dispatch_ops::ops_side_slots))
         // Admin: cancel a dispatched shipment — returns it to pending for reassignment
         .route("/queue/:shipment_id/cancel-dispatch", post(dispatch_ops::cancel_queue_dispatch))
         // Admin: cancel a driver's stale active assignment (re-enters them into auto-dispatch pool)

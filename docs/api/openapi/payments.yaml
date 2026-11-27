@@ -184,7 +184,10 @@ paths:
       operationId: getWallet
       tags: [Wallet]
       summary: Get merchant wallet balance
-      description: Returns the current wallet balance, pending amount, and last credit.
+      description: |
+        Returns the current wallet balance, pending amount, and last credit.
+        This is the tenant's own money. Partner and store tokens are refused with
+        403; partners read their own statements from the partner ledger instead.
       responses:
         "200":
           description: Wallet balance

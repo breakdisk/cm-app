@@ -20,6 +20,8 @@ pub async fn list_queue(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_VIEW);
+    // The queue holds every party's pending parcels and recipient details.
+    logisticos_auth::partner::require_unscoped(&claims, "dispatch queue")?;
 
     // "all" → no status filter; anything else falls through to the literal value.
     // Default to "pending" for callers that don't pass ?status=, preserving
@@ -43,6 +45,8 @@ pub async fn list_drivers(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_VIEW);
+    // The tenant-wide roster; a partner reads its own riders from driver-ops.
+    logisticos_auth::partner::require_unscoped(&claims, "dispatch driver roster")?;
     let drivers = state
         .drivers_repo
         .list_by_tenant(claims.tenant_id)

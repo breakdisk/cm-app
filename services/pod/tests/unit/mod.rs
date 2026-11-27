@@ -291,6 +291,7 @@ mod otp_verification {
 
 mod otp_code {
     use super::*;
+    use logisticos_pod::domain::value_objects::delivery_pin::DeliveryPinPolicy;
 
     fn make_otp() -> OtpCode {
         OtpCode::new(
@@ -298,6 +299,7 @@ mod otp_code {
             Uuid::new_v4(),
             "+639170000001".to_string(),
             "e3b0c44298fc1c149afb4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            DeliveryPinPolicy::default().ttl(),
         )
     }
 
@@ -313,14 +315,17 @@ mod otp_code {
         assert!(!otp.is_used);
     }
 
+    // Decided 2026-09-15: the PIN is shown at booking, so it must live until
+    // delivery. It used to expire 15 minutes after issue.
     #[test]
-    fn new_otp_expires_15_minutes_from_creation() {
+    fn new_otp_lives_for_the_policy_ttl_not_15_minutes() {
         let otp = make_otp();
-        let expected_expiry_window = chrono::Duration::minutes(15);
+        let expected_expiry_window = DeliveryPinPolicy::default().ttl();
         let actual_window = otp.expires_at - otp.created_at;
         // Allow a 1-second tolerance for test execution time.
         assert!(actual_window >= expected_expiry_window - chrono::Duration::seconds(1));
         assert!(actual_window <= expected_expiry_window + chrono::Duration::seconds(1));
+        assert!(actual_window > chrono::Duration::days(1));
     }
 
     #[test]
@@ -329,6 +334,23 @@ mod otp_code {
         otp.mark_used();
         assert!(otp.is_used);
         assert!(!otp.is_valid(), "used OTP must no longer be valid");
+    }
+
+    #[test]
+    fn a_new_pin_has_no_failed_attempts_and_is_not_locked() {
+        let otp = make_otp();
+        assert_eq!(otp.failed_attempts, 0);
+        assert!(!otp.is_locked(DeliveryPinPolicy::default().max_attempts));
+    }
+
+    #[test]
+    fn a_pin_locks_once_every_attempt_is_spent() {
+        let max = DeliveryPinPolicy::default().max_attempts;
+        let mut otp = make_otp();
+        otp.failed_attempts = max - 1;
+        assert!(!otp.is_locked(max));
+        otp.failed_attempts = max;
+        assert!(otp.is_locked(max));
     }
 
     #[test]
@@ -504,5 +526,62 @@ mod pop_weight_overage {
         pop.record_scan("AWB-001234567".to_string());
         assert!(pop.barcode_scanned);
         assert_eq!(pop.scanned_barcode.as_deref(), Some("AWB-001234567"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Delivery PIN waiver (recipient never received a PIN)
+// ---------------------------------------------------------------------------
+
+mod pin_waiver {
+    use super::*;
+
+    #[test]
+    fn waive_without_a_photo_is_refused() {
+        let mut pod = make_pod(true);
+        let err = pod.waive_undelivered_pin().unwrap_err();
+        assert_eq!(err, "A photo of the delivered parcel is required when the recipient never received a delivery PIN.");
+        assert_eq!(pod.pin_exception, None);
+    }
+
+    fn minted_photo(pod: &ProofOfDelivery) -> PodPhoto {
+        PodPhoto { s3_key: format!("{}{}.jpg", pod.upload_key_prefix(), Uuid::new_v4()), ..make_photo() }
+    }
+
+    #[test]
+    fn a_photo_under_a_foreign_prefix_or_a_bare_key_does_not_waive() {
+        let mut pod = make_pod(true);
+        for key in [
+            "x".to_string(),
+            "tenants/abc/shipments/xyz/pod/photo.jpg".to_string(),
+            format!("pod/{}/{}/{}/a.jpg", Uuid::new_v4(), pod.shipment_id, pod.id),
+            format!("pod/{}/{}/{}/a.jpg", pod.tenant_id, Uuid::new_v4(), pod.id),
+            format!("pod/{}/{}/{}/a.jpg", pod.tenant_id, pod.shipment_id, Uuid::new_v4()),
+            format!("{}../../other.jpg", pod.upload_key_prefix()),
+        ] {
+            pod.attach_photo(PodPhoto { s3_key: key, ..make_photo() });
+        }
+        assert!(pod.minted_photo_keys().is_empty());
+        assert!(pod.waive_undelivered_pin().is_err());
+        assert_eq!(pod.pin_exception, None);
+    }
+
+    #[test]
+    fn waive_with_a_photo_sets_the_pin_exception() {
+        let mut pod = make_pod(true);
+        let photo = minted_photo(&pod);
+        pod.attach_photo(photo);
+        pod.waive_undelivered_pin().unwrap();
+        assert_eq!(pod.pin_exception.as_deref(), Some("PIN_UNDELIVERED"));
+    }
+
+    #[test]
+    fn record_delivery_stamps_only_when_a_channel_is_given() {
+        let mut otp = OtpCode::new(Uuid::new_v4(), Uuid::new_v4(), "+639171234567".into(), "h".into(), chrono::Duration::hours(1));
+        otp.record_delivery(None);
+        assert!(otp.delivered_via.is_none() && otp.delivered_at.is_none());
+        otp.record_delivery(Some("sms"));
+        assert_eq!(otp.delivered_via.as_deref(), Some("sms"));
+        assert!(otp.delivered_at.is_some());
     }
 }

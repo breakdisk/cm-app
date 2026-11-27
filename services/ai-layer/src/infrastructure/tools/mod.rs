@@ -30,6 +30,89 @@ fn authed(req: reqwest::RequestBuilder, ctx: &ToolContext) -> reqwest::RequestBu
     }
 }
 
+/// Parse a caller-supplied id that will be interpolated into a URL path.
+///
+/// Anything that is not a canonical UUID is refused before a request is built:
+/// a raw string such as `<uuid>?tenant_id=<victim>`, `<uuid>/requeue#` or
+/// `../internal/...` would otherwise be re-interpreted by URL parsing (query,
+/// fragment, dot-segment) and could reach a different, unscoped route.
+fn path_uuid(input: &Value, field: &str) -> anyhow::Result<uuid::Uuid> {
+    let raw = input
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("`{field}` is required and must be a UUID string"))?;
+    uuid::Uuid::parse_str(raw.trim())
+        .map_err(|_| anyhow::anyhow!("`{field}` must be a valid UUID"))
+}
+
+/// Max characters of a downstream error body carried into the tool error.
+const ERROR_BODY_MAX: usize = 512;
+
+/// Pure status/body mapping for a downstream response: non-2xx is an error
+/// carrying the status and a truncated body; an empty 2xx body is `null`;
+/// otherwise the parsed JSON.
+fn interpret_response(status: reqwest::StatusCode, body: &[u8]) -> anyhow::Result<Value> {
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(body);
+        let snippet: String = text.chars().take(ERROR_BODY_MAX).collect();
+        anyhow::bail!("downstream returned HTTP {}: {}", status.as_u16(), snippet);
+    }
+    if body.iter().all(|b| b.is_ascii_whitespace()) {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(body)
+        .map_err(|e| anyhow::anyhow!("downstream returned a non-JSON body: {e}"))
+}
+
+/// Send a request and judge success by HTTP status, not by whether the body
+/// happens to parse as JSON.
+async fn send_json(req: reqwest::RequestBuilder) -> anyhow::Result<Value> {
+    let resp = req.send().await?;
+    let status = resp.status();
+    let body = resp.bytes().await?;
+    interpret_response(status, &body)
+}
+
+trait SendJson {
+    async fn send_json(self) -> anyhow::Result<Value>;
+}
+
+impl SendJson for reqwest::RequestBuilder {
+    async fn send_json(self) -> anyhow::Result<Value> {
+        send_json(self).await
+    }
+}
+
+/// Map the `send_notification` tool input onto engagement's
+/// `SendNotificationRequest` body: `variables` become `template_vars` (all
+/// values stringified, as that map is `String -> String`) and `recipient` is
+/// carried inside `template_vars`, which is where the route reads it from.
+fn notification_request_body(input: &Value) -> Value {
+    let mut vars = serde_json::Map::new();
+    if let Some(obj) = input.get("variables").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            let text = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            vars.insert(k.clone(), Value::String(text));
+        }
+    }
+    if let Some(r) = input.get("recipient").and_then(|v| v.as_str()) {
+        vars.insert("recipient".into(), Value::String(r.to_string()));
+    }
+    let mut body = json!({
+        "customer_id":   input["customer_id"],
+        "channel":       input["channel"],
+        "template_id":   input["template_id"],
+        "template_vars": Value::Object(vars),
+    });
+    if let Some(p) = input.get("priority").and_then(|v| v.as_str()) {
+        body["priority"] = Value::String(p.to_string());
+    }
+    body
+}
+
 /// Registered tool with its handler.
 type ToolHandler = Arc<dyn Fn(Value, ToolContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send>> + Send + Sync>;
 
@@ -132,8 +215,7 @@ impl ToolRegistry {
                                 ("radius_km", input.get("radius_km").and_then(|v| v.as_f64()).unwrap_or(10.0).to_string()),
                                 ("tenant_id", input["tenant_id"].as_str().unwrap_or("").to_string()),
                             ])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -162,12 +244,11 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let shipment_id = input["shipment_id"].as_str().unwrap_or("");
+                        let shipment_id = path_uuid(&input, "shipment_id")?;
                         let resp = http
                             .post(format!("{}/v1/internal/shipments/{}/assign", url, shipment_id))
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -198,10 +279,9 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["shipment_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "shipment_id")?;
                         let resp = authed(http.get(format!("{}/v1/shipments/{}", url, id)), &ctx)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -231,13 +311,12 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["shipment_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "shipment_id")?;
                         let resp = authed(
                             http.post(format!("{}/v1/shipments/{}/reschedule", url, id)).json(&input),
                             &ctx,
                         )
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -245,7 +324,7 @@ impl ToolRegistry {
         );
 
         // ── send_notification ─────────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "send_notification".into(),
                 description: "Send a notification to a customer via WhatsApp, SMS, or email using a template.".into(),
@@ -254,24 +333,25 @@ impl ToolRegistry {
                     "properties": {
                         "customer_id":  {"type": "string", "format": "uuid"},
                         "channel":      {"type": "string", "enum": ["whatsapp", "sms", "email", "push"]},
-                        "template_id":  {"type": "string"},
-                        "variables":    {"type": "object"}
+                        "template_id":  {"type": "string", "format": "uuid", "description": "UUID of the notification template (must match the channel)"},
+                        "recipient":    {"type": "string", "description": "Phone number or email address to deliver to"},
+                        "variables":    {"type": "object", "description": "Template variables (string values)"},
+                        "priority":     {"type": "string", "enum": ["high", "normal", "low"]}
                     },
-                    "required": ["customer_id", "channel", "template_id"]
+                    "required": ["customer_id", "channel", "template_id", "recipient"]
                 }),
             },
             {
                 let http = http.clone();
                 let url = urls.engagement.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let resp = http
-                            .post(format!("{}/v1/notifications", url))
-                            .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                        let body = notification_request_body(&input);
+                        let resp = authed(http.post(format!("{}/v1/notifications/send", url)), &ctx)
+                            .json(&body)
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -279,7 +359,7 @@ impl ToolRegistry {
         );
 
         // ── get_delivery_metrics ──────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_delivery_metrics".into(),
                 description: "Get delivery KPIs for a tenant over a date range: success rate, on-time %, COD collection rate.".into(),
@@ -295,18 +375,16 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.analytics.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let resp = http
-                            .get(format!("{}/v1/analytics/kpis", url))
+                        let resp = authed(http.get(format!("{}/v1/analytics/kpis", url)), &ctx)
                             .query(&[
                                 ("from", input["from"].as_str().unwrap_or("")),
                                 ("to",   input["to"].as_str().unwrap_or("")),
                             ])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -314,7 +392,7 @@ impl ToolRegistry {
         );
 
         // ── reconcile_cod ─────────────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "reconcile_cod".into(),
                 description: "Trigger COD reconciliation for a shipment that has been delivered but not credited to the merchant wallet.".into(),
@@ -329,15 +407,13 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.payments.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let resp = http
-                            .post(format!("{}/v1/cod/reconcile", url))
+                        let resp = authed(http.post(format!("{}/v1/cod/reconcile", url)), &ctx)
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -345,7 +421,7 @@ impl ToolRegistry {
         );
 
         // ── get_driver_performance ────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_driver_performance".into(),
                 description: "Get delivery performance stats for a specific driver: success rate, average delivery time, recent failures.".into(),
@@ -361,15 +437,13 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.analytics.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let resp = http
-                            .get(format!("{}/v1/analytics/driver-performance", url))
+                        let resp = authed(http.get(format!("{}/v1/analytics/driver-performance", url)), &ctx)
                             .query(&[("driver_id", input["driver_id"].as_str().unwrap_or(""))])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -377,7 +451,7 @@ impl ToolRegistry {
         );
 
         // ── get_customer_profile ─────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_customer_profile".into(),
                 description: "Retrieve a unified customer profile from the CDP including contact info, shipment history, preferences, and loyalty tier.".into(),
@@ -392,19 +466,18 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.cdp.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let resp = if let Some(id) = input["customer_id"].as_str() {
-                            http.get(format!("{}/v1/customers/{}", url, id))
-                                .send().await?
-                                .json::<Value>().await?
+                        let resp = if input.get("customer_id").is_some_and(|v| !v.is_null()) {
+                            let id = path_uuid(&input, "customer_id")?;
+                            authed(http.get(format!("{}/v1/customers/{}", url, id)), &ctx)
+                                .send_json().await?
                         } else {
-                            http.get(format!("{}/v1/customers", url))
+                            authed(http.get(format!("{}/v1/customers", url)), &ctx)
                                 .query(&[("phone", input["phone"].as_str().unwrap_or(""))])
-                                .send().await?
-                                .json::<Value>().await?
+                                .send_json().await?
                         };
                         Ok(resp)
                     })
@@ -413,7 +486,7 @@ impl ToolRegistry {
         );
 
         // ── get_churn_score ───────────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_churn_score".into(),
                 description: "Get the ML-predicted churn probability for a customer (0.0–1.0). Scores above 0.7 indicate high churn risk.".into(),
@@ -428,15 +501,13 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.cdp.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["customer_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .get(format!("{}/v1/customers/{}/churn-score", url, id))
-                            .send().await?
-                            .json::<Value>().await?;
+                        let id = path_uuid(&input, "customer_id")?;
+                        let resp = authed(http.get(format!("{}/v1/customers/{}/churn-score", url, id)), &ctx)
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -444,7 +515,7 @@ impl ToolRegistry {
         );
 
         // ── get_customer_preferences ──────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_customer_preferences".into(),
                 description: "Get a customer's communication preferences: preferred channel, opt-in status per channel, language, delivery time window preferences.".into(),
@@ -459,15 +530,13 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.cdp.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["customer_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .get(format!("{}/v1/customers/{}/preferences", url, id))
-                            .send().await?
-                            .json::<Value>().await?;
+                        let id = path_uuid(&input, "customer_id")?;
+                        let resp = authed(http.get(format!("{}/v1/customers/{}/preferences", url, id)), &ctx)
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -475,7 +544,7 @@ impl ToolRegistry {
         );
 
         // ── generate_invoice ──────────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "generate_invoice".into(),
                 description: "Generate or retrieve the invoice for a shipment. Returns invoice PDF URL and line items.".into(),
@@ -491,16 +560,14 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.payments.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let shipment_id = input["shipment_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .post(format!("{}/v1/invoices", url))
+                        let shipment_id = path_uuid(&input, "shipment_id")?;
+                        let resp = authed(http.post(format!("{}/v1/invoices", url)), &ctx)
                             .json(&json!({"shipment_id": shipment_id, "force": input.get("force").and_then(|v| v.as_bool()).unwrap_or(false)}))
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -528,13 +595,12 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let merchant_id = input["merchant_id"].as_str().unwrap_or("");
+                        let merchant_id = path_uuid(&input, "merchant_id")?;
                         let tenant_id   = input["tenant_id"].as_str().unwrap_or("");
                         let resp = http
                             .get(format!("{}/v1/internal/cod/balance/{}", url, merchant_id))
                             .query(&[("tenant_id", tenant_id)])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -568,8 +634,7 @@ impl ToolRegistry {
                                 ("zone_id",    input["zone_id"].as_str().unwrap_or("")),
                                 ("days_ahead", &input.get("days_ahead").and_then(|v| v.as_i64()).unwrap_or(7).to_string()),
                             ])
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -577,7 +642,7 @@ impl ToolRegistry {
         );
 
         // ── get_hub_capacity ──────────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_hub_capacity".into(),
                 description: "Get current capacity utilisation for a hub: total bays, occupied bays, inbound queue length, and estimated processing time.".into(),
@@ -592,15 +657,13 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.hub_ops.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["hub_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .get(format!("{}/v1/hubs/{}/capacity", url, id))
-                            .send().await?
-                            .json::<Value>().await?;
+                        let id = path_uuid(&input, "hub_id")?;
+                        let resp = authed(http.get(format!("{}/v1/hubs/{}/capacity", url, id)), &ctx)
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -630,12 +693,11 @@ impl ToolRegistry {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["hub_id"].as_str().unwrap_or("");
+                        let id = path_uuid(&input, "hub_id")?;
                         let resp = http
                             .post(format!("{}/v1/hubs/{}/dock-slots", url, id))
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -643,7 +705,7 @@ impl ToolRegistry {
         );
 
         // ── get_vehicle_status ────────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_vehicle_status".into(),
                 description: "Get real-time status of a specific vehicle: availability, assigned driver, current location, fuel level, and next maintenance due date.".into(),
@@ -658,15 +720,13 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.fleet.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["vehicle_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .get(format!("{}/v1/vehicles/{}", url, id))
-                            .send().await?
-                            .json::<Value>().await?;
+                        let id = path_uuid(&input, "vehicle_id")?;
+                        let resp = authed(http.get(format!("{}/v1/fleet/vehicles/{}", url, id)), &ctx)
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -674,7 +734,7 @@ impl ToolRegistry {
         );
 
         // ── get_fleet_availability ────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_fleet_availability".into(),
                 description: "Get available vehicles in the fleet filtered by type, zone, and time window. Returns vehicles sorted by proximity to a given location.".into(),
@@ -691,7 +751,7 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.fleet.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
@@ -708,11 +768,9 @@ impl ToolRegistry {
                         if let Some(at) = input["at_time"].as_str() {
                             query.push(("at_time", at.to_string()));
                         }
-                        let resp = http
-                            .get(format!("{}/v1/vehicles", url))
+                        let resp = authed(http.get(format!("{}/v1/fleet/vehicles", url)), &ctx)
                             .query(&query)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -720,7 +778,7 @@ impl ToolRegistry {
         );
 
         // ── get_driver_location ───────────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "get_driver_location".into(),
                 description: "Get the last known GPS location and heading of a driver. Location is updated every 30 seconds by the driver app.".into(),
@@ -735,15 +793,13 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.driver_ops.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["driver_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .get(format!("{}/v1/drivers/{}/location", url, id))
-                            .send().await?
-                            .json::<Value>().await?;
+                        let id = path_uuid(&input, "driver_id")?;
+                        let resp = authed(http.get(format!("{}/v1/drivers/{}/location", url, id)), &ctx)
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -751,7 +807,7 @@ impl ToolRegistry {
         );
 
         // ── send_driver_instruction ───────────────────────────────────
-        self.register(
+        self.register_ctx(
             ToolDefinition {
                 name: "send_driver_instruction".into(),
                 description: "Send an operational instruction to a driver's app. Use for route changes, priority reorders, pickup additions, or urgent alerts.".into(),
@@ -769,16 +825,14 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.driver_ops.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
-                        let id = input["driver_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .post(format!("{}/v1/drivers/{}/instructions", url, id))
+                        let id = path_uuid(&input, "driver_id")?;
+                        let resp = authed(http.post(format!("{}/v1/drivers/{}/instructions", url, id)), &ctx)
                             .json(&input)
-                            .send().await?
-                            .json::<Value>().await?;
+                            .send_json().await?;
                         Ok(resp)
                     })
                 }
@@ -867,5 +921,90 @@ impl ToolBox for ToolRegistry {
         ctx: ToolContext,
     ) -> ToolResult {
         ToolRegistry::execute(self, &name, input, tool_use_id, ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_body_maps_to_engagement_request_shape() {
+        let input = json!({
+            "customer_id": "c1", "channel": "sms", "template_id": "t1",
+            "recipient": "+639170000000", "variables": {"eta": 5, "name": "Ana"},
+            "tenant_id": "ignored",
+        });
+        let body = notification_request_body(&input);
+        assert_eq!(body["template_vars"]["recipient"], "+639170000000");
+        assert_eq!(body["template_vars"]["eta"], "5");
+        assert_eq!(body["template_vars"]["name"], "Ana");
+        assert_eq!(body["channel"], "sms");
+        assert!(body.get("tenant_id").is_none());
+        assert!(body.get("priority").is_none());
+    }
+
+    #[test]
+    fn path_uuid_accepts_a_uuid_and_refuses_url_metacharacters() {
+        let ok = "123e4567-e89b-12d3-a456-426614174000";
+        assert!(path_uuid(&json!({"id": ok}), "id").is_ok());
+        for bad in [
+            "../x",
+            "123e4567-e89b-12d3-a456-426614174000?tenant_id=victim",
+            "123e4567-e89b-12d3-a456-426614174000/requeue#",
+            "x#",
+            "../internal/shipments/123e4567-e89b-12d3-a456-426614174000/driver-contact#",
+            "",
+        ] {
+            assert!(path_uuid(&json!({"id": bad}), "id").is_err(), "accepted {bad:?}");
+        }
+        assert!(path_uuid(&json!({}), "id").is_err());
+        assert!(path_uuid(&json!({"id": 5}), "id").is_err());
+    }
+
+    fn registry() -> ToolRegistry {
+        // Unroutable port: if a refused input ever reached the network, the
+        // error text would be a connect error rather than the UUID message.
+        let u = "http://127.0.0.1:1".to_string();
+        ToolRegistry::new(ServiceUrls {
+            dispatch: u.clone(), order_intake: u.clone(), driver_ops: u.clone(),
+            payments: u.clone(), engagement: u.clone(), analytics: u.clone(),
+            cdp: u.clone(), hub_ops: u.clone(), fleet: u,
+        })
+    }
+
+    #[tokio::test]
+    async fn tools_refuse_path_injection_before_any_request() {
+        let reg = registry();
+        let cases = [
+            ("get_cod_balance", json!({"merchant_id": "123e4567-e89b-12d3-a456-426614174000?tenant_id=victim", "tenant_id": "123e4567-e89b-12d3-a456-426614174000"})),
+            ("assign_driver", json!({"shipment_id": "123e4567-e89b-12d3-a456-426614174000/requeue#", "tenant_id": "123e4567-e89b-12d3-a456-426614174000"})),
+            ("get_driver_location", json!({"driver_id": "../internal/shipments/123e4567-e89b-12d3-a456-426614174000/driver-contact#"})),
+            ("get_shipment", json!({"shipment_id": "x#"})),
+            ("get_customer_profile", json!({"customer_id": "../x"})),
+        ];
+        for (tool, input) in cases {
+            let r = reg.execute(tool, input, "t".into(), ToolContext::default()).await;
+            assert!(r.is_error, "{tool} should error");
+            let msg = r.content["error"].as_str().unwrap_or("");
+            assert!(msg.contains("UUID"), "{tool} failed for the wrong reason: {msg}");
+        }
+    }
+
+    #[test]
+    fn response_status_mapping() {
+        use reqwest::StatusCode as S;
+        assert_eq!(interpret_response(S::OK, br#"{"a":1}"#).unwrap(), json!({"a": 1}));
+        assert_eq!(interpret_response(S::NO_CONTENT, b"").unwrap(), Value::Null);
+        assert_eq!(interpret_response(S::OK, b"  
+").unwrap(), Value::Null);
+        for st in [S::UNAUTHORIZED, S::FORBIDDEN, S::UNPROCESSABLE_ENTITY, S::INTERNAL_SERVER_ERROR] {
+            let e = interpret_response(st, br#"{"error":"nope"}"#).unwrap_err().to_string();
+            assert!(e.contains(&st.as_u16().to_string()) && e.contains("nope"), "{e}");
+        }
+        let long = "x".repeat(5000);
+        let e = interpret_response(S::BAD_REQUEST, long.as_bytes()).unwrap_err().to_string();
+        assert!(e.len() < 600, "body not truncated: {}", e.len());
+        assert!(interpret_response(S::OK, b"<html>").is_err());
     }
 }

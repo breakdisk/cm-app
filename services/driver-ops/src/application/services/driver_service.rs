@@ -7,17 +7,18 @@ use crate::{
     application::commands::{RegisterDriverCommand, UpdateDriverCommand},
     domain::{
         entities::{Driver, DriverStatus, DriverType},
-        repositories::DriverRepository,
+        repositories::{DriverRepository, DutySessionRepository},
     },
 };
 
 pub struct DriverService {
     driver_repo: Arc<dyn DriverRepository>,
+    duty_repo: Arc<dyn DutySessionRepository>,
 }
 
 impl DriverService {
-    pub fn new(driver_repo: Arc<dyn DriverRepository>) -> Self {
-        Self { driver_repo }
+    pub fn new(driver_repo: Arc<dyn DriverRepository>, duty_repo: Arc<dyn DutySessionRepository>) -> Self {
+        Self { driver_repo, duty_repo }
     }
 
     /// Register a new driver profile linked to an identity service user.
@@ -208,6 +209,22 @@ impl DriverService {
         driver.status = new_status;
         driver.updated_at = chrono::Utc::now();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
+
+        // Hours of service follow a forced status the same way they follow the
+        // app's duty toggle. The clock is display-only, so a failed write is
+        // logged rather than failing the override.
+        let now = chrono::Utc::now();
+        let duty = match (prior, new_status) {
+            (DriverStatus::Offline, to) if to != DriverStatus::Offline =>
+                self.duty_repo.open(tenant_id.inner(), driver_id.inner(), now).await.map(|_| ()),
+            (from, DriverStatus::Offline) if from != DriverStatus::Offline =>
+                self.duty_repo.close_open(tenant_id.inner(), driver_id.inner(), now).await.map(|_| ()),
+            _ => Ok(()),
+        };
+        if let Err(e) = duty {
+            tracing::warn!(driver_id = %driver_id, err = %e, "Failed to record duty session (non-fatal)");
+        }
+
         tracing::info!(
             driver_id = %driver_id,
             actor_id  = %actor_id,

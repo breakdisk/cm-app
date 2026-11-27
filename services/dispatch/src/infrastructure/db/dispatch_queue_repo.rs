@@ -82,6 +82,18 @@ pub trait DispatchQueueRepository: Send + Sync {
     /// Returns `true` if the row was found and updated.
     async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool>;
 
+    /// Drivers who dropped this shipment. Auto-selection and offer waves pass
+    /// them over; a dispatcher naming one explicitly still can.
+    async fn dropped_drivers(&self, _shipment_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(Vec::new())
+    }
+
+    /// Cancelled upstream (order-intake). A late `shipment.created` for it
+    /// must not queue it.
+    async fn is_cancelled(&self, _shipment_id: Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     /// Cross-tenant pending list for the periodic dispatch-sweep background task.
     /// Returns all `status='pending'` rows across ALL tenants, oldest-first.
     async fn list_all_pending(&self) -> anyhow::Result<Vec<DispatchQueueRow>>;
@@ -95,10 +107,245 @@ impl PgDispatchQueueRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// A driver dropped these shipments: take them off the driver and put them
+    /// back in the queue, in one transaction. Returns the shipments requeued.
+    ///
+    /// Replay-safe: only shipments whose drop row is new are touched, so a
+    /// redelivered event cannot pull a shipment back from the driver it has
+    /// been re-dispatched to since.
+    pub async fn requeue_after_drop(
+        &self,
+        tenant_id: Uuid,
+        driver_id: Uuid,
+        route_id: Uuid,
+        shipment_ids: &[Uuid],
+        dropped_at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        let mut tx = self.pool.begin().await?;
+
+        let fresh: Vec<Uuid> = sqlx::query_scalar(
+            r#"INSERT INTO dispatch.shipment_drops (shipment_id, driver_id, route_id, tenant_id, dropped_at)
+               SELECT s, $2, $3, $4, $5 FROM UNNEST($1::uuid[]) AS s
+               ON CONFLICT DO NOTHING
+               RETURNING shipment_id"#,
+        )
+        .bind(shipment_ids)
+        .bind(driver_id)
+        .bind(route_id)
+        .bind(tenant_id)
+        .bind(dropped_at)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if fresh.is_empty() {
+            tx.rollback().await?;
+            return Ok(fresh);
+        }
+
+        sqlx::query("DELETE FROM dispatch.route_stops WHERE route_id = $1 AND shipment_id = ANY($2)")
+            .bind(route_id)
+            .bind(&fresh)
+            .execute(&mut *tx)
+            .await?;
+
+        // The assignment and its route end only when nothing else is on them.
+        // A gig claim's route carries exactly the one shipment and no stops.
+        sqlx::query(
+            r#"UPDATE dispatch.driver_assignments
+               SET status = 'cancelled'
+               WHERE driver_id = $1 AND route_id = $2
+                 AND status IN ('pending', 'accepted')
+                 AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops WHERE route_id = $2)"#,
+        )
+        .bind(driver_id)
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE dispatch.routes
+               SET status = 'cancelled'
+               WHERE id = $1
+                 AND status IN ('planned', 'in_progress')
+                 AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops WHERE route_id = $1)"#,
+        )
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"UPDATE dispatch.dispatch_queue
+               SET status              = 'pending',
+                   dispatched_at       = NULL,
+                   last_dispatch_error = 'dropped by driver',
+                   last_attempt_at     = NOW()
+               WHERE shipment_id = ANY($1)
+                 AND tenant_id   = $2
+                 AND status      = 'dispatched'"#,
+        )
+        .bind(&fresh)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(fresh)
+    }
+}
+
+/// What a cancellation took down, for the events that follow it.
+#[derive(Debug, Default)]
+pub struct ShipmentCancellation {
+    /// Open offers closed: `(offer_id, candidate driver ids)`.
+    pub offers: Vec<(Uuid, Vec<Uuid>)>,
+    /// Drivers whose assignment ended with it.
+    pub released_drivers: Vec<Uuid>,
+    /// A whole-home move's reservation was let go.
+    pub reservation_released: bool,
+}
+
+impl PgDispatchQueueRepository {
+    /// The shipment was cancelled upstream: take it out of dispatch, in one
+    /// transaction. The queue row is cancelled, its open offers closed, a
+    /// home move's reservation released, and it comes off any route carrying
+    /// it. quick_dispatch and gig-claim routes carry no stops here — their
+    /// legs live in `driver_ops.tasks` (same database, as the lead
+    /// eligibility query already relies on) — so a route is found by a stop,
+    /// by a task, or, before driver-ops has written the task, by being the
+    /// claim's own route (made in the claim's transaction, so its
+    /// `created_at` is the claim's `claimed_at`). An assignment and its
+    /// route end only when nothing else is on them, as with a drop.
+    ///
+    /// Replay-safe: every statement is guarded by the state it changes.
+    pub async fn cancel_for_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<ShipmentCancellation> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO dispatch.shipment_cancellations (shipment_id, tenant_id) VALUES ($1, $2)
+             ON CONFLICT (shipment_id) DO NOTHING",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+                SET status = 'cancelled', last_dispatch_error = 'cancelled upstream', last_attempt_at = NOW()
+              WHERE shipment_id = $1 AND tenant_id = $2 AND status <> 'cancelled'",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let offer_ids: Vec<Uuid> = sqlx::query_scalar(
+            "UPDATE dispatch.task_offers SET status = 'cancelled'
+              WHERE shipment_id = $1 AND tenant_id = $2 AND status = 'open'
+              RETURNING id",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut offers = Vec::with_capacity(offer_ids.len());
+        for offer_id in offer_ids {
+            let candidates: Vec<Uuid> =
+                sqlx::query_scalar("SELECT driver_id FROM dispatch.task_offer_candidates WHERE offer_id = $1")
+                    .bind(offer_id)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            offers.push((offer_id, candidates));
+        }
+
+        let reservation_released = sqlx::query(
+            "UPDATE dispatch.home_reservations SET released_at = NOW()
+              WHERE shipment_id = $1 AND tenant_id = $2 AND released_at IS NULL",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0;
+
+        let routes: Vec<Uuid> = sqlx::query_scalar(
+            r#"SELECT r.id FROM dispatch.routes r
+                WHERE r.tenant_id = $2 AND r.status IN ('planned', 'in_progress')
+                  AND (EXISTS (SELECT 1 FROM dispatch.route_stops s
+                                WHERE s.route_id = r.id AND s.shipment_id = $1)
+                       OR EXISTS (SELECT 1 FROM driver_ops.tasks t
+                                   WHERE t.route_id = r.id AND t.shipment_id = $1)
+                       OR EXISTS (SELECT 1 FROM dispatch.task_offers o
+                                   WHERE o.shipment_id = $1 AND o.status = 'claimed'
+                                     AND o.claimed_by = r.driver_id AND o.claimed_at = r.created_at))"#,
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut released_drivers = Vec::new();
+        if !routes.is_empty() {
+            sqlx::query("DELETE FROM dispatch.route_stops WHERE shipment_id = $1 AND route_id = ANY($2)")
+                .bind(shipment_id)
+                .bind(&routes)
+                .execute(&mut *tx)
+                .await?;
+            released_drivers = sqlx::query_scalar(
+                r#"UPDATE dispatch.driver_assignments a
+                      SET status = 'cancelled'
+                    WHERE a.route_id = ANY($1)
+                      AND a.status IN ('pending', 'accepted')
+                      AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = a.route_id)
+                      AND NOT EXISTS (SELECT 1 FROM driver_ops.tasks t
+                                       WHERE t.route_id = a.route_id AND t.shipment_id <> $2
+                                         AND t.status IN ('pending', 'in_progress'))
+                    RETURNING a.driver_id"#,
+            )
+            .bind(&routes)
+            .bind(shipment_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE dispatch.routes r
+                      SET status = 'cancelled'
+                    WHERE r.id = ANY($1)
+                      AND r.status IN ('planned', 'in_progress')
+                      AND NOT EXISTS (SELECT 1 FROM dispatch.route_stops s WHERE s.route_id = r.id)
+                      AND NOT EXISTS (SELECT 1 FROM driver_ops.tasks t
+                                       WHERE t.route_id = r.id AND t.shipment_id <> $2
+                                         AND t.status IN ('pending', 'in_progress'))"#,
+            )
+            .bind(&routes)
+            .bind(shipment_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(ShipmentCancellation { offers, released_drivers, reservation_released })
+    }
 }
 
 #[async_trait]
 impl DispatchQueueRepository for PgDispatchQueueRepository {
+    async fn is_cancelled(&self, shipment_id: Uuid) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM dispatch.shipment_cancellations WHERE shipment_id = $1)",
+        )
+        .bind(shipment_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    async fn dropped_drivers(&self, shipment_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(sqlx::query_scalar("SELECT driver_id FROM dispatch.shipment_drops WHERE shipment_id = $1")
+            .bind(shipment_id)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
     async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()> {
         sqlx::query(
             r#"
@@ -258,7 +505,8 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                  auto_dispatch_attempts = auto_dispatch_attempts + 1,
                  last_dispatch_error    = 'delivery failed — requeued for retry',
                  last_attempt_at        = NOW()
-             WHERE shipment_id = $1",
+             WHERE shipment_id = $1
+               AND status <> 'cancelled'",
         )
         .bind(shipment_id)
         .execute(&self.pool)
@@ -300,6 +548,9 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     queued_at, dispatched_at
              FROM dispatch.dispatch_queue
              WHERE status = 'pending'
+               -- A home move goes to a lead who claims it, then is activated
+               -- for that lead; it is never handed to whoever is nearest.
+               AND service_type <> 'home_move'
              ORDER BY queued_at ASC",
         )
         .fetch_all(&self.pool)

@@ -142,7 +142,10 @@ impl DriverAssignmentService {
                     let score_b = b.distance_km * 0.7 + b.active_stop_count as f64 * 0.3;
                     score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .unwrap(); // Safe: checked is_empty() above
+                .ok_or_else(|| AppError::BusinessRule(format!(
+                    "No available drivers within {}km of the first stop",
+                    DEFAULT_DRIVER_SEARCH_RADIUS_KM
+                )))?;
 
             tracing::info!(
                 driver_id = %best.driver_id,
@@ -374,6 +377,17 @@ impl DriverAssignmentService {
         tenant_id: TenantId,
         cmd: QuickDispatchCommand,
     ) -> AppResult<DriverAssignment> {
+        self.quick_dispatch_paying(tenant_id, cmd, None).await
+    }
+
+    /// quick_dispatch with the job's pay already agreed: a home move's lead
+    /// accepted a stated payout, so the task carries that, not their gig rate.
+    pub async fn quick_dispatch_paying(
+        &self,
+        tenant_id: TenantId,
+        cmd: QuickDispatchCommand,
+        agreed_payout_cents: Option<i64>,
+    ) -> AppResult<DriverAssignment> {
         // 1. Load shipment from queue
         let queue_item = self.queue_repo
             .find_by_shipment(cmd.shipment_id)
@@ -389,6 +403,13 @@ impl DriverAssignmentService {
                 "Shipment {} is already {} — cannot dispatch again",
                 cmd.shipment_id, queue_item.status
             )));
+        }
+        // A home move is a named lead's: the one who claimed it, or one ops
+        // chose. Never the nearest driver, who may have no crew and no truck.
+        if queue_item.service_type == "home_move" && cmd.preferred_driver_id.is_none() {
+            return Err(AppError::BusinessRule(
+                "A whole-home move is assigned to a named lead — broadcast it to home-move leads, or choose one".into(),
+            ));
         }
 
         // 2. Find driver (explicit or auto-selected by proximity score)
@@ -410,10 +431,17 @@ impl DriverAssignmentService {
                          Ensure the merchant address is geocoded before booking.".into(),
                     )),
                 };
-                let candidates = self.driver_avail_repo
+                let mut candidates = self.driver_avail_repo
                     .find_available_near(&tenant_id, anchor, DEFAULT_DRIVER_SEARCH_RADIUS_KM)
                     .await
                     .map_err(AppError::Internal)?;
+
+                // Whoever dropped this shipment is not handed it back.
+                let dropped = self.queue_repo
+                    .dropped_drivers(cmd.shipment_id)
+                    .await
+                    .map_err(AppError::Internal)?;
+                candidates.retain(|c| !dropped.contains(&c.driver_id.inner()));
 
                 if candidates.is_empty() {
                     return Err(AppError::BusinessRule("No available drivers nearby".into()));
@@ -444,7 +472,10 @@ impl DriverAssignmentService {
                         let sb = b.distance_km * 0.7 + b.active_stop_count as f64 * 0.3;
                         sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
                     })
-                    .unwrap() // safe: checked is_empty() above
+                    .ok_or_else(|| AppError::BusinessRule(format!(
+                        "No available drivers nearby with a vehicle that can carry {} kg ({})",
+                        queue_item.weight_grams / 1000, queue_item.delivery_category
+                    )))?
                     .driver_id
                     .clone()
             }
@@ -487,9 +518,19 @@ impl DriverAssignmentService {
         // contractual; later rate changes never alter accepted work. None for
         // full-time drivers (the app must never show them a price). A lookup
         // failure degrades to "no payout shown", never a dispatch failure.
-        let payout_cents = self.driver_avail_repo
-            .gig_rate_cents(&driver_id).await
-            .unwrap_or(None);
+        let payout_cents = match agreed_payout_cents {
+            Some(agreed) => Some(agreed),
+            None => self.driver_avail_repo.gig_rate_cents(&driver_id).await.unwrap_or(None),
+        };
+
+        // 4c. The driver's carrier, for order-intake's shipment-to-partner link.
+        // A failed lookup is logged, not fatal: dispatch must not stop because a
+        // partner link could not be resolved, and the backfill repairs it.
+        let driver_carrier_id = self.driver_avail_repo.carrier_id(&driver_id).await
+            .unwrap_or_else(|e| {
+                tracing::warn!(driver_id = %driver_id, err = %e, "carrier lookup failed; task will not link a partner");
+                None
+            });
 
         // 4. Create a minimal single-stop route (vehicle_id = nil, stop added by driver-ops)
         let route_id = RouteId::new();
@@ -510,7 +551,11 @@ impl DriverAssignmentService {
 
         // 5. Create assignment
         let assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
-        self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
+        // The leg count is recorded in the same INSERT as the assignment.
+        self.assignment_repo
+            .save_with_expected_tasks(&assignment, super::assignment_events::expected_leg_count(&queue_item))
+            .await
+            .map_err(AppError::Internal)?;
 
         // 6+7. Emit TASK_ASSIGNED (per leg) + DRIVER_ASSIGNED via the shared
         //      helper — the same emission the gig offer claim path uses, so
@@ -524,6 +569,7 @@ impl DriverAssignmentService {
             route_id.inner(),
             cmd.shipment_id,
             payout_cents,
+            driver_carrier_id,
         ).await.map_err(AppError::Internal)?;
 
         // 8. Mark queue item as dispatched
@@ -552,10 +598,20 @@ impl DriverAssignmentService {
             .await
             .map_err(AppError::Internal)?;
 
+        // Always attempted, not only when this call flipped the route: if an
+        // earlier attempt cancelled the route and then failed here, the retry
+        // sees `cancelled == false` and must still free the rider. The
+        // repository only touches a route that is already cancelled (G16).
+        let freed = self.assignment_repo
+            .cancel_active_for_route(tenant_id.inner(), route_id.inner())
+            .await
+            .map_err(AppError::Internal)?;
+
         if cancelled {
             tracing::info!(
                 route_id = %route_id,
                 tenant_id = %tenant_id,
+                assignment_closed = freed,
                 "Route cancelled by admin"
             );
         }
@@ -622,6 +678,7 @@ mod tests {
             delivery_lat:        Some(14.5995),
             delivery_lng:        Some(120.9842),
             payout_cents:        Some(15_000),
+            driver_carrier_id:   None,
         };
     }
 }

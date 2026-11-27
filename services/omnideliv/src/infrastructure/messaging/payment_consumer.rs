@@ -55,6 +55,7 @@ pub async fn handle(
     orders: &Arc<dyn OrderRepository>,
     telemetry: &Arc<dyn TelemetryRepository>,
     dispatch: &Arc<dyn CourierDispatch>,
+    vendor_events: &Arc<dyn super::VendorLegEvents>,
 ) -> anyhow::Result<()> {
     match topic {
         topics::PAYMENT_INTENT_AUTHORIZED => {
@@ -63,7 +64,7 @@ pub async fn handle(
             if evt.data.purpose != OMNIDELIV_ORDER_PURPOSE {
                 return Ok(());
             }
-            handle_authorized(evt.tenant_id, evt.data.reference_id, evt.data.intent_id, orders, telemetry, dispatch).await
+            handle_authorized(evt.tenant_id, evt.data.reference_id, evt.data.intent_id, orders, telemetry, dispatch, vendor_events).await
         }
         topics::PAYMENT_INTENT_FAILED => {
             let evt: Event<PaymentIntentFailed> = serde_json::from_value(json)
@@ -89,6 +90,7 @@ async fn handle_authorized(
     orders: &Arc<dyn OrderRepository>,
     telemetry: &Arc<dyn TelemetryRepository>,
     dispatch: &Arc<dyn CourierDispatch>,
+    vendor_events: &Arc<dyn super::VendorLegEvents>,
 ) -> anyhow::Result<()> {
     let Some(mut order) = orders.find_by_id(tenant_id, order_id).await? else {
         // Not an error: the order may have been purged, or this is a replay
@@ -106,37 +108,63 @@ async fn handle_authorized(
         return Ok(());
     }
 
-    let (Some(lat), Some(lng)) = (order.delivery_lat, order.delivery_lng) else {
-        // Cannot happen for an order placed through this feature — `place`
-        // always sets both — but an order is never worth crash-looping the
-        // consumer over. Leave it `Placed`; the recovery sweep's no-courier
-        // timeout will eventually void it.
-        tracing::error!(%order_id, "authorized online order has no delivery point — cannot offer a courier");
-        orders.save(&order).await?;
-        return Ok(());
+    // A dine-in order is paid online but never dispatched: the food crosses a
+    // room. It has no delivery point by construction, so it must skip the
+    // courier offer entirely rather than fall into the "no delivery point"
+    // error path below — which returned early and therefore never reached the
+    // notification loop, leaving a paid table order the kitchen was never told
+    // about.
+    let offered: Vec<uuid::Uuid> = if order.fulfilment.needs_a_courier() {
+        let (Some(lat), Some(lng)) = (order.delivery_lat, order.delivery_lng) else {
+            // Cannot happen for a delivery order placed through this feature —
+            // `place` always sets both — but an order is never worth
+            // crash-looping the consumer over. Leave it `Placed`; the recovery
+            // sweep's no-courier timeout will eventually void it.
+            tracing::error!(%order_id, "authorized delivery order has no delivery point — cannot offer a courier");
+            orders.save(&order).await?;
+            return Ok(());
+        };
+
+        let offered = dispatch
+            .offer(
+                tenant_id, order.id, lat, lng, FIRST_OFFER_RADIUS_KM,
+                order.courier_trip_cents, order.tip_cents, order.cod_amount_cents(),
+                order.pending_offer_card.clone(),
+            )
+            .await?;
+
+        if offered.is_empty() {
+            // Not fatal: this converges with the ordinary "offered but nobody
+            // accepted" case, and the recovery sweep's no-courier timeout voids
+            // either one the same way.
+            tracing::warn!(%order_id, "payment authorized but no courier could be offered");
+        } else {
+            order.courier_task_id = offered.first().copied();
+            if let Err(e) = order.courier_offered() {
+                tracing::error!(err = %e, %order_id, "could not mark the order awaiting a courier");
+            }
+        }
+        offered
+    } else {
+        tracing::info!(%order_id, "dine-in order paid — no courier to offer, telling the kitchen");
+        Vec::new()
     };
 
-    let offered = dispatch
-        .offer(
-            tenant_id, order.id, lat, lng, FIRST_OFFER_RADIUS_KM,
-            order.courier_trip_cents, order.tip_cents, order.cod_amount_cents(),
-            order.pending_offer_card.clone(),
-        )
-        .await?;
+    orders.save(&order).await?;
 
-    if offered.is_empty() {
-        // Not fatal: this converges with the ordinary "offered but nobody
-        // accepted" case, and the recovery sweep's no-courier timeout voids
-        // either one the same way.
-        tracing::warn!(%order_id, "payment authorized but no courier could be offered");
-    } else {
-        order.courier_task_id = offered.first().copied();
-        if let Err(e) = order.courier_offered() {
-            tracing::error!(err = %e, %order_id, "could not mark the order awaiting a courier");
+    // Now the stores are told, and not before. Until the hold landed, this
+    // order was a checkout page the customer might still abandon; a kitchen
+    // told to start cooking then would be cooking for nothing.
+    //
+    // Reached only on the first delivery of this event — an order already past
+    // `Placed` returned above — so a redelivery does not re-notify a store that
+    // is already cooking.
+    for leg in &order.legs {
+        if let Err(err) = vendor_events.leg_received(&super::LegRef::of(leg)).await {
+            tracing::warn!(err = %err, %order_id, vendor_id = %leg.vendor_id,
+                "vendor.leg.received publish failed — the queue is still correct");
         }
     }
-
-    orders.save(&order).await?;
 
     let e = TelemetryEvent::new(
         tenant_id, order_id, event_type::PAYMENT_AUTHORIZED, None, None,
@@ -307,10 +335,14 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         let intent = Uuid::new_v4();
         handle(topics::PAYMENT_INTENT_AUTHORIZED, authorized_event(order_id, intent),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
 
         assert_eq!(dispatch.calls.lock().unwrap().len(), 1, "the courier must be offered exactly once");
         let saved = orders.find_by_id(TENANT, order_id).await.unwrap().unwrap();
@@ -329,12 +361,16 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         let intent = Uuid::new_v4();
         handle(topics::PAYMENT_INTENT_AUTHORIZED, authorized_event(order_id, intent),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
         handle(topics::PAYMENT_INTENT_AUTHORIZED, authorized_event(order_id, intent),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
 
         assert_eq!(dispatch.calls.lock().unwrap().len(), 1, "a redelivery must not offer a second time");
     }
@@ -349,9 +385,13 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         handle(topics::PAYMENT_INTENT_FAILED, failed_event(order_id, "card_declined"),
-               &orders, &telemetry, &dispatch_trait).await.unwrap();
+               &orders, &telemetry, &dispatch_trait, &vendor_events).await.unwrap();
 
         assert!(dispatch.calls.lock().unwrap().is_empty(), "a failed payment must never offer a courier");
         let saved = orders.find_by_id(TENANT, order_id).await.unwrap().unwrap();
@@ -367,6 +407,10 @@ mod tests {
         let telemetry: Arc<dyn TelemetryRepository> = Arc::new(Telemetry::default());
         let dispatch = Arc::new(Dispatch::default());
         let dispatch_trait: Arc<dyn CourierDispatch> = dispatch.clone();
+        // These assert on the order, the offer and the telemetry. What a
+        // store was told is asserted in vendor_events' own tests.
+        let vendor_events: Arc<dyn super::super::VendorLegEvents> =
+            Arc::new(super::super::NoopVendorLegEvents);
 
         let evt = serde_json::to_value(Event::new(
             "logisticos/payments", "payment.intent.authorized", TENANT,
@@ -377,7 +421,7 @@ mod tests {
             },
         )).unwrap();
 
-        handle(topics::PAYMENT_INTENT_AUTHORIZED, evt, &orders, &telemetry, &dispatch_trait)
+        handle(topics::PAYMENT_INTENT_AUTHORIZED, evt, &orders, &telemetry, &dispatch_trait, &vendor_events)
             .await.unwrap();
 
         assert!(dispatch.calls.lock().unwrap().is_empty());

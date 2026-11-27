@@ -1,3 +1,12 @@
+/// The whole-home moving catalogue.
+pub mod home_catalogue;
+/// Booked whole-home moves.
+pub mod home_moves;
+/// The survey's addendum to a booked home move.
+pub mod home_addenda;
+pub mod home_waitlist;
+pub mod home_photos;
+
 use std::pin::Pin;
 use std::future::Future;
 
@@ -5,7 +14,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use logisticos_types::{
-    Address, Coordinates, Currency, CustomerId, MerchantId, Money,
+    Address, Coordinates, Currency, CustomerId, GeocodeQuality, MerchantId, Money,
     PieceStatus, ShipmentId, ShipmentStatus, TenantId,
     awb::Awb,
 };
@@ -14,7 +23,7 @@ use crate::{
     application::services::shipment_service::{NewShipmentEvent, ShipmentListFilter, ShipmentRepository},
     domain::{
         entities::{shipment::{PaymentRequirement, Shipment}, piece::Piece},
-        value_objects::{ServiceType, ShipmentDimensions, ShipmentWeight},
+        value_objects::{GeocodingRecord, ServiceType, ShipmentDimensions, ShipmentWeight},
     },
 };
 
@@ -57,6 +66,12 @@ struct ShipmentRow {
     dest_country_code:    String,
     dest_lat:             Option<f64>,
     dest_lng:             Option<f64>,
+    dest_geocoding_quality:    String,
+    dest_geocoding_source:     Option<String>,
+    dest_geocoding_provider:   Option<String>,
+    dest_geocoding_place_id:   Option<String>,
+    dest_geocoding_confidence: Option<String>,
+    dest_geocoded_at:          Option<chrono::DateTime<chrono::Utc>>,
 
     weight_grams:         i32,
     length_cm:            Option<i32>,
@@ -76,6 +91,15 @@ struct ShipmentRow {
 
     created_at:           chrono::DateTime<chrono::Utc>,
     updated_at:           chrono::DateTime<chrono::Utc>,
+
+    scheduled_pickup_at:         Option<chrono::DateTime<chrono::Utc>>,
+    sla_due_at:                  Option<chrono::DateTime<chrono::Utc>>,
+    cancellation_policy_version: Option<String>,
+    booking_amount_cents:        Option<i64>,
+    booking_currency:            Option<String>,
+    dest_building:               Option<String>,
+    dest_unit:                   Option<String>,
+    dest_area:                   Option<String>,
 }
 
 impl ShipmentRow {
@@ -125,6 +149,7 @@ impl ShipmentRow {
             "same_day"      => ServiceType::SameDay,
             "balikbayan"    => ServiceType::Balikbayan,
             "international" => ServiceType::International,
+            "home_move"     => ServiceType::HomeMove,
             _               => ServiceType::Standard,
         };
         let status = match self.status.as_str() {
@@ -145,11 +170,15 @@ impl ShipmentRow {
             _                    => ShipmentStatus::Pending,
         };
         // Parse AWB — fall back to a raw string representation if malformed
-        let awb = Awb::parse(&self.awb).unwrap_or_else(|_| {
-            // For legacy or test rows that don't follow the new format
-            let tenant = logisticos_types::awb::TenantCode::new("PH1").unwrap();
-            Awb::generate(&tenant, logisticos_types::awb::ServiceCode::Standard, 1)
-        });
+        let awb = match Awb::parse(&self.awb) {
+            Ok(awb) => awb,
+            Err(_) => {
+                // For legacy or test rows that don't follow the new format
+                let tenant = logisticos_types::awb::TenantCode::new("PH1")
+                    .map_err(|e| anyhow::anyhow!("fallback tenant code PH1 rejected: {e}"))?;
+                Awb::generate(&tenant, logisticos_types::awb::ServiceCode::Standard, 1)
+            }
+        };
         let payment_status = PaymentRequirement::parse(&self.payment_status).ok_or_else(|| {
             anyhow::anyhow!(
                 "shipment {} has unrecognized payment_status value: {:?}",
@@ -192,11 +221,30 @@ impl ShipmentRow {
             idempotency_key:         self.idempotency_key,
             created_at:           self.created_at,
             updated_at:           self.updated_at,
+            scheduled_pickup_at:         self.scheduled_pickup_at,
+            sla_due_at:                  self.sla_due_at,
+            cancellation_policy_version: self.cancellation_policy_version,
+            booking_amount_cents:        self.booking_amount_cents,
+            booking_currency:            self.booking_currency,
+            dest_parts: crate::domain::value_objects::AddressParts {
+                building: self.dest_building,
+                unit:     self.dest_unit,
+                area:     self.dest_area,
+            },
+            dest_geocoding: GeocodingRecord {
+                // Anything this build does not recognise reads as UNKNOWN.
+                quality:     GeocodeQuality::parse(&self.dest_geocoding_quality),
+                source:      self.dest_geocoding_source,
+                provider:    self.dest_geocoding_provider,
+                place_id:    self.dest_geocoding_place_id,
+                confidence:  self.dest_geocoding_confidence,
+                geocoded_at: self.dest_geocoded_at,
+            },
         })
     }
 }
 
-fn status_str(s: &ShipmentStatus) -> &'static str {
+pub(crate) fn status_str(s: &ShipmentStatus) -> &'static str {
     match s {
         ShipmentStatus::Pending           => "pending",
         ShipmentStatus::Confirmed         => "confirmed",
@@ -224,11 +272,15 @@ const SHIPMENT_COLS: &str = r#"
     origin_postal_code, origin_country_code, origin_lat, origin_lng,
     dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
     dest_postal_code, dest_country_code, dest_lat, dest_lng,
+    dest_geocoding_quality, dest_geocoding_source, dest_geocoding_provider,
+    dest_geocoding_place_id, dest_geocoding_confidence, dest_geocoded_at,
     weight_grams, length_cm, width_cm, height_cm,
     declared_value_cents, cod_amount_cents, special_instructions,
     merchant_reference, source_platform, external_order_id,
     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
-    created_at, updated_at
+    created_at, updated_at,
+    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency,
+    dest_building, dest_unit, dest_area, sla_due_at
 "#;
 
 /// Maps a dynamic `PgRow` into the typed `ShipmentRow` struct.
@@ -265,6 +317,12 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         dest_country_code:    r.get("dest_country_code"),
         dest_lat:             r.get("dest_lat"),
         dest_lng:             r.get("dest_lng"),
+        dest_geocoding_quality:    r.get("dest_geocoding_quality"),
+        dest_geocoding_source:     r.get("dest_geocoding_source"),
+        dest_geocoding_provider:   r.get("dest_geocoding_provider"),
+        dest_geocoding_place_id:   r.get("dest_geocoding_place_id"),
+        dest_geocoding_confidence: r.get("dest_geocoding_confidence"),
+        dest_geocoded_at:          r.get("dest_geocoded_at"),
         weight_grams:         r.get("weight_grams"),
         length_cm:            r.get("length_cm"),
         width_cm:             r.get("width_cm"),
@@ -281,10 +339,38 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         idempotency_key:         r.get("idempotency_key"),
         created_at:           r.get("created_at"),
         updated_at:           r.get("updated_at"),
+        scheduled_pickup_at:         r.get("scheduled_pickup_at"),
+        sla_due_at:                  r.get("sla_due_at"),
+        cancellation_policy_version: r.get("cancellation_policy_version"),
+        booking_amount_cents:        r.get("booking_amount_cents"),
+        booking_currency:            r.get("booking_currency"),
+        dest_building:               r.get("dest_building"),
+        dest_unit:                   r.get("dest_unit"),
+        dest_area:                   r.get("dest_area"),
     }
 }
 
 impl ShipmentRepository for PgShipmentRepository {
+    fn is_linked<'a>(
+        &'a self,
+        tenant_id: Uuid,
+        shipment_id: Uuid,
+        carrier_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let linked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM order_intake.shipment_partner_links \
+                  WHERE tenant_id = $1 AND shipment_id = $2 AND carrier_id = $3)",
+            )
+            .bind(tenant_id)
+            .bind(shipment_id)
+            .bind(carrier_id)
+            .fetch_one(&self.pool)
+            .await?;
+            Ok(linked)
+        })
+    }
+
     fn list<'a>(
         &'a self,
         filter: &'a ShipmentListFilter,
@@ -296,13 +382,19 @@ impl ShipmentRepository for PgShipmentRepository {
                      AND ($2::uuid IS NULL OR merchant_id = $2)
                      AND ($3::text IS NULL OR status = $3)
                      AND ($4::timestamptz IS NULL OR updated_at >= $4)
-                     AND ($5::timestamptz IS NULL OR updated_at < $5)"#,
+                     AND ($5::timestamptz IS NULL OR updated_at < $5)
+                     AND ($6::uuid IS NULL OR EXISTS (
+                           SELECT 1 FROM order_intake.shipment_partner_links l
+                            WHERE l.shipment_id = shipments.id
+                              AND l.tenant_id   = shipments.tenant_id
+                              AND l.carrier_id  = $6))"#,
             )
             .bind(filter.tenant_id)
             .bind(filter.merchant_id)
             .bind(filter.status.as_deref())
             .bind(filter.updated_from)
             .bind(filter.updated_to)
+            .bind(filter.partner_id)
             .fetch_one(&self.pool)
             .await?;
 
@@ -313,6 +405,11 @@ impl ShipmentRepository for PgShipmentRepository {
                      AND ($3::text IS NULL OR status = $3)
                      AND ($4::timestamptz IS NULL OR updated_at >= $4)
                      AND ($5::timestamptz IS NULL OR updated_at < $5)
+                     AND ($8::uuid IS NULL OR EXISTS (
+                           SELECT 1 FROM order_intake.shipment_partner_links l
+                            WHERE l.shipment_id = shipments.id
+                              AND l.tenant_id   = shipments.tenant_id
+                              AND l.carrier_id  = $8))
                    ORDER BY created_at DESC
                    LIMIT $6 OFFSET $7"#,
                 SHIPMENT_COLS,
@@ -326,6 +423,7 @@ impl ShipmentRepository for PgShipmentRepository {
                 .bind(filter.updated_to)
                 .bind(filter.limit)
                 .bind(filter.offset)
+                .bind(filter.partner_id)
                 .fetch_all(&self.pool)
                 .await?;
 
@@ -372,18 +470,25 @@ impl ShipmentRepository for PgShipmentRepository {
                     origin_postal_code, origin_country_code, origin_lat, origin_lng,
                     dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
                     dest_postal_code, dest_country_code, dest_lat, dest_lng,
+                    dest_geocoding_quality, dest_geocoding_source, dest_geocoding_provider,
+                    dest_geocoding_place_id, dest_geocoding_confidence, dest_geocoded_at,
                     weight_grams, length_cm, width_cm, height_cm,
                     declared_value_cents, cod_amount_cents, special_instructions,
                     merchant_reference, source_platform, external_order_id,
                     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
-                    created_at, updated_at
+                    created_at, updated_at,
+                    scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency,
+                    dest_building, dest_unit, dest_area, sla_due_at
                 ) VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,
                     $10,$11,$12,$13,
                     $14,$15,$16,$17,$18,$19,$20,$21,$22,
                     $23,$24,$25,$26,$27,$28,$29,$30,$31,
-                    $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,
-                    $42,$43,$44,$45,$46,$47
+                    $32,$33,$34,$35,$36,$37,
+                    $38,$39,$40,$41,$42,$43,$44,$45,$46,$47,
+                    $48,$49,$50,$51,$52,$53,
+                    $54,$55,$56,$57,
+                    $58,$59,$60,$61
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -396,6 +501,15 @@ impl ShipmentRepository for PgShipmentRepository {
                     origin_lng           = EXCLUDED.origin_lng,
                     dest_lat             = EXCLUDED.dest_lat,
                     dest_lng             = EXCLUDED.dest_lng,
+                    dest_geocoding_quality    = EXCLUDED.dest_geocoding_quality,
+                    dest_geocoding_source     = EXCLUDED.dest_geocoding_source,
+                    dest_geocoding_provider   = EXCLUDED.dest_geocoding_provider,
+                    dest_geocoding_place_id   = EXCLUDED.dest_geocoding_place_id,
+                    dest_geocoding_confidence = EXCLUDED.dest_geocoding_confidence,
+                    dest_geocoded_at          = EXCLUDED.dest_geocoded_at,
+                    dest_building             = EXCLUDED.dest_building,
+                    dest_unit                 = EXCLUDED.dest_unit,
+                    dest_area                 = EXCLUDED.dest_area,
                     special_instructions = EXCLUDED.special_instructions,
                     merchant_reference   = EXCLUDED.merchant_reference,
                     source_platform      = EXCLUDED.source_platform,
@@ -404,6 +518,12 @@ impl ShipmentRepository for PgShipmentRepository {
                     payment_status          = EXCLUDED.payment_status,
                     pending_dispatch_events = EXCLUDED.pending_dispatch_events,
                     idempotency_key         = EXCLUDED.idempotency_key,
+                    scheduled_pickup_at  = EXCLUDED.scheduled_pickup_at,
+                    -- sla_due_at is set once at create and intentionally not updated on conflict.
+                    -- The version and the quoted total are fixed at booking.
+                    cancellation_policy_version = COALESCE(order_intake.shipments.cancellation_policy_version, EXCLUDED.cancellation_policy_version),
+                    booking_amount_cents = COALESCE(order_intake.shipments.booking_amount_cents, EXCLUDED.booking_amount_cents),
+                    booking_currency     = COALESCE(order_intake.shipments.booking_currency, EXCLUDED.booking_currency),
                     updated_at           = EXCLUDED.updated_at"#,
             )
             .bind(s.id.inner())
@@ -439,6 +559,12 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(&s.destination.country_code)
             .bind(s.destination.coordinates.map(|c| c.lat))
             .bind(s.destination.coordinates.map(|c| c.lng))
+            .bind(s.dest_geocoding.quality.as_str())
+            .bind(s.dest_geocoding.source.as_deref())
+            .bind(s.dest_geocoding.provider.as_deref())
+            .bind(s.dest_geocoding.place_id.as_deref())
+            .bind(s.dest_geocoding.confidence.as_deref())
+            .bind(s.dest_geocoding.geocoded_at)
             // parcel
             .bind(s.weight.grams as i32)
             .bind(s.dimensions.map(|d| d.length_cm as i32))
@@ -456,6 +582,14 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.idempotency_key.as_deref())
             .bind(s.created_at)
             .bind(s.updated_at)
+            .bind(s.scheduled_pickup_at)
+            .bind(s.cancellation_policy_version.as_deref())
+            .bind(s.booking_amount_cents)
+            .bind(s.booking_currency.as_deref())
+            .bind(s.dest_parts.building.as_deref())
+            .bind(s.dest_parts.unit.as_deref())
+            .bind(s.dest_parts.area.as_deref())
+            .bind(s.sla_due_at)
             .execute(&self.pool)
             .await?;
             Ok(())
@@ -533,6 +667,116 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(&event.to_status)
             .bind(&event.actor_type)
             .bind(event.location.as_deref())
+            .execute(&self.pool)
+            .await?;
+            Ok(())
+        })
+    }
+
+    fn settle_home_addendum<'a>(
+        &'a self,
+        addendum_id: uuid::Uuid,
+        captured: bool,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<crate::application::services::shipment_service::SettledAddendum>>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut tx = self.pool.begin().await?;
+            if !captured {
+                sqlx::query(
+                    "UPDATE order_intake.home_addenda
+                        SET status = 'pending', payment_intent_id = NULL, checkout_url = NULL, decided_at = NULL
+                      WHERE id = $1 AND status = 'approved'",
+                )
+                .bind(addendum_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Ok(None);
+            }
+            // The trucks before, recorded on the addendum: more after it is a
+            // major overflow, and an extra truck.
+            let paid = sqlx::query(
+                "UPDATE order_intake.home_addenda a SET status = 'paid', paid_at = NOW(),
+                        trucks_before = (SELECT m.trucks FROM order_intake.home_moves m WHERE m.shipment_id = a.shipment_id)
+                  WHERE a.id = $1 AND a.status = 'approved'
+                  RETURNING a.shipment_id, a.tenant_id, a.items, a.total_cents, a.trucks, a.helpers, a.crew_total,
+                            a.large_estate, a.trucks_before",
+            )
+            .bind(addendum_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut settled = None;
+            // Already paid (a redelivery), or never approved: nothing to apply.
+            if let Some(r) = paid {
+                let shipment_id: uuid::Uuid = r.get("shipment_id");
+                settled = Some(crate::application::services::shipment_service::SettledAddendum {
+                    tenant_id: r.get("tenant_id"),
+                    shipment_id,
+                    addendum_id,
+                    total_cents: r.get("total_cents"),
+                    trucks_before: r.get::<Option<i32>, _>("trucks_before").unwrap_or(0),
+                    trucks_after: r.get("trucks"),
+                });
+                sqlx::query(
+                    "UPDATE order_intake.home_moves
+                        SET items = items || $2, total_cents = total_cents + $3,
+                            trucks = $4, helpers = $5, crew_total = $6, large_estate = $7
+                      WHERE shipment_id = $1",
+                )
+                .bind(shipment_id)
+                .bind(r.get::<serde_json::Value, _>("items"))
+                .bind(r.get::<i64, _>("total_cents"))
+                .bind(r.get::<i32, _>("trucks"))
+                .bind(r.get::<i32, _>("helpers"))
+                .bind(r.get::<i32, _>("crew_total"))
+                .bind(r.get::<bool, _>("large_estate"))
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(settled)
+        })
+    }
+
+    fn home_survey<'a>(
+        &'a self,
+        shipment_id: uuid::Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<crate::domain::value_objects::home_move::HomeSurvey>>> + Send + 'a>> {
+        Box::pin(async move {
+            type SurveyRow = (Option<chrono::DateTime<chrono::Utc>>, i64, Option<chrono::DateTime<chrono::Utc>>);
+            let row: Option<SurveyRow> = sqlx::query_as(
+                "SELECT survey_at, survey_cents, survey_submitted_at FROM order_intake.home_moves WHERE shipment_id = $1",
+            )
+            .bind(shipment_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            Ok(row.map(|(survey_at, survey_cents, submitted_at)| crate::domain::value_objects::home_move::HomeSurvey {
+                survey_at,
+                survey_cents,
+                submitted: submitted_at.is_some(),
+            }))
+        })
+    }
+
+    fn record_intake<'a>(
+        &'a self,
+        tenant_id: uuid::Uuid,
+        shipment_id: uuid::Uuid,
+        intake: (String, Option<String>, Option<f64>, serde_json::Value),
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let (source, intent, confidence, extracted) = intake;
+            sqlx::query(
+                r#"INSERT INTO order_intake.shipment_intake
+                       (shipment_id, tenant_id, source, intent, confidence, extracted)
+                   VALUES ($1, $2, $3, $4, $5, $6)
+                   ON CONFLICT (shipment_id) DO NOTHING"#,
+            )
+            .bind(shipment_id)
+            .bind(tenant_id)
+            .bind(source)
+            .bind(intent)
+            .bind(confidence)
+            .bind(extracted)
             .execute(&self.pool)
             .await?;
             Ok(())

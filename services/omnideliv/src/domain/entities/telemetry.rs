@@ -14,6 +14,9 @@ pub mod event_type {
     pub const ORDER_PLACED:      &str = "order.placed";
     pub const LEG_PICKED_UP:     &str = "vendor_leg.picked_up";
     pub const LEG_FAILED:        &str = "vendor_leg.failed";
+    /// The store never answered. Written by the sweep, which deliberately
+    /// leaves the leg `pending` rather than rejecting it.
+    pub const VENDOR_LEG_UNANSWERED: &str = "vendor_leg.unanswered";
     pub const COURIER_CLAIMED:   &str = "courier.claimed";
     /// The courier is at a stop. Not a lifecycle transition — the order
     /// status is unchanged — but the event a customer most wants pushed.

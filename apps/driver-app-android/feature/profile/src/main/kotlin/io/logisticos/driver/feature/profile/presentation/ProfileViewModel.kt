@@ -6,6 +6,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.network.auth.SessionManager
 import io.logisticos.driver.core.network.service.DailyEarningItem
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.HomeMoveApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
 import io.logisticos.driver.core.network.service.PaymentsApiService
 import okhttp3.OkHttpClient
@@ -37,6 +38,11 @@ data class ProfileUiState(
     val openDebitCount: Int = 0,
     /** Last 7 calendar days of earnings — drives the sparkline on the Earnings card. */
     val dailyEarnings: List<DailyEarningItem> = emptyList(),
+    // ── Whole-home moves ─────────────────────────────────────────────────────
+    /** Onboarded by operations for whole-home moves — gates the Home moves card. */
+    val isHomeLead: Boolean = false,
+    /** Home moves this lead has reserved and not yet run. */
+    val reservedHomeMoves: Int = 0,
 )
 
 @HiltViewModel
@@ -46,6 +52,7 @@ class ProfileViewModel @Inject constructor(
     private val driverOpsApi: DriverOpsApiService,
     private val paymentsApi: PaymentsApiService,
     private val okHttpClient: OkHttpClient,
+    private val homeMoveApi: HomeMoveApiService,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -62,6 +69,22 @@ class ProfileViewModel @Inject constructor(
         // fail silently and the raw IDs from SessionManager remain visible.
         loadProfile()
         loadFinancials()
+        loadHomeMoves()
+    }
+
+    /**
+     * Best-effort, like the financials: a driver not onboarded as a provider
+     * (404) or a dispatch outage simply hides the card.
+     */
+    private fun loadHomeMoves() {
+        viewModelScope.launch {
+            val lead = runCatching { homeMoveApi.myProvider().data.profile.serviceLines.contains("home_move") }
+                .getOrDefault(false)
+            if (!lead) return@launch
+            _uiState.update { it.copy(isHomeLead = true) }
+            runCatching { homeMoveApi.myReservations().data }
+                .onSuccess { moves -> _uiState.update { it.copy(reservedHomeMoves = moves.count { m -> !m.activated }) } }
+        }
     }
 
     private fun loadProfile() {

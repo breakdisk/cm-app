@@ -4,3 +4,5 @@ pub mod assignment_rejected_consumer;
 pub use assignment_rejected_consumer::start_assignment_rejected_consumer;
 pub mod offer_consumer;
 pub use offer_consumer::start_offer_consumer;
+pub mod shipment_cancelled_consumer;
+pub use shipment_cancelled_consumer::start_shipment_cancelled_consumer;

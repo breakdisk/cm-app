@@ -8,6 +8,33 @@ use logisticos_types::{
     awb::ServiceCode,
     ShipmentId, MerchantId, CustomerId, Money, Currency, ShipmentStatus, TenantId,
 };
+use crate::domain::value_objects::cancel_authority::{may_act_on, ActingAs};
+use crate::domain::value_objects::cancellation_policy::{quote_cancellation, CancelTier, CancellationPolicy};
+
+/// Refuse a by-id action the caller has no authority over.
+///
+/// A refusal is a 404, not a 403, so a caller cannot probe which shipment ids
+/// exist in another tenant. `Unset` is a programming error, not a caller error.
+pub(crate) fn authorize_shipment(acting_as: &ActingAs, shipment: &Shipment) -> AppResult<()> {
+    let permitted = match acting_as {
+        ActingAs::Unset => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "by-id action on shipment {} reached the service with no actor",
+                shipment.id.inner()
+            )))
+        }
+        ActingAs::System => true,
+        ActingAs::User(actor) => {
+            may_act_on(actor, shipment.tenant_id.inner(), shipment.merchant_id.inner())
+        }
+    };
+    if permitted {
+        Ok(())
+    } else {
+        Err(AppError::NotFound { resource: "Shipment", id: shipment.id.inner().to_string() })
+    }
+}
+
 use crate::{
     application::commands::{
         CreateShipmentCommand, CancelShipmentCommand, RescheduleShipmentCommand,
@@ -34,6 +61,10 @@ pub struct ShipmentListFilter {
     pub updated_from: Option<chrono::DateTime<chrono::Utc>>,
     /// Exclusive upper bound on `updated_at`.
     pub updated_to:   Option<chrono::DateTime<chrono::Utc>>,
+    /// Restrict to shipments linked to this partner (carrier). `None` for every
+    /// caller that is not a partner-scoped token. It narrows on top of the other
+    /// fields, so a caller can never widen the result by also naming a merchant.
+    pub partner_id:  Option<uuid::Uuid>,
     pub limit:       i64,
     pub offset:      i64,
 }
@@ -55,6 +86,17 @@ pub struct NewShipmentEvent {
 /// The tenant an event about this shipment belongs to.
 fn cmd_tenant_of(s: &Shipment) -> uuid::Uuid {
     s.tenant_id.inner()
+}
+
+/// A survey addendum just paid: what it did to the move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettledAddendum {
+    pub tenant_id: uuid::Uuid,
+    pub shipment_id: uuid::Uuid,
+    pub addendum_id: uuid::Uuid,
+    pub total_cents: i64,
+    pub trucks_before: i32,
+    pub trucks_after: i32,
 }
 
 pub trait ShipmentRepository: Send + Sync {
@@ -94,6 +136,20 @@ pub trait ShipmentRepository: Send + Sync {
         shipment_id: uuid::Uuid,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>>;
 
+    /// Is this shipment linked to this partner? The partner-scoped read gate:
+    /// a partner token may read a shipment only if some link names its carrier.
+    ///
+    /// Defaults to `false`, so an implementor that has no link data (a test
+    /// double) refuses rather than admits.
+    fn is_linked<'a>(
+        &'a self,
+        _tenant_id: uuid::Uuid,
+        _shipment_id: uuid::Uuid,
+        _carrier_id: uuid::Uuid,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn save_pieces<'a>(
         &'a self,
         pieces: &'a [Piece],
@@ -106,6 +162,38 @@ pub trait ShipmentRepository: Send + Sync {
         &'a self,
         filter: &'a ShipmentListFilter,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>>;
+
+    /// A survey addendum's payment was captured (or failed). Captured: it is
+    /// paid and the move takes the additions — inventory, crew, trucks and
+    /// total. Failed: it goes back to pending for the customer to try again.
+    /// Idempotent. Default no-op for test doubles.
+    fn settle_home_addendum<'a>(
+        &'a self,
+        _addendum_id: uuid::Uuid,
+        _captured: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<SettledAddendum>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// A whole-home move's survey (time, deposit, whether it was done).
+    /// Default none, so test doubles need not implement it.
+    fn home_survey<'a>(
+        &'a self,
+        _shipment_id: uuid::Uuid,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<crate::domain::value_objects::home_move::HomeSurvey>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Record how a booking was described (the prompt box's parse). Default
+    /// no-op so test doubles need not implement it.
+    fn record_intake<'a>(
+        &'a self,
+        _tenant_id: uuid::Uuid,
+        _shipment_id: uuid::Uuid,
+        _intake: (String, Option<String>, Option<f64>, serde_json::Value),
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
 
     /// Append an immutable timeline event. Default no-op so non-DB test doubles
     /// don't need to implement it; the Postgres repo overrides this.
@@ -131,6 +219,108 @@ pub trait AddressNormalizer: Send + Sync {
         &'a self,
         input: &'a crate::application::commands::AddressInput,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<logisticos_types::Address>> + Send + 'a>>;
+
+    /// `normalize`, plus how precisely the address was geocoded. The default
+    /// wraps `normalize` and records `Unknown`, so a normalizer that knows
+    /// nothing about quality (a test double, the passthrough) needs no change.
+    fn normalize_detailed<'a>(
+        &'a self,
+        input: &'a crate::application::commands::AddressInput,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::domain::value_objects::GeocodedAddress>> + Send + 'a>> {
+        Box::pin(async move {
+            let address = self.normalize(input).await?;
+            Ok(crate::domain::value_objects::GeocodedAddress {
+                address,
+                geocoding: crate::domain::value_objects::GeocodingRecord::unknown(),
+            })
+        })
+    }
+}
+
+/// The customer's pin on an address, when they gave one.
+///
+/// `Ok(None)` means no pin. A pin that is half given, out of range, not a
+/// number or at (0, 0) is an error: it is the caller's explicit input, and
+/// dropping it quietly would hide a client bug. (0, 0) is what a client sends
+/// when it has no location yet.
+pub(crate) fn customer_pin(
+    input: &crate::application::commands::AddressInput,
+) -> Result<Option<logisticos_types::Coordinates>, String> {
+    match (input.pin_lat, input.pin_lng) {
+        (None, None) => Ok(None),
+        (Some(lat), Some(lng)) => {
+            if !lat.is_finite() || !lng.is_finite() {
+                return Err("pin_lat and pin_lng must be finite numbers".into());
+            }
+            if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+                return Err("pin_lat must be within -90..90 and pin_lng within -180..180".into());
+            }
+            if lat == 0.0 && lng == 0.0 {
+                return Err("pin at (0, 0) is not a location".into());
+            }
+            Ok(Some(logisticos_types::Coordinates { lat, lng }))
+        }
+        _ => Err("pin_lat and pin_lng must be given together".into()),
+    }
+}
+
+/// Longest building, unit or area, in characters.
+const ADDRESS_PART_MAX_CHARS: usize = 100;
+
+/// Refuse an over-long building, unit or area. The `#[validate]` attributes on
+/// `AddressInput` are not run on the booking path, so the cap is enforced here.
+/// Characters, not bytes: Arabic text is multi-byte.
+pub(crate) fn check_address_parts(
+    input: &crate::application::commands::AddressInput,
+) -> Result<(), String> {
+    for (name, value) in [("building", &input.building), ("unit", &input.unit), ("area", &input.area)] {
+        if value.as_deref().is_some_and(|v| v.chars().count() > ADDRESS_PART_MAX_CHARS) {
+            return Err(format!("{name} must be at most {ADDRESS_PART_MAX_CHARS} characters"));
+        }
+    }
+    Ok(())
+}
+
+/// The destination as it will be stored. Without a pin, the geocoder's answer
+/// stands (and its failure is the booking's failure, as before). With one, the
+/// coordinates are the customer's and the source says so; the geocoder still
+/// supplies the normalised text and the quality. The pin does not make the
+/// address text more precise, so quality is not raised. If the geocoder fails
+/// the pin still applies, with quality UNKNOWN.
+pub(crate) fn resolve_destination(
+    input: &crate::application::commands::AddressInput,
+    pin: Option<logisticos_types::Coordinates>,
+    geocoded: anyhow::Result<crate::domain::value_objects::GeocodedAddress>,
+    now: chrono::DateTime<Utc>,
+) -> anyhow::Result<crate::domain::value_objects::GeocodedAddress> {
+    use crate::domain::value_objects::{GeocodedAddress, GeocodingRecord, PROVIDER_CUSTOMER, SOURCE_CUSTOMER_PIN};
+    let Some(pin) = pin else { return geocoded };
+    let mut out = match geocoded {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(error = %e, "geocoder failed; the customer pin still applies");
+            GeocodedAddress {
+                address: logisticos_types::Address {
+                    line1:        input.line1.clone(),
+                    line2:        input.line2.clone(),
+                    barangay:     input.barangay.clone(),
+                    city:         input.city.clone(),
+                    province:     input.province.clone(),
+                    postal_code:  input.postal_code.clone(),
+                    country_code: input.country_code.clone(),
+                    coordinates:  None,
+                },
+                geocoding: GeocodingRecord::unknown(),
+            }
+        }
+    };
+    out.address.coordinates = Some(pin);
+    out.geocoding.source = Some(SOURCE_CUSTOMER_PIN.into());
+    out.geocoding.provider = Some(PROVIDER_CUSTOMER.into());
+    out.geocoding.place_id = None;
+    out.geocoding.confidence = None;
+    out.geocoding.geocoded_at = Some(now);
+    Ok(out)
 }
 
 /// Threshold above which an uncategorized shipment is treated as "heavy" for
@@ -161,14 +351,9 @@ fn resolve_delivery_category(
 }
 
 /// Human-readable SLA label for the estimated delivery field on `ShipmentCreated`.
+/// Comes from the same table as the stored deadline (`service_promise`).
 fn sla_label(service_type: &str) -> &'static str {
-    match service_type {
-        "express"       => "Next business day",
-        "same_day"      => "Today",
-        "balikbayan"    => "21–45 business days",
-        "international" => "7–14 business days",
-        _               => "2–3 business days",  // standard (default)
-    }
+    crate::domain::value_objects::service_promise::promise_for(service_type).label
 }
 
 /// Bundles the collaborators for the optional "pay online at booking"
@@ -204,6 +389,33 @@ pub struct ShipmentService {
     /// through to the cash/free path — see the check right after the
     /// idempotency replay, before any other work.
     pub payment: Option<PaymentCapability>,
+    /// Mesh-internal carrier client, for pricing a consumer move off a rate
+    /// card. `None` when `SERVICES__CARRIER_URL` is unset, in which case a move
+    /// quote returns 503 rather than silently falling back to the parcel tariff.
+    pub carrier: Option<Arc<crate::infrastructure::http::CarrierClient>>,
+    /// Accessorial rate card. Empty by default, which simply means this
+    /// deployment offers none -- each entry is independently optional.
+    pub accessorials: crate::config::AccessorialsConfig,
+    /// Cancellation fee policy. Rates default to 0 bps.
+    pub cancellation_policy: CancellationPolicy,
+    /// Mesh-internal promotions client: prices a promo code into a quote and
+    /// spends it at booking. `None` when `SERVICES__PROMOTIONS_URL` is unset.
+    pub promotions: Option<Arc<crate::infrastructure::http::PromotionsClient>>,
+    /// Whole-home moving rates. All zero by default, which refuses home moves.
+    pub home_rates: crate::domain::value_objects::home_move::HomeRates,
+    /// The teams each date has, and a move's reserved lead.
+    pub home_teams: Arc<crate::infrastructure::http::home_capacity_client::HomeTeamsClient>,
+    /// Driving distance for a quote. The straight line until one is set.
+    pub router: Arc<dyn crate::infrastructure::external::RoadRouter>,
+    /// Offset for the SLA day boundary (`SLA__UTC_OFFSET_HOURS`, default +08:00).
+    pub sla_offset: chrono::FixedOffset,
+}
+
+/// What a verified quote was discounted by, all spent at booking.
+struct PricedDiscounts {
+    code: Option<String>,
+    lines: Vec<crate::domain::value_objects::quote_token::TokenDiscount>,
+    account_id: uuid::Uuid,
 }
 
 /// Returned by `create()`: the persisted shipment, plus a checkout URL when
@@ -216,14 +428,56 @@ pub struct CreateShipmentResult {
 }
 
 impl ShipmentService {
+    // One argument per collaborator; a builder would only rename the list.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo:          Arc<dyn ShipmentRepository>,
         publisher:     Arc<dyn EventPublisher>,
         normalizer:    Arc<dyn AddressNormalizer>,
         awb_generator: Arc<dyn AwbGenerator>,
         payment: Option<PaymentCapability>,
+        carrier: Option<Arc<crate::infrastructure::http::CarrierClient>>,
+        accessorials: crate::config::AccessorialsConfig,
+        cancellation_policy: CancellationPolicy,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator, payment }
+        Self {
+            repo, publisher, normalizer, awb_generator, payment, carrier, accessorials, cancellation_policy,
+            promotions: None,
+            home_rates: Default::default(),
+            home_teams: Arc::new(crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(None, None)),
+            router: Arc::new(crate::infrastructure::external::DirectRouter),
+            sla_offset: crate::config::SlaConfig::default().offset(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_sla_offset(mut self, offset: chrono::FixedOffset) -> Self {
+        self.sla_offset = offset;
+        self
+    }
+
+    #[must_use]
+    pub fn with_router(mut self, router: Arc<dyn crate::infrastructure::external::RoadRouter>) -> Self {
+        self.router = router;
+        self
+    }
+
+    #[must_use]
+    pub fn with_home_teams(mut self, client: crate::infrastructure::http::home_capacity_client::HomeTeamsClient) -> Self {
+        self.home_teams = Arc::new(client);
+        self
+    }
+
+    #[must_use]
+    pub fn with_home_rates(mut self, rates: crate::domain::value_objects::home_move::HomeRates) -> Self {
+        self.home_rates = rates;
+        self
+    }
+
+    #[must_use]
+    pub fn with_promotions(mut self, promotions: Option<Arc<crate::infrastructure::http::PromotionsClient>>) -> Self {
+        self.promotions = promotions;
+        self
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<CreateShipmentResult> {
@@ -265,6 +519,11 @@ impl ShipmentService {
 
         // ── Validate service type ────────────────────────────────────────────
         let service_type = ServiceType::parse(&cmd.service_type).map_err(AppError::Validation)?;
+        // A home move is booked only through its own path, which prices it,
+        // holds the survey and move to the calendar, and sets the schedule.
+        if service_type == ServiceType::HomeMove && cmd.home_booking.is_none() {
+            return Err(AppError::Validation("Book a whole-home move through /v1/shipments/home".into()));
+        }
         tracing::info!(step = "service_type_ok", ?service_type, "create");
 
         let service_code = match service_type {
@@ -273,6 +532,8 @@ impl ShipmentService {
             ServiceType::SameDay       => ServiceCode::SameDay,
             ServiceType::Balikbayan    => ServiceCode::Balikbayan,
             ServiceType::International => ServiceCode::International,
+            // No AWB letter of its own: the service type column says what it is.
+            ServiceType::HomeMove      => ServiceCode::Standard,
         };
 
         // ── Business rule: same-day cutoff at 14:00 ──────────────────────────
@@ -291,7 +552,9 @@ impl ShipmentService {
         let is_per_piece = matches!(service_type, ServiceType::Balikbayan | ServiceType::International)
             && cmd.pieces.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
         let weight = ShipmentWeight::from_grams(cmd.weight_grams);
-        if !is_per_piece {
+        // A household is tonnes, not a 70 kg parcel; its weight is the
+        // catalogue's sum, signed into its quote.
+        if !is_per_piece && service_type != ServiceType::HomeMove {
             weight.validate().map_err(|e| AppError::Validation(e.to_string()))?;
         }
 
@@ -312,8 +575,20 @@ impl ShipmentService {
         }
 
         // ── Normalize and geocode addresses ──────────────────────────────────
+        // Checked before any network call.
+        let pin = customer_pin(&cmd.destination).map_err(AppError::Validation)?;
+        check_address_parts(&cmd.destination).map_err(AppError::Validation)?;
         let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
-        let destination = self.normalizer.normalize(&cmd.destination).await.map_err(AppError::Internal)?;
+        let geocoded = self.normalizer.normalize_detailed(&cmd.destination).await;
+        let destination_geocoded = resolve_destination(&cmd.destination, pin, geocoded, Utc::now())
+            .map_err(AppError::Internal)?;
+        let dest_parts = crate::domain::value_objects::AddressParts {
+            building: cmd.destination.building.clone(),
+            unit:     cmd.destination.unit.clone(),
+            area:     cmd.destination.area.clone(),
+        };
+        let destination = destination_geocoded.address;
+        let dest_geocoding = destination_geocoded.geocoding;
         tracing::info!(step = "normalized", "create");
 
         // ── Dimensions (shipment-level, for Standard/Express/SameDay) ─────────
@@ -441,6 +716,7 @@ impl ShipmentService {
         //    dispatch ─────────────────────────────────────────────────────────
         // Verified before the shipment row is written so a bad/tampered/expired
         // token fails the request before anything is persisted.
+        let mut promo: Option<PricedDiscounts> = None;
         let (payment_status, verified_amount_cents, verified_currency) = match &cmd.quote_token {
             None => (PaymentRequirement::NotRequired, None, None),
             Some(token) => {
@@ -461,6 +737,21 @@ impl ShipmentService {
                     return Err(AppError::Validation(
                         "Quote token does not match this booking's service type or weight".into(),
                     ));
+                }
+                let lines = payload.discount_lines();
+                if !lines.is_empty() {
+                    // A code, a tier and credit are all one account's, so the
+                    // discount they bought books for that account only.
+                    if payload.account_id != Some(cmd.merchant_id) {
+                        return Err(AppError::Validation(
+                            "This quote's discount was priced for a different account — get a new quote".into(),
+                        ));
+                    }
+                    promo = Some(PricedDiscounts {
+                        code: payload.promo_code.clone().filter(|_| lines.iter().any(|l| l.kind == "code")),
+                        lines,
+                        account_id: cmd.merchant_id,
+                    });
                 }
                 (PaymentRequirement::AwaitingPayment, Some(payload.amount_cents), Some(payload.currency))
             }
@@ -495,6 +786,19 @@ impl ShipmentService {
             payment_status,
             pending_dispatch_events: None,
             idempotency_key: cmd.idempotency_key.clone(),
+            // Only a whole-home move books a slot, and only its own path sets it.
+            scheduled_pickup_at: cmd.home_booking.as_ref().map(|h| h.move_at),
+            sla_due_at: crate::domain::value_objects::service_promise::sla_due_at(
+                service_type.as_str(),
+                now,
+                cmd.home_booking.as_ref().map(|h| h.move_at),
+                self.sla_offset,
+            ),
+            cancellation_policy_version: Some(self.cancellation_policy.version.clone()),
+            booking_amount_cents: verified_amount_cents,
+            booking_currency: verified_currency.clone(),
+            dest_geocoding,
+            dest_parts,
             created_at: now,
             updated_at: now,
         };
@@ -529,6 +833,7 @@ impl ShipmentService {
                 customer_id:          shipment.customer_id.inner(),
                 customer_name:        cmd.customer_name.clone(),
                 customer_phone:       cmd.customer_phone.clone(),
+                home_move:            cmd.home_booking.as_ref().map(|h| h.requirement.clone()),
                 customer_email:       cmd.customer_email.clone().unwrap_or_default(),
                 origin_address:       format!("{}, {}", shipment.origin.city, shipment.origin.province),
                 origin_city:          shipment.origin.city.clone(),
@@ -591,6 +896,42 @@ impl ShipmentService {
 
         let mut checkout_url: Option<String> = None;
 
+        // ── Spend what the quote was discounted by ───────────────────────────
+        // Every line together, before the payment intent: a code or credit
+        // another booking spent since the quote stops this one before any
+        // money moves. The ledger decides a race; this booking's own retry is
+        // not a second spend.
+        let spent_code = match (&promo, &self.promotions) {
+            (None, _) => false,
+            (Some(_), None) => {
+                return Err(AppError::ServiceUnavailable(
+                    "This quote carries a discount and promotions is not configured here — get a new quote".into(),
+                ))
+            }
+            (Some(p), Some(client)) => {
+                let currency = verified_currency.clone().unwrap_or_default();
+                client
+                    .redeem(cmd.tenant_id, p.account_id, shipment.id.inner(), &currency, p.code.as_deref(), &p.lines)
+                    .await
+                    .map_err(|e| match e {
+                        crate::infrastructure::http::RedeemError::Refused(_) => AppError::Conflict(
+                            "PROMO_ALREADY_USED: this code was spent on another booking since the quote — get a new quote".into(),
+                        ),
+                        crate::infrastructure::http::RedeemError::CreditChanged => AppError::Conflict(
+                            "CREDIT_CHANGED: your account credit was used on another booking since the quote — get a new quote".into(),
+                        ),
+                        crate::infrastructure::http::RedeemError::Unavailable(m) => {
+                            AppError::ServiceUnavailable(format!("Promotions is unavailable, so the discounted quote cannot be booked: {m}"))
+                        }
+                    })?;
+                true
+            }
+        };
+
+        // Everything from here to the saved row either succeeds or gives the
+        // code and credit back: a booking that never exists must not cost the
+        // customer their month's code or their balance.
+        let persisted: AppResult<()> = async {
         if payment_status == PaymentRequirement::AwaitingPayment {
             shipment.pending_dispatch_events = Some(serde_json::json!({
                 "awb_issued": awb_json,
@@ -636,6 +977,17 @@ impl ShipmentService {
             AppError::Internal(e)
         })?;
         tracing::info!(step = "pieces_saved", "create");
+        Ok(())
+        }
+        .await;
+        if let Err(e) = persisted {
+            if spent_code {
+                if let Some(client) = &self.promotions {
+                    client.release(shipment.id.inner()).await;
+                }
+            }
+            return Err(e);
+        }
 
         // ── Stamp the opening timeline milestones ─────────────────────────────
         // A successful booking is received (`created` → pending) and validated +
@@ -670,6 +1022,14 @@ impl ShipmentService {
             location:    pickup_city,
         }).await {
             tracing::warn!(error = %e, shipment_id = %shipment.id, "confirmed timeline event failed (non-fatal)");
+        }
+
+        // ── How it was described ──────────────────────────────────────────────
+        // Measurement only, and best-effort: a booking never fails over it.
+        if let Some(intake) = cmd.intake.as_ref().and_then(crate::application::commands::IntakeInput::to_store) {
+            if let Err(e) = self.repo.record_intake(cmd.tenant_id, shipment.id.inner(), intake).await {
+                tracing::warn!(error = %e, shipment_id = %shipment.id, "intake record failed (non-fatal)");
+            }
         }
 
         // ── Publish the lifecycle events ──────────────────────────────────────
@@ -712,15 +1072,70 @@ impl ShipmentService {
         Ok(CreateShipmentResult { shipment, checkout_url })
     }
 
+    /// What cancelling now would cost: the policy's tier on the booked total,
+    /// and on a whole-home move the survey deposit it keeps on top. One
+    /// calculation for the preview and the cancellation both.
+    pub async fn cancellation_quote(
+        &self,
+        shipment: &Shipment,
+        now: chrono::DateTime<Utc>,
+    ) -> AppResult<(crate::domain::value_objects::cancellation_policy::CancellationQuote, i64)> {
+        use crate::domain::value_objects::home_move::{home_retention_bps, survey_retained_cents};
+        let mut quote = quote_cancellation(&self.cancellation_policy, shipment.scheduled_pickup_at, now, shipment.booking_amount_cents);
+        if shipment.service_type != ServiceType::HomeMove {
+            return Ok((quote, 0));
+        }
+        let Some(survey) = self.repo.home_survey(shipment.id.inner()).await.map_err(AppError::Internal)? else {
+            return Ok((quote, 0));
+        };
+        let kept = survey_retained_cents(
+            survey.survey_cents,
+            survey.survey_at,
+            survey.submitted,
+            now,
+            self.home_rates.survey_refund_until_hours,
+        );
+        if kept > 0 {
+            let total = shipment.booking_amount_cents.unwrap_or(0);
+            quote.retention_bps = home_retention_bps(quote.retention_bps, kept, total);
+            quote.fee_cents = shipment
+                .booking_amount_cents
+                .map(|b| (i128::from(b.max(0)) * i128::from(quote.retention_bps) / 10_000) as i64);
+            quote.refund_cents = shipment.booking_amount_cents.zip(quote.fee_cents).map(|(b, f)| b.max(0) - f);
+        }
+        Ok((quote, kept))
+    }
+
     pub async fn cancel(&self, cmd: CancelShipmentCommand) -> AppResult<()> {
         let id = ShipmentId::from_uuid(cmd.shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
             .ok_or(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() })?;
+        // Before the status check, so a refusal cannot leak whether the id exists.
+        authorize_shipment(&cmd.acting_as, &shipment)?;
 
         if !shipment.can_cancel() {
             return Err(AppError::BusinessRule(
                 format!("Cannot cancel shipment in status {:?}", shipment.status),
             ));
+        }
+
+        // Every cancellation is priced, even when the price is nothing. An
+        // unscheduled one carries no retention, which payments reads as a full
+        // refund: exactly what every cancellation was before the policy existed.
+        let (quote, survey_kept) = self.cancellation_quote(&shipment, Utc::now()).await?;
+        let mut data = serde_json::json!({ "shipment_id": shipment.id.inner(), "reason": cmd.reason });
+        if survey_kept > 0 {
+            // Inside the retention above; stated apart so the lead's survey
+            // pay can be traced to it.
+            data["survey_retained_cents"] = serde_json::json!(survey_kept);
+        }
+        if quote.tier != CancelTier::Unscheduled {
+            data["retention_bps"] = serde_json::json!(quote.retention_bps);
+            data["cancellation_tier"] = serde_json::json!(quote.tier.as_str());
+            data["policy_version"] = serde_json::json!(shipment
+                .cancellation_policy_version
+                .as_deref()
+                .unwrap_or(&self.cancellation_policy.version));
         }
 
         shipment.status     = ShipmentStatus::Cancelled;
@@ -730,8 +1145,10 @@ impl ShipmentService {
         let event = Event::new(
             "logisticos/order-intake",
             "shipment.cancelled",
-            uuid::Uuid::nil(),
-            serde_json::json!({ "shipment_id": shipment.id.inner(), "reason": cmd.reason }),
+            // Was Uuid::nil(), so every tenant-scoped consumer saw a cancellation
+            // that belonged to no tenant.
+            shipment.tenant_id.inner(),
+            data,
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
         self.publisher
@@ -815,6 +1232,7 @@ impl ShipmentService {
         let id = ShipmentId::from_uuid(cmd.shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
             .ok_or(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() })?;
+        authorize_shipment(&cmd.acting_as, &shipment)?;
 
         if !shipment.can_reschedule() {
             return Err(AppError::BusinessRule(
@@ -850,10 +1268,17 @@ impl ShipmentService {
         Ok(())
     }
 
-    pub async fn override_status(&self, shipment_id: uuid::Uuid, new_status: ShipmentStatus, actor: &str) -> AppResult<()> {
+    pub async fn override_status(
+        &self,
+        shipment_id: uuid::Uuid,
+        new_status: ShipmentStatus,
+        actor: &str,
+        acting_as: &ActingAs,
+    ) -> AppResult<()> {
         let id = ShipmentId::from_uuid(shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
             .ok_or(AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })?;
+        authorize_shipment(acting_as, &shipment)?;
 
         let old_status = shipment.status;
         shipment.status     = new_status;
@@ -888,5 +1313,138 @@ impl ShipmentService {
 
         tracing::info!(created = created.len(), failed = failed.len(), "Bulk shipment creation complete");
         Ok(BulkCreateResult { created, failed })
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+    use crate::application::commands::AddressInput;
+    use crate::domain::value_objects::{GeocodedAddress, GeocodingRecord};
+    use logisticos_types::{Address, Coordinates, GeocodeQuality};
+
+    fn input(lat: Option<f64>, lng: Option<f64>) -> AddressInput {
+        AddressInput {
+            line1: "Marina Tower".into(), line2: None, barangay: None, city: "Dubai".into(),
+            province: "Dubai".into(), postal_code: "00000".into(), country_code: "AE".into(),
+            pin_lat: lat, pin_lng: lng, building: Some("Marina Tower".into()),
+            unit: Some("1204".into()), area: Some("Dubai Marina".into()),
+        }
+    }
+
+    fn geocoded() -> anyhow::Result<GeocodedAddress> {
+        Ok(GeocodedAddress {
+            address: Address {
+                line1: "Marina Tower, Dubai".into(), line2: None, barangay: None, city: "Dubai".into(),
+                province: "Dubai".into(), postal_code: "00000".into(), country_code: "AE".into(),
+                coordinates: Some(Coordinates { lat: 25.0, lng: 55.0 }),
+            },
+            geocoding: GeocodingRecord {
+                quality: GeocodeQuality::Street,
+                source: Some("provider".into()),
+                provider: Some("mapbox".into()),
+                place_id: Some("p1".into()),
+                confidence: Some("high".into()),
+                geocoded_at: None,
+            },
+        })
+    }
+
+    #[test]
+    fn pin_overrides_geocoder_and_marks_customer_pin() {
+        let i = input(Some(25.0803), Some(55.1403));
+        let pin = customer_pin(&i).expect("valid");
+        let out = resolve_destination(&i, pin, geocoded(), Utc::now()).expect("ok");
+        assert_eq!(out.address.coordinates, Some(Coordinates { lat: 25.0803, lng: 55.1403 }));
+        assert_eq!(out.address.line1, "Marina Tower, Dubai", "the geocoder still supplies the text");
+        assert_eq!(out.geocoding.source.as_deref(), Some("customer_pin"));
+        assert_eq!(out.geocoding.provider.as_deref(), Some("customer"));
+        assert_eq!(out.geocoding.quality, GeocodeQuality::Street, "a pin does not raise quality");
+        assert_eq!(out.geocoding.place_id, None);
+        assert_eq!(out.geocoding.confidence, None);
+        assert!(out.geocoding.geocoded_at.is_some());
+    }
+
+    #[test]
+    fn pin_survives_a_geocoder_failure() {
+        let i = input(Some(25.0803), Some(55.1403));
+        let pin = customer_pin(&i).expect("valid");
+        let out = resolve_destination(&i, pin, Err(anyhow::anyhow!("down")), Utc::now()).expect("ok");
+        assert_eq!(out.address.coordinates, Some(Coordinates { lat: 25.0803, lng: 55.1403 }));
+        assert_eq!(out.geocoding.quality, GeocodeQuality::Unknown);
+        assert_eq!(out.geocoding.source.as_deref(), Some("customer_pin"));
+    }
+
+    #[test]
+    fn pin_with_only_one_coordinate_is_rejected() {
+        assert!(customer_pin(&input(Some(25.0), None)).is_err());
+        assert!(customer_pin(&input(None, Some(55.0))).is_err());
+    }
+
+    #[test]
+    fn pin_out_of_range_is_rejected() {
+        assert!(customer_pin(&input(Some(91.0), Some(55.0))).is_err());
+        assert!(customer_pin(&input(Some(25.0), Some(-181.0))).is_err());
+        assert!(customer_pin(&input(Some(f64::NAN), Some(55.0))).is_err());
+        assert!(customer_pin(&input(Some(25.0), Some(f64::INFINITY))).is_err());
+    }
+
+    #[test]
+    fn pin_at_zero_zero_is_rejected() {
+        assert!(customer_pin(&input(Some(0.0), Some(0.0))).is_err());
+    }
+
+    #[test]
+    fn booking_without_a_pin_is_unchanged() {
+        let i = input(None, None);
+        assert_eq!(customer_pin(&i), Ok(None));
+        let out = resolve_destination(&i, None, geocoded(), Utc::now()).expect("ok");
+        assert_eq!(out.address.coordinates, Some(Coordinates { lat: 25.0, lng: 55.0 }));
+        assert_eq!(out.geocoding.source.as_deref(), Some("provider"));
+        assert_eq!(out.geocoding.place_id.as_deref(), Some("p1"));
+        // and a geocoder failure is still the booking's failure
+        assert!(resolve_destination(&i, None, Err(anyhow::anyhow!("down")), Utc::now()).is_err());
+    }
+
+    #[test]
+    fn a_request_without_pin_fields_still_deserializes() {
+        let i: AddressInput = serde_json::from_value(serde_json::json!({
+            "line1": "12345 Main", "city": "Manila", "province": "NCR",
+            "postal_code": "1000", "country_code": "PH"
+        })).expect("old clients unaffected");
+        assert_eq!((i.pin_lat, i.pin_lng, i.building), (None, None, None));
+    }
+
+    #[test]
+    fn address_part_over_100_chars_is_rejected() {
+        let mut i = input(None, None);
+        i.unit = Some("x".repeat(101));
+        let e = check_address_parts(&i).expect_err("too long");
+        assert!(e.contains("unit"), "names the field: {e}");
+        i.unit = None;
+        i.area = Some("x".repeat(101));
+        assert!(check_address_parts(&i).expect_err("too long").contains("area"));
+        i.area = None;
+        i.building = Some("x".repeat(101));
+        assert!(check_address_parts(&i).expect_err("too long").contains("building"));
+    }
+
+    #[test]
+    fn address_part_of_100_arabic_chars_is_accepted() {
+        let mut i = input(None, None);
+        let arabic = "ب".repeat(100); // 200 bytes
+        i.building = Some(arabic.clone());
+        i.unit = Some(arabic.clone());
+        i.area = Some(arabic);
+        assert_eq!(check_address_parts(&i), Ok(()));
+    }
+
+    #[test]
+    fn missing_address_parts_are_accepted() {
+        let mut i = input(None, None);
+        i.building = None;
+        i.unit = None;
+        i.area = None;
+        assert_eq!(check_address_parts(&i), Ok(()));
     }
 }

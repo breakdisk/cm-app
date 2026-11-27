@@ -35,6 +35,8 @@ tags:
     description: Tenant registration and management
   - name: Users
     description: User administration within a tenant
+  - name: Partner Memberships
+    description: Which partner (carrier or store) a user acts for; source of the `pid` token claim
   - name: API Keys
     description: Machine-to-machine API key management
 
@@ -328,6 +330,77 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /partner-memberships/me:
+    get:
+      operationId: getMyPartnerMembership
+      tags: [Partner Memberships]
+      summary: The partner (carrier or store) the caller acts for
+      description: |
+        Returns the caller's active partner membership, the source of the `pid`
+        claim issued at login. A user has at most one active membership, so there
+        is never a choice of which partner a token is for.
+      responses:
+        "200":
+          description: Active membership
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PartnerMembership"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: The caller has no active partner membership
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /internal/partner-memberships:
+    post:
+      operationId: upsertPartnerMembership
+      tags: [Partner Memberships]
+      summary: Create a partner membership (service to service)
+      description: |
+        Internal. Blocked at the API gateway, reachable only inside the mesh.
+        Idempotent on `(tenant_id, user_id, carrier_id)`: repeating the call
+        returns the existing active membership. Never reactivates: a suspended
+        membership answers 409, so a retried approval cannot undo a suspension.
+        Also 409 when the user already has an active membership for a different
+        carrier. `role` is one of `partner`, `store_manager`, `store_clerk`,
+        `store_rider`.
+
+        Identity checks that the user exists in `tenant_id` (404 otherwise) and
+        holds only the platform roles `partner`, `store_manager`, `store_clerk`
+        and `driver`; an admin, ops or finance user is refused with 409.
+        Identity cannot read the carrier database, so that `carrier_id` belongs
+        to `tenant_id` is **the calling service's responsibility**.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertPartnerMembershipRequest"
+      responses:
+        "200":
+          description: Active membership exists (created or already present)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PartnerMembership"
+        "409":
+          description: The membership is suspended, the user already acts for another carrier, or the user holds a role that cannot be partner-scoped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -538,6 +611,47 @@ components:
           format: date-time
           nullable: true
       required: [name, scopes]
+
+    PartnerMembership:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        carrier_id:
+          type: string
+          format: uuid
+          description: The partner this user acts for. Issued to the token as `pid`.
+        role:
+          type: string
+          example: store_manager
+        status:
+          type: string
+          enum: [active, suspended]
+      required: [id, tenant_id, user_id, carrier_id, role, status]
+
+    UpsertPartnerMembershipRequest:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        carrier_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          example: store_manager
+      required: [tenant_id, user_id, carrier_id, role]
 
     ErrorResponse:
       type: object

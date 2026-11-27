@@ -1,0 +1,112 @@
+# How every partner-reachable handler is scoped. Read by scripts/check-partner-scope.py.
+#
+# A handler is partner-reachable when it names a permission that the partner,
+# store_* or driver roles hold (a store's rider holds the plain `driver` role), or
+# when it uses the partner-scoping helpers. Each line is `path::fn: status  # why`:
+#
+#   scoped         the handler narrows what it returns to the caller's own partner,
+#                  carrier or bookings. The script checks the body really does.
+#   denied         a tenant operation: a partner-bound token is refused outright.
+#                  The script checks the body calls require_unscoped(.
+#   not_sensitive  nothing a partner should not see. Needs a reason.
+#
+# Adding a handler that a partner can reach? The check fails until it is listed
+# here. Pick the honest status; do not pick not_sensitive to make it pass.
+#
+# NOT covered: a handler that takes claims but checks no permission at all is
+# invisible to this check (self-service routes such as "my tasks" are of that
+# kind, and are scoped by claims.user_id). Auditing those is separate work.
+
+# ── analytics: tenant-wide KPIs ──────────────────────────────────────────────
+services/analytics/src/api/http/mod.rs::daily_timeseries: denied  # tenant-wide delivery counts across every carrier and merchant
+services/analytics/src/api/http/mod.rs::delivery_kpis: denied  # tenant-wide delivery KPIs
+services/analytics/src/api/http/mod.rs::driver_performance: denied  # every driver in the tenant
+services/analytics/src/api/http/mod.rs::get_dashboard: denied  # tenant-wide dashboard
+services/analytics/src/api/http/mod.rs::sla_trend: denied  # tenant-wide SLA trend; a partner reads its own from carrier
+
+# ── carrier: a partner operates exactly one carrier, found by contact email ──
+services/carrier/src/api/http/mod.rs::accept_booking: scoped  # acts only on the caller's own carrier's bookings
+services/carrier/src/api/http/mod.rs::activate_carrier: scoped  # tenant authority only (CarrierAuthority::allows_lifecycle); a partner cannot self-activate
+services/carrier/src/api/http/mod.rs::breach_reasons: scoped  # load_readable_carrier: own carrier only
+services/carrier/src/api/http/mod.rs::create_listing: scoped  # listing is created under the caller's own carrier
+services/carrier/src/api/http/mod.rs::delete_listing: scoped  # only the caller's own carrier's listings
+services/carrier/src/api/http/mod.rs::generate_api_key: scoped  # CarrierAuthority: own carrier only, tenant-wide only for operators
+services/carrier/src/api/http/mod.rs::get_carrier: scoped  # load_readable_carrier: own carrier only
+services/carrier/src/api/http/mod.rs::get_my_carrier: scoped  # resolves the caller's own carrier by contact email
+services/carrier/src/api/http/mod.rs::list_bookings: scoped  # the caller's own carrier's bookings
+services/carrier/src/api/http/mod.rs::list_carriers: scoped  # a partner lists only its own carrier; operators list the tenant (CarrierAuthority)
+services/carrier/src/api/http/mod.rs::list_listings: scoped  # the caller's own carrier's listings
+services/carrier/src/api/http/mod.rs::load_readable_carrier: scoped  # the own-carrier read check itself
+services/carrier/src/api/http/mod.rs::load_writable_carrier: scoped  # the own-carrier write check itself
+services/carrier/src/api/http/mod.rs::own_carrier_id: scoped  # resolves the caller's own carrier
+services/carrier/src/api/http/mod.rs::rate_shop: not_sensitive  # price quotes by service and weight, no shipment or customer data; partners use it, but it shows competitors' prices, so a product decision is owed
+services/carrier/src/api/http/mod.rs::record_pickup: scoped  # the caller's own carrier's bookings only
+services/carrier/src/api/http/mod.rs::reject_booking: scoped  # the caller's own carrier's bookings only
+services/carrier/src/api/http/mod.rs::sla_history: scoped  # load_readable_carrier: own carrier only
+services/carrier/src/api/http/mod.rs::sla_summary: scoped  # load_readable_carrier: own carrier only
+services/carrier/src/api/http/mod.rs::suspend_carrier: scoped  # tenant authority only (CarrierAuthority::allows_lifecycle)
+services/carrier/src/api/http/mod.rs::update_carrier: scoped  # CarrierAuthority: own carrier only, no compliance override for a partner
+services/carrier/src/api/http/mod.rs::update_listing: scoped  # only the caller's own carrier's listings
+services/carrier/src/api/http/mod.rs::upload_compliance_document: scoped  # load_writable_carrier: own carrier only
+
+# ── delivery-experience: tenant-wide tracking ────────────────────────────────
+services/delivery-experience/src/api/http/mod.rs::get_by_shipment_id: denied  # tracking carries the driver's phone and position; owner-scoped for merchants, so partners are refused
+services/delivery-experience/src/api/http/mod.rs::list_shipments: denied  # every shipment's tracking in the tenant
+
+# ── dispatch: the queue, roster and routes are tenant operations ─────────────
+services/dispatch/src/api/http/queue.rs::list_drivers: denied  # the tenant-wide driver roster; a partner lists its own riders from driver-ops
+services/dispatch/src/api/http/queue.rs::list_queue: denied  # every pending parcel and its recipient
+services/dispatch/src/api/http/routes.rs::get_route: denied  # a route's stops carry recipient addresses
+services/dispatch/src/api/http/routes.rs::list_routes: denied  # every route and stop in the tenant
+
+# ── driver-ops: a partner's own riders and manifest ──────────────────────────
+services/driver-ops/src/api/http/drivers.rs::list_drivers: scoped  # roster_scope: a bound token lists only its partner's riders
+services/driver-ops/src/api/http/tasks.rs::list_manifest: scoped  # manifest_scope: a bound token gets its own partner's manifest whatever carrier_id it passes
+
+# ── hub-ops: hub operations, not a partner's ─────────────────────────────────
+services/hub-ops/src/api/http/mod.rs::get_induction: denied  # hub parcel inductions
+services/hub-ops/src/bootstrap.rs::customs_queue_handler: denied  # customs queue across the hub
+services/hub-ops/src/bootstrap.rs::get_manifest_handler: denied  # hub transfer manifests
+services/hub-ops/src/bootstrap.rs::get_pallet_handler: denied  # hub pallets
+services/hub-ops/src/bootstrap.rs::get_plan: denied  # hub consolidation plans
+services/hub-ops/src/bootstrap.rs::list_containers_handler: denied  # hub containers
+services/hub-ops/src/bootstrap.rs::list_hub_plans: denied  # hub consolidation plans
+services/hub-ops/src/bootstrap.rs::list_inventory_handler: denied  # hub inventory
+services/hub-ops/src/bootstrap.rs::list_locations_handler: denied  # hub locations
+services/hub-ops/src/bootstrap.rs::list_routing_handler: denied  # hub routing configuration
+services/hub-ops/src/bootstrap.rs::list_scans_handler: denied  # scan history of any shipment in the tenant
+services/hub-ops/src/bootstrap.rs::manifest: denied  # hub manifest
+services/hub-ops/src/bootstrap.rs::shipment_by_awb_handler: denied  # resolves any tracking number in the tenant to its shipment
+
+# MCP tools: hub-ops' MCP module is not mounted by any router yet (nothing builds
+# an McpContext outside McpContext::from_claims), so these are unreachable today.
+# The guard is in anyway, so mounting it later cannot open the hub to a partner.
+services/hub-ops/src/mcp/tools/get_container_status.rs::handle: denied  # ctx.require_unscoped: a partner-bound caller is refused; MCP module not mounted yet
+services/hub-ops/src/mcp/tools/get_customs_queue.rs::handle: denied  # ctx.require_unscoped: customs queue across the hub; MCP module not mounted yet
+services/hub-ops/src/mcp/tools/get_hub_inventory.rs::handle: denied  # ctx.require_unscoped: hub inventory at any location; MCP module not mounted yet
+
+# ── driver-ops scoping helpers: the code that narrows the rest ──────────────
+services/driver-ops/src/api/http/partner_scope.rs::manifest_scope: scoped  # pins a bound token to its own partner's carrier filter
+services/driver-ops/src/api/http/partner_scope.rs::manifest_scope_when: scoped  # the manifest scoping rule itself (resolve_partner_access + carrier_filter)
+services/driver-ops/src/api/http/partner_scope.rs::roster_scope: scoped  # pins a bound token to its own partner's roster
+services/driver-ops/src/api/http/partner_scope.rs::roster_scope_when: scoped  # the roster scoping rule itself (resolve_partner_access + carrier_filter)
+
+# ── order-intake: shipments, scoped to the booker or the linked partner ──────
+services/order-intake/src/api/http/mod.rs::cancellation_preview: scoped  # get_for: tenant, booker, and linked partner
+services/order-intake/src/api/http/mod.rs::get_shipment: scoped  # get_for: tenant, booker, and linked partner
+services/order-intake/src/api/http/mod.rs::list_shipment_events: scoped  # get_for first: tenant, booker, and linked partner
+services/order-intake/src/api/http/mod.rs::list_shipments: scoped  # owner filter for merchants, link filter for partners
+
+# ── pod: evidence is recipient photos, signature and GPS ─────────────────────
+services/pod/src/api/http/pod.rs::get_pod: scoped  # a pid-bound caller reads only POD it captured itself (driver_id); else NotFound
+services/pod/src/api/http/pod.rs::get_pop: scoped  # a pid-bound caller reads only POP it captured itself (driver_id); else NotFound
+services/pod/src/api/http/pod.rs::list_pods: scoped  # a pid-bound caller sees only POD it captured itself; else empty
+services/pod/src/api/http/pod.rs::list_pops: scoped  # a pid-bound caller sees only POP it captured itself; else empty
+
+# ── payments: the tenant's own money ─────────────────────────────────────────
+services/payments/src/api/http/invoices.rs::list_invoices: denied  # the tenant's invoices
+services/payments/src/api/http/wallet.rs::get_cod_balance: denied  # tenant COD balance
+services/payments/src/api/http/wallet.rs::get_wallet: denied  # the tenant's wallet
+services/payments/src/api/http/wallet.rs::list_transactions: denied  # the tenant's wallet transactions
+services/payments/src/api/http/wallet.rs::list_withdrawal_requests: denied  # the tenant's withdrawal requests
+services/payments/src/api/http/wallet.rs::request_withdrawal: denied  # moves the tenant's money

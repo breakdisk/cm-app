@@ -63,6 +63,15 @@ pub const CONSOLIDATION_PLAN_LOADED:     &str = "logisticos.hub.consolidation.pl
 
 // Invoice / Billing
 pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
+/// An invoice crossed another day past its due date. Payload: `payloads::InvoiceOverdue`.
+/// Consumed by business-logic (`PaymentOverdue` trigger).
+pub const INVOICE_OVERDUE:            &str = "logisticos.payments.invoice.overdue";
+
+// Threshold signals (consumed by business-logic triggers)
+/// A hub's load changed. Payload: `payloads::HubLoadChanged`.
+pub const HUB_LOAD_CHANGED:           &str = "logisticos.hub.load.changed";
+/// A shipment missed an SLA. Payload: `payloads::ShipmentSlaBreached`.
+pub const SHIPMENT_SLA_BREACHED:      &str = "logisticos.order.shipment.sla_breached";
 
 // Dispatch
 pub const ROUTE_CREATED:             &str = "logisticos.dispatch.route.created";
@@ -78,6 +87,10 @@ pub const PICKUP_COMPLETED:          &str = "logisticos.driver.pickup.completed"
 pub const DELIVERY_ATTEMPTED:        &str = "logisticos.driver.delivery.attempted";
 pub const DELIVERY_COMPLETED:        &str = "logisticos.driver.delivery.completed";
 pub const DELIVERY_FAILED:           &str = "logisticos.driver.delivery.failed";
+/// A driver left an accepted job before the grace clock let them go for free.
+/// Published by driver-ops; dispatch re-queues the shipment without offering
+/// it back to that driver, delivery-experience clears them off the tracking.
+pub const JOB_DROPPED:               &str = "logisticos.driver.job.dropped";
 pub const LOCATION_UPDATED:          &str = "logisticos.driver.location.updated";
 pub const DRIVER_LOCATION_UPDATED:   &str = "logisticos.driver.location.updated";
 
@@ -125,6 +138,18 @@ pub const AGENT_ESCALATION_RESOLVED: &str = "logisticos.ai.escalation.resolved";
 // Inbound channel messages (customer → platform)
 pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbound";
 
+// Promotions
+/// A completed move lifted an account to a higher loyalty tier. Published by
+/// promotions; engagement pushes it to the customer.
+pub const TIER_CHANGED:              &str = "logisticos.promotions.tier.changed";
+
+// Whole-home moves
+/// Something about a customer's home move they should hear about now — a
+/// waitlisted window opening, a survey addendum to approve. `kind` names it,
+/// so a new notice is data, not a topic. Published by order-intake;
+/// engagement pushes it.
+pub const HOME_NOTICE:               &str = "logisticos.order.home.notice";
+
 // ── OmniDeliv (hyperlocal delivery product) ─────────────────────────────────
 //
 // Namespaced under `omnideliv.` rather than `logisticos.` because it is a
@@ -132,6 +157,17 @@ pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbo
 // way it consumes logistics events — a product's customers are still customers.
 pub const OMNIDELIV_ORDER_PLACED:    &str = "omnideliv.order.placed";
 pub const OMNIDELIV_ORDER_DELIVERED: &str = "omnideliv.order.delivered";
+
+// Vendor-facing, and keyed on `vendor_id` rather than `order_id` (ADR-0017).
+//
+// A stall needs its own work delivered in order, and one foodcourt order
+// produces one message per stall. Keying these on the order would put three
+// stalls' work on one partition and interleave it; widening `order.placed`
+// instead would put two recipients with different authorization rules on one
+// message.
+pub const OMNIDELIV_VENDOR_LEG_RECEIVED: &str = "omnideliv.vendor.leg.received";
+pub const OMNIDELIV_VENDOR_LEG_ACCEPTED: &str = "omnideliv.vendor.leg.accepted";
+pub const OMNIDELIV_VENDOR_LEG_REJECTED: &str = "omnideliv.vendor.leg.rejected";
 
 #[cfg(test)]
 mod tests {
@@ -148,6 +184,25 @@ mod tests {
         assert_eq!(HUB_DISPATCH_REQUESTED,        "logisticos.hub.shipment.dispatch_requested");
         assert_eq!(HUB_CARRIER_BOOKING_REQUESTED, "logisticos.hub.shipment.carrier_booking_requested");
         assert_eq!(CONSOLIDATION_PLAN_LOADED,     "logisticos.hub.consolidation.plan_loaded");
+    }
+
+    /// OmniDeliv topics are deliberately outside the `logisticos.` namespace
+    /// asserted below — it is a product tier, not the platform (ADR-0009) — so
+    /// they get their own check rather than being left uncovered.
+    #[test]
+    fn omnideliv_topics_are_namespaced_to_the_product() {
+        let topics: &[&str] = &[
+            OMNIDELIV_ORDER_PLACED, OMNIDELIV_ORDER_DELIVERED,
+            OMNIDELIV_VENDOR_LEG_RECEIVED, OMNIDELIV_VENDOR_LEG_ACCEPTED,
+            OMNIDELIV_VENDOR_LEG_REJECTED,
+        ];
+        for t in topics {
+            assert!(t.starts_with("omnideliv."), "Topic '{t}' must start with omnideliv.");
+            assert!(
+                t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),
+                "Topic '{t}' has invalid chars",
+            );
+        }
     }
 
     #[test]
@@ -169,6 +224,7 @@ mod tests {
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
             DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
+            JOB_DROPPED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
             POD_CAPTURED, PICKUP_CAPTURED,
             INVOICE_GENERATED, PAYMENT_RECEIVED,
@@ -180,6 +236,9 @@ mod tests {
             RECEIPT_EMAIL_REQUESTED,
             SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED, AGENT_ESCALATION_RESOLVED,
             WHATSAPP_INBOUND,
+            TIER_CHANGED,
+            HOME_NOTICE,
+            INVOICE_OVERDUE, HUB_LOAD_CHANGED, SHIPMENT_SLA_BREACHED,
         ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),

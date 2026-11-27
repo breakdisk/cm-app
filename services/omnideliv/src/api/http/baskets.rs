@@ -177,6 +177,48 @@ async fn add_line(
         return Err((StatusCode::BAD_REQUEST, "qty must be at least 1".into()));
     }
 
+    // What makes a table order a VENUE order.
+    //
+    // `vendor_id` comes from the client, so without this a diner sitting in one
+    // restaurant could add items from a vendor across town — the QR would bind
+    // them to a table and to nothing else. The venue comes from the session row
+    // rather than the token, so a session that has since been ended or expired
+    // stops ordering even while its JWT still verifies.
+    if claims.table_session {
+        let session = st
+            .venues
+            .find_live_session(claims.tenant_id, claims.user_id, chrono::Utc::now())
+            .await
+            .map_err(|e| {
+                tracing::error!(err = %e, "table session lookup failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "could not add the item".into())
+            })?
+            .ok_or((
+                StatusCode::UNAUTHORIZED,
+                "This table session has ended. Scan the code again.".to_string(),
+            ))?;
+
+        let at_venue = st
+            .venues
+            .vendor_is_at_venue(claims.tenant_id, session.venue_id, req.vendor_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(err = %e, "venue vendor check failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "could not add the item".into())
+            })?;
+
+        if !at_venue {
+            tracing::warn!(
+                venue_id = %session.venue_id, vendor_id = %req.vendor_id,
+                "table session tried to order from a vendor outside its venue",
+            );
+            return Err((
+                StatusCode::FORBIDDEN,
+                "That item is not sold at this venue.".into(),
+            ));
+        }
+    }
+
     let basket = st
         .baskets
         .add_item(

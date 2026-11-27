@@ -289,6 +289,8 @@ pub async fn run() -> anyhow::Result<()> {
         .create()?;
 
     let cdp_url = std::env::var("CDP_URL").unwrap_or_else(|_| "http://cdp:8005".into());
+    let driver_ops_url = std::env::var("SERVICES__DRIVER_OPS_URL").unwrap_or_else(|_| "http://driver-ops:8006".into());
+    let idle_poll_secs = parse_idle_poll_secs(std::env::var("BUSINESS_LOGIC__IDLE_POLL_SECS").ok().as_deref());
     let executor = Arc::new(HttpActionExecutor {
         http:           reqwest::Client::new(),
         engagement_url: std::env::var("ENGAGEMENT_URL").unwrap_or_else(|_| "http://engagement:8010".into()),
@@ -318,6 +320,10 @@ pub async fn run() -> anyhow::Result<()> {
         "logisticos.payments.cod.collected",
         "logisticos.payments.payment.received",
         "logisticos.marketing.campaign.triggered",
+        // Threshold signals: HubCapacityExceeded, PaymentOverdue, SlaBreach.
+        "logisticos.hub.load.changed",
+        "logisticos.payments.invoice.overdue",
+        "logisticos.order.shipment.sla_breached",
     ])?;
 
     // HTTP server: health + rules CRUD API.
@@ -343,7 +349,8 @@ pub async fn run() -> anyhow::Result<()> {
             result?;
         }
         _ = run_consumer(Arc::clone(&consumer), Arc::clone(&rule_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&pg_repo), Arc::clone(&seg_checker)) => {}
-        _ = run_inactive_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, seg_checker, cdp_url) => {}
+        _ = run_inactive_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&seg_checker), cdp_url) => {}
+        _ = run_idle_driver_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, seg_checker, driver_ops_url, idle_poll_secs) => {}
     }
 
     Ok(())
@@ -359,38 +366,47 @@ async fn run_consumer(
     loop {
         match consumer.recv().await {
             Ok(msg) => {
-                let tenant_id = extract_tenant_id(&msg).unwrap_or(Uuid::nil());
+                let header_tenant = extract_tenant_id(&msg);
                 let topic = msg.topic().to_owned();
 
                 if let Some(payload) = msg.payload() {
                     if let Ok(json) = serde_json::from_slice::<Value>(payload) {
-                        let matching_rules = rules.rules_for_topic(tenant_id, &topic).await;
-                        let mut ctx = build_context(tenant_id, &topic, &json);
-                        enrich_segments(&mut ctx, &matching_rules, seg_checker.as_ref()).await;
+                        match decode_event(header_tenant, &json) {
+                            None => {
+                                // Never evaluate rules against a nil tenant: it would
+                                // match platform rules for a tenant we cannot name.
+                                tracing::warn!(topic = %topic, "Event has no determinable tenant — skipped");
+                            }
+                            Some((tenant_id, data)) => {
+                                let matching_rules = rules.rules_for_topic(tenant_id, &topic, &data).await;
+                                let mut ctx = build_context(tenant_id, &topic, &data);
+                                enrich_segments(&mut ctx, &matching_rules, seg_checker.as_ref()).await;
 
-                        for rule in &matching_rules {
-                            if rule.conditions_met(&ctx) {
-                                tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
+                                for rule in &matching_rules {
+                                    if rule.conditions_met(&ctx) {
+                                        tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
 
-                                let outcome = match execute_actions(rule, &ctx, executor.as_ref()).await {
-                                    Ok(()) => "success",
-                                    Err(e) => {
-                                        tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
-                                        "error"
+                                        let (outcome, actions_log) = match execute_actions(rule, &ctx, executor.as_ref()).await {
+                                            Ok(report) => (report.outcome(), report.logged_actions()),
+                                            Err(e) => {
+                                                tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
+                                                ("error", rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>())
+                                            }
+                                        };
+
+                                        pg_repo.log_execution(
+                                            rule.id,
+                                            ctx.tenant_id,
+                                            &topic,
+                                            ctx.shipment_id,
+                                            true,
+                                            &actions_log,
+                                            outcome,
+                                            None,
+                                            chrono::Utc::now(),
+                                        ).await.ok();
                                     }
-                                };
-
-                                pg_repo.log_execution(
-                                    rule.id,
-                                    ctx.tenant_id,
-                                    &topic,
-                                    ctx.shipment_id,
-                                    true,
-                                    &rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>(),
-                                    outcome,
-                                    None,
-                                    chrono::Utc::now(),
-                                ).await.ok();
+                                }
                             }
                         }
                     }
@@ -404,6 +420,29 @@ async fn run_consumer(
             }
         }
     }
+}
+
+/// Split a Kafka message body into `(tenant, business data)`.
+///
+/// Every `libs/events` publisher sends the envelope
+/// `{ id, source, event_type, time, tenant_id, data }` and sets no Kafka headers;
+/// a few producers send a flat object, optionally with a `tenant_id` header.
+/// - Envelope form (object `data` plus uuid-string `tenant_id`): tenant is the
+///   envelope's, data is `payload["data"]`.
+/// - Flat form: tenant is the header, else the payload's own `tenant_id`; data is
+///   the payload itself.
+/// - No tenant determinable: `None`.
+pub fn decode_event(headers_tenant: Option<Uuid>, payload: &Value) -> Option<(Uuid, Value)> {
+    let body_tenant = payload
+        .get("tenant_id")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<Uuid>().ok());
+
+    if let (Some(tenant), Some(data)) = (body_tenant, payload.get("data").filter(|d| d.is_object())) {
+        return Some((tenant, data.clone()));
+    }
+
+    headers_tenant.or(body_tenant).map(|tenant| (tenant, payload.clone()))
 }
 
 fn extract_tenant_id(msg: &rdkafka::message::BorrowedMessage<'_>) -> Option<Uuid> {
@@ -537,4 +576,389 @@ async fn check_inactive_customers(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// DriverIdleExceeded periodic poller
+//
+// Idle is the absence of events, so it is polled. Each tick asks driver-ops which
+// drivers crossed each rule's threshold since the previous tick (the crossing
+// window equals the poll interval), then runs the rule exactly like the Kafka
+// path, including the execution log.
+// ---------------------------------------------------------------------------
+
+const IDLE_TOPIC: &str = "logisticos.driver.idle_exceeded";
+const DEFAULT_IDLE_POLL_SECS: u64 = 60;
+
+/// `BUSINESS_LOGIC__IDLE_POLL_SECS`: default 60; 0 or unparsable falls back to 60.
+/// The value is also driver-ops' `window_secs` (accepts 30..=3600), so clamp it:
+/// a configured value must never turn every poll into a 400.
+fn parse_idle_poll_secs(raw: Option<&str>) -> u64 {
+    match raw {
+        None => DEFAULT_IDLE_POLL_SECS,
+        Some(v) => match v.trim().parse::<u64>() {
+            Ok(n) if n > 0 => n.clamp(30, 3600),
+            _ => {
+                tracing::warn!(value = v, "invalid BUSINESS_LOGIC__IDLE_POLL_SECS; using 60");
+                DEFAULT_IDLE_POLL_SECS
+            }
+        },
+    }
+}
+
+/// Longest span driver-ops accepts for `since`, less a safety margin so that
+/// clock skew and request latency never push a clamped watermark over its limit.
+const MAX_SINCE_AGE_SECS: i64 = 3600 - 60;
+
+type Watermarks = std::collections::HashMap<(Uuid, u32), chrono::DateTime<chrono::Utc>>;
+
+/// Poller state that lives across ticks.
+#[derive(Default)]
+struct IdlePollState {
+    warned_global: bool,
+    watermarks:    Watermarks,
+}
+
+/// How to tell driver-ops where the next poll starts.
+#[derive(Debug, PartialEq)]
+enum PollFrom {
+    /// No watermark yet (first poll after start): cover one poll interval back.
+    Window(u64),
+    /// Resume from the previous response as_of.
+    Since(chrono::DateTime<chrono::Utc>),
+}
+
+/// Choose the query for a group. A watermark older than the accepted span is
+/// clamped; the second value is the span of episodes that can no longer be covered.
+fn poll_from(
+    watermark: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+    poll_secs: u64,
+) -> (PollFrom, Option<chrono::Duration>) {
+    let Some(w) = watermark else { return (PollFrom::Window(poll_secs), None) };
+    let oldest = now - chrono::Duration::seconds(MAX_SINCE_AGE_SECS);
+    if w < oldest { (PollFrom::Since(oldest), Some(oldest - w)) } else { (PollFrom::Since(w), None) }
+}
+
+/// Drop watermarks for groups that no longer have an active rule.
+fn prune_watermarks(wm: &mut Watermarks, groups: &IdleGroups) {
+    wm.retain(|k, _| groups.contains_key(k));
+}
+
+/// Advance a group watermark after a successful driver-ops response. On a
+/// driver-ops error this is simply not called, so the next tick re-covers the gap.
+fn advance_watermark(wm: &mut Watermarks, key: (Uuid, u32), as_of: chrono::DateTime<chrono::Utc>) {
+    wm.insert(key, as_of);
+}
+
+type IdleGroups = std::collections::HashMap<(Uuid, u32), Vec<crate::domain::entities::rule::AutomationRule>>;
+
+/// Group active `DriverIdleExceeded` rules by (tenant, minutes). Returns the
+/// groups and how many global (nil-tenant) rules were skipped.
+fn group_idle_rules(rules: Vec<crate::domain::entities::rule::AutomationRule>) -> (IdleGroups, usize) {
+    use crate::domain::entities::rule::RuleTrigger;
+    let mut groups = IdleGroups::new();
+    let mut skipped = 0;
+    for rule in rules.into_iter().filter(|r| r.is_active) {
+        if let RuleTrigger::DriverIdleExceeded { minutes } = &rule.trigger {
+            if rule.tenant_id == Uuid::nil() {
+                skipped += 1;
+                continue;
+            }
+            groups.entry((rule.tenant_id, *minutes)).or_default().push(rule);
+        }
+    }
+    (groups, skipped)
+}
+
+async fn run_idle_driver_checker(
+    pg_repo:        Arc<PgRuleRepository>,
+    executor:       Arc<dyn ActionExecutor>,
+    seg_checker:    Arc<dyn SegmentChecker>,
+    driver_ops_url: String,
+    poll_secs:      u64,
+) {
+    use tokio::time::{interval, Duration};
+    let mut ticker = interval(Duration::from_secs(poll_secs));
+    // After a stall, run one poll late and carry on; Burst would fire a catch-up
+    // flurry of back-to-back polls.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    // In memory only: a business-logic restart loses it, so episodes that cross
+    // the threshold while this service is down can be missed (the first poll
+    // after start covers only one poll interval back).
+    let mut state = IdlePollState::default();
+    loop {
+        ticker.tick().await;
+        if let Err(e) = check_idle_drivers(
+            pg_repo.as_ref(), executor.as_ref(), seg_checker.as_ref(), &http, &driver_ops_url,
+            poll_secs, &mut state,
+        ).await {
+            tracing::warn!(err = %e, "DriverIdleExceeded checker: cycle error");
+        }
+    }
+}
+
+async fn check_idle_drivers(
+    pg_repo:        &PgRuleRepository,
+    executor:       &dyn ActionExecutor,
+    seg_checker:    &dyn SegmentChecker,
+    http:           &reqwest::Client,
+    driver_ops_url: &str,
+    poll_secs:      u64,
+    state:          &mut IdlePollState,
+) -> anyhow::Result<()> {
+    let (groups, skipped) = group_idle_rules(pg_repo.load_all().await?);
+    if skipped > 0 && !state.warned_global {
+        state.warned_global = true;
+        tracing::info!(skipped, "global (nil-tenant) DriverIdleExceeded rules are not supported; skipping");
+    }
+
+    prune_watermarks(&mut state.watermarks, &groups);
+
+    for ((tenant_id, minutes), rules) in &groups {
+        let key = (*tenant_id, *minutes);
+        let (from, dropped) = poll_from(state.watermarks.get(&key).copied(), chrono::Utc::now(), poll_secs);
+        if let Some(span) = dropped {
+            tracing::warn!(%tenant_id, minutes, dropped_secs = span.num_seconds(),
+                "idle watermark older than the accepted span; episodes in the dropped span are lost");
+        }
+        let mut query = vec![
+            ("tenant_id", tenant_id.to_string()),
+            ("idle_minutes", minutes.to_string()),
+        ];
+        match from {
+            PollFrom::Window(secs) => query.push(("window_secs", secs.to_string())),
+            PollFrom::Since(s) => query.push((
+                "since",
+                s.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            )),
+        }
+        let resp = http
+            .get(format!("{}/v1/internal/drivers/idle", driver_ops_url))
+            .query(&query)
+            .send()
+            .await;
+        let (drivers, as_of): (Vec<Value>, chrono::DateTime<chrono::Utc>) = match resp {
+            Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+                Ok(v) => {
+                    let Some(as_of) = v["as_of"].as_str().and_then(|s| s.parse().ok()) else {
+                        tracing::warn!(minutes, %tenant_id, "driver-ops idle response has no as_of");
+                        continue;
+                    };
+                    (v["data"].as_array().cloned().unwrap_or_default(), as_of)
+                }
+                Err(e) => {
+                    tracing::warn!(err = %e, minutes, %tenant_id, "driver-ops idle response unreadable");
+                    continue;
+                }
+            },
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), minutes, %tenant_id, "driver-ops idle query refused");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, minutes, %tenant_id, "driver-ops idle call failed");
+                continue;
+            }
+        };
+
+        // Advance on any successful response, even if actions below fail: those
+        // outcomes are recorded by log_execution and must not re-fire.
+        advance_watermark(&mut state.watermarks, key, as_of);
+
+        for d in drivers {
+            let payload = serde_json::json!({
+                "driver_id":    d["driver_id"],
+                "tenant_id":    tenant_id,
+                "idle_since":   d["idle_since"],
+                "idle_minutes": d["idle_minutes"],
+            });
+            let mut ctx = crate::application::services::build_context(*tenant_id, IDLE_TOPIC, &payload);
+            crate::application::services::enrich_segments(&mut ctx, rules, seg_checker).await;
+
+            for rule in rules {
+                if !rule.conditions_met(&ctx) { continue; }
+                tracing::info!(rule_id = %rule.id, driver_id = %d["driver_id"], "DriverIdleExceeded rule fired");
+                let (outcome, actions_log) = match crate::application::services::execute_actions(rule, &ctx, executor).await {
+                    Ok(report) => (report.outcome(), report.logged_actions()),
+                    Err(e) => {
+                        tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
+                        ("error", rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>())
+                    }
+                };
+                if let Err(e) = pg_repo.log_execution(
+                    rule.id,
+                    ctx.tenant_id,
+                    IDLE_TOPIC,
+                    ctx.shipment_id,
+                    true,
+                    &actions_log,
+                    outcome,
+                    None,
+                    chrono::Utc::now(),
+                ).await {
+                    tracing::warn!(rule_id = %rule.id, err = %e, "failed to log rule execution");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_event;
+    use super::{
+        advance_watermark, group_idle_rules, parse_idle_poll_secs, poll_from, prune_watermarks,
+        PollFrom, Watermarks, MAX_SINCE_AGE_SECS,
+    };
+    use chrono::{Duration, TimeZone, Utc};
+    use crate::domain::entities::rule::{AutomationRule, RuleTrigger};
+
+    fn rule(tenant: Uuid, trigger: RuleTrigger, active: bool) -> AutomationRule {
+        AutomationRule {
+            id: Uuid::new_v4(), tenant_id: tenant, name: "r".into(), description: String::new(),
+            is_active: active, trigger, conditions: vec![], actions: vec![], priority: 1,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn idle_rules_group_by_tenant_and_minutes() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let idle = |m| RuleTrigger::DriverIdleExceeded { minutes: m };
+        let (g, skipped) = group_idle_rules(vec![
+            rule(a, idle(30), true), rule(a, idle(30), true), rule(a, idle(45), true),
+            rule(b, idle(30), true),
+            rule(a, idle(30), false),
+            rule(a, RuleTrigger::DeliveryFailed, true),
+        ]);
+        assert_eq!(skipped, 0);
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[&(a, 30)].len(), 2);
+        assert_eq!(g[&(a, 45)].len(), 1);
+        assert_eq!(g[&(b, 30)].len(), 1);
+    }
+
+    #[test]
+    fn nil_tenant_idle_rules_are_skipped_and_counted() {
+        let t = Uuid::new_v4();
+        let idle = RuleTrigger::DriverIdleExceeded { minutes: 30 };
+        let (g, skipped) = group_idle_rules(vec![
+            rule(Uuid::nil(), idle.clone(), true), rule(Uuid::nil(), idle.clone(), true), rule(t, idle, true),
+        ]);
+        assert_eq!(skipped, 2);
+        assert_eq!(g.len(), 1);
+        assert!(g.contains_key(&(t, 30)));
+    }
+
+    #[test]
+    fn idle_poll_secs_defaults_and_rejects_bad_values() {
+        assert_eq!(parse_idle_poll_secs(None), 60);
+        assert_eq!(parse_idle_poll_secs(Some("0")), 60);
+        assert_eq!(parse_idle_poll_secs(Some("abc")), 60);
+        assert_eq!(parse_idle_poll_secs(Some("120")), 120);
+        assert_eq!(parse_idle_poll_secs(Some("10")), 30);
+        assert_eq!(parse_idle_poll_secs(Some("99999")), 3600);
+    }
+
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn envelope_form_uses_envelope_tenant_and_data() {
+        let tenant = Uuid::new_v4();
+        let shipment = Uuid::new_v4();
+        let payload = json!({
+            "id": Uuid::new_v4(), "source": "driver-ops", "event_type": "delivery.failed",
+            "time": "2026-11-25T00:00:00Z", "tenant_id": tenant,
+            "data": {"shipment_id": shipment}
+        });
+        // The header, if any, never overrides the envelope.
+        let (t, data) = decode_event(Some(Uuid::new_v4()), &payload).expect("decodes");
+        assert_eq!(t, tenant);
+        assert_eq!(data, json!({"shipment_id": shipment}));
+    }
+
+    #[test]
+    fn flat_form_uses_header_tenant() {
+        let tenant = Uuid::new_v4();
+        let payload = json!({"shipment_id": "x"});
+        let (t, data) = decode_event(Some(tenant), &payload).expect("decodes");
+        assert_eq!(t, tenant);
+        assert_eq!(data, payload);
+    }
+
+    #[test]
+    fn flat_form_falls_back_to_body_tenant() {
+        let tenant = Uuid::new_v4();
+        let payload = json!({"tenant_id": tenant, "campaign_id": "c"});
+        let (t, data) = decode_event(None, &payload).expect("decodes");
+        assert_eq!(t, tenant);
+        assert_eq!(data, payload);
+    }
+
+    #[test]
+    fn no_tenant_is_none() {
+        assert!(decode_event(None, &json!({"shipment_id": "x"})).is_none());
+        assert!(decode_event(None, &json!({"tenant_id": "not-a-uuid", "data": {}})).is_none());
+    }
+
+    #[test]
+    fn first_poll_uses_window_secs() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
+        assert_eq!(poll_from(None, now, 60), (PollFrom::Window(60), None));
+    }
+
+    #[test]
+    fn watermark_is_sent_as_since_and_advances_on_success() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
+        let key = (Uuid::new_v4(), 30);
+        let mut wm = Watermarks::new();
+        let as_of_1 = now - Duration::seconds(300);
+        advance_watermark(&mut wm, key, as_of_1);
+        assert_eq!(poll_from(wm.get(&key).copied(), now, 60), (PollFrom::Since(as_of_1), None));
+        advance_watermark(&mut wm, key, now);
+        assert_eq!(wm[&key], now);
+    }
+
+    #[test]
+    fn watermark_is_retained_when_driver_ops_errors() {
+        // The error path never calls advance_watermark; the next tick re-sends the same since.
+        let now = Utc.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
+        let key = (Uuid::new_v4(), 30);
+        let mut wm = Watermarks::new();
+        let w = now - Duration::seconds(120);
+        advance_watermark(&mut wm, key, w);
+        let later = now + Duration::seconds(60);
+        assert_eq!(poll_from(wm.get(&key).copied(), later, 60).0, PollFrom::Since(w));
+    }
+
+    #[test]
+    fn stale_watermark_is_clamped_and_reports_dropped_span() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
+        let w = now - Duration::seconds(7200);
+        let (from, dropped) = poll_from(Some(w), now, 60);
+        let oldest = now - Duration::seconds(MAX_SINCE_AGE_SECS);
+        assert_eq!(from, PollFrom::Since(oldest));
+        assert_eq!(dropped, Some(oldest - w));
+    }
+
+    #[test]
+    fn watermarks_for_vanished_groups_are_dropped() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let idle = |m| RuleTrigger::DriverIdleExceeded { minutes: m };
+        let (groups, _) = group_idle_rules(vec![rule(a, idle(30), true)]);
+        let mut wm = Watermarks::new();
+        let t = Utc.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
+        advance_watermark(&mut wm, (a, 30), t);
+        advance_watermark(&mut wm, (b, 30), t);
+        advance_watermark(&mut wm, (a, 45), t);
+        prune_watermarks(&mut wm, &groups);
+        assert_eq!(wm.keys().copied().collect::<Vec<_>>(), vec![(a, 30)]);
+    }
 }

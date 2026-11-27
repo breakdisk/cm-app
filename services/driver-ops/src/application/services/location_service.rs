@@ -1,14 +1,16 @@
 use std::sync::Arc;
+use chrono::Utc;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::{Coordinates, DriverId, TenantId};
 use logisticos_events::{producer::KafkaProducer, topics, envelope::Event, payloads::DriverAvailable};
+use uuid::Uuid;
 
 use crate::{
     application::commands::UpdateLocationCommand,
     domain::{
-        entities::{Driver, DriverLocation, DriverStatus, DriverType},
+        entities::{hos_clock, Driver, DriverLocation, DriverStatus, DriverType, HosClock, HosPolicy},
         events::DriverLocationUpdated,
-        repositories::{DriverRepository, LocationRepository},
+        repositories::{DriverRepository, DutySessionRepository, LocationRepository},
         value_objects::STALE_LOCATION_THRESHOLD_MINUTES,
     },
 };
@@ -17,6 +19,8 @@ pub struct LocationService {
     driver_repo: Arc<dyn DriverRepository>,
     location_repo: Arc<dyn LocationRepository>,
     kafka: Arc<KafkaProducer>,
+    duty_repo: Arc<dyn DutySessionRepository>,
+    hos_policy: HosPolicy,
 }
 
 impl LocationService {
@@ -24,8 +28,10 @@ impl LocationService {
         driver_repo: Arc<dyn DriverRepository>,
         location_repo: Arc<dyn LocationRepository>,
         kafka: Arc<KafkaProducer>,
+        duty_repo: Arc<dyn DutySessionRepository>,
+        hos_policy: HosPolicy,
     ) -> Self {
-        Self { driver_repo, location_repo, kafka }
+        Self { driver_repo, location_repo, kafka, duty_repo, hos_policy }
     }
 
     pub async fn update_location(
@@ -107,6 +113,9 @@ impl LocationService {
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         tracing::info!(driver_id = %driver_id, is_active = driver.is_active, "Driver went online");
 
+        // Hours of service: open a duty session unless one is already open.
+        self.open_duty(tenant_id.inner(), driver_id.inner()).await;
+
         // Notify dispatch to retry any pending queue items for this tenant.
         let event = Event::new("driver-ops", "driver.available", tenant_id.inner(), DriverAvailable {
             driver_id:    driver_id.inner(),
@@ -135,7 +144,33 @@ impl LocationService {
         driver.go_offline();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         tracing::info!(driver_id = %driver_id, "Driver went offline");
+
+        self.close_duty(driver.tenant_id.inner(), driver_id.inner()).await;
         Ok(())
+    }
+
+    /// The driver's hours-of-service clock over the policy's rolling window.
+    pub async fn hours_of_service(&self, driver_id: &DriverId, tenant_id: &TenantId) -> AppResult<HosClock> {
+        let now = Utc::now();
+        let sessions = self.duty_repo
+            .list_overlapping(tenant_id.inner(), driver_id.inner(), now - self.hos_policy.window())
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(hos_clock(&sessions, self.hos_policy, now))
+    }
+
+    // The clock is display-only, so a failed duty write is logged and never
+    // stops a driver going on or off duty.
+    async fn open_duty(&self, tenant_id: Uuid, driver_id: Uuid) {
+        if let Err(e) = self.duty_repo.open(tenant_id, driver_id, Utc::now()).await {
+            tracing::warn!(driver_id = %driver_id, err = %e, "Failed to open duty session (non-fatal)");
+        }
+    }
+
+    async fn close_duty(&self, tenant_id: Uuid, driver_id: Uuid) {
+        if let Err(e) = self.duty_repo.close_open(tenant_id, driver_id, Utc::now()).await {
+            tracing::warn!(driver_id = %driver_id, err = %e, "Failed to close duty session (non-fatal)");
+        }
     }
 
     /// Returns the driver row, creating a minimal stub on first login if one doesn't exist yet.

@@ -47,9 +47,9 @@ data class PodUiState(
     val isVerifyingOtp: Boolean = false,
     /** Inline OTP-specific error (send failure, wrong code, expired). */
     val otpError: String? = null,
-    /** Non-null when the backend returned the OTP code directly (no SMS / dev mode).
-     *  Displayed on-screen so the driver can see the code and auto-verification proceeds. */
-    val dummyOtpCode: String? = null,
+    /** True when the recipient already holds a live PIN — from their booking or an
+     *  earlier text — so pod kept it rather than replacing it. */
+    val pinAlreadyIssued: Boolean = false,
     val codCollected: Boolean = false,
     /** Driver-entered partial collection amount as a display string (e.g. "450.50").
      *  Empty means the full codAmount was collected. Validated on submit. */
@@ -136,34 +136,34 @@ class PodViewModel @Inject constructor(
     fun dismissFailureSheet() { _uiState.update { it.copy(showFailureSheet = false) } }
 
     /**
-     * Calls POST /v1/otps/generate to send an OTP to the recipient.
-     * Sets otpSent=true on success so the entry field becomes visible.
+     * Asks pod to text the recipient a delivery PIN (POST /v1/otps/generate).
      *
-     * Dummy mode: when the backend returns `code` in the response (no real SMS
-     * adapter configured), the code is stored in [PodUiState.dummyOtpCode] and
-     * shown on-screen, and [confirmOtp] is called automatically so the driver
-     * can proceed without typing anything. This lets POD testing work without
-     * a live Twilio account.
+     * The recipient usually has one already — the customer app issues it at
+     * booking — so pod keeps a live PIN unless [reissue] is set, and says so;
+     * the driver then just asks for it. A reissue replaces the recipient's PIN,
+     * so it is a separate, explicit action ("Send a new PIN").
      *
-     * Idempotent — re-clicking "Resend" while a request is in-flight is a no-op.
+     * Never verifies on the driver's behalf. The old dummy mode auto-confirmed
+     * any code the server returned, which let a driver close a delivery with no
+     * recipient involved. pod no longer returns the code to a driver, and this
+     * no longer trusts it if it does.
+     *
+     * Idempotent — a tap while a request is in flight is a no-op.
      */
-    fun sendOtpToRecipient() {
+    fun sendOtpToRecipient(reissue: Boolean = false) {
         val state = _uiState.value
         if (state.isSendingOtp) return
         viewModelScope.launch {
             _uiState.update { it.copy(isSendingOtp = true, otpError = null) }
             runCatching {
-                repo.generateOtp(state.shipmentId, state.recipientPhone)
+                repo.generateOtp(state.shipmentId, state.recipientPhone, reissue)
             }.onSuccess { result ->
                 _uiState.update {
-                    it.copy(isSendingOtp = false, otpSent = true, dummyOtpCode = result.code)
+                    it.copy(isSendingOtp = false, otpSent = true, pinAlreadyIssued = result.alreadyActive)
                 }
-                // Dummy mode: backend returned the code directly — auto-verify so the
-                // driver doesn't need to manually enter a code that was never sent via SMS.
-                result.code?.let { confirmOtp(it) }
             }.onFailure { e ->
                 _uiState.update {
-                    it.copy(isSendingOtp = false, otpError = "Failed to send code: ${e.httpMessage()}")
+                    it.copy(isSendingOtp = false, otpError = "Couldn't send a PIN: ${e.httpMessage()}")
                 }
             }
         }
@@ -185,7 +185,8 @@ class PodViewModel @Inject constructor(
                 _uiState.update { it.copy(isVerifyingOtp = false, otpToken = code) }
             }.onFailure { e ->
                 _uiState.update {
-                    it.copy(isVerifyingOtp = false, otpError = "Invalid code — ${e.message}")
+                    // pod's own reason: wrong (with attempts left), locked, or none issued.
+                    it.copy(isVerifyingOtp = false, otpError = e.httpMessage())
                 }
             }
         }

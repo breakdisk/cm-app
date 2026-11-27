@@ -4,14 +4,17 @@
  * Uses glassmorphism with a lighter touch for consumer audience.
  */
 import type { Metadata } from "next";
-import { Inter, Space_Grotesk, JetBrains_Mono } from "next/font/google";
+import { Inter, Space_Grotesk, JetBrains_Mono, Noto_Sans_Arabic } from "next/font/google";
 import { BrandingBoot } from "@/components/BrandingBoot";
 import { BrandedNav, BrandedFooter } from "@/components/BrandedChrome";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 import "./globals.css";
 
 const geist   = Inter({ subsets: ["latin"], variable: "--font-sans" });
 const heading = Space_Grotesk({ subsets: ["latin"], variable: "--font-heading" });
 const mono    = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
+const arabic  = Noto_Sans_Arabic({ subsets: ["arabic"], variable: "--font-arabic" });
 
 export const metadata: Metadata = {
   title:       "Track Your Delivery — LogisticOS",
@@ -23,10 +26,13 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const locale = await getLocale();
+  const messages = await getMessages();
   return (
-    <html lang="en" className={`${geist.variable} ${heading.variable} ${mono.variable} dark`}>
+    <html lang={locale} dir={locale === "ar" ? "rtl" : "ltr"} className={`${geist.variable} ${heading.variable} ${mono.variable} ${arabic.variable} dark`}>
       <body className="bg-canvas font-sans text-white antialiased min-h-screen">
+        <NextIntlClientProvider locale={locale} messages={messages}>
         {/* Ambient radial glow */}
         <div
           aria-hidden
@@ -56,6 +62,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
           <BrandedFooter />
         </BrandingBoot>
+      </NextIntlClientProvider>
       </body>
     </html>
   );

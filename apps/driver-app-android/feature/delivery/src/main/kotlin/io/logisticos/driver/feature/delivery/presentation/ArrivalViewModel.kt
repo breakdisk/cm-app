@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
+import io.logisticos.driver.core.network.service.LeaveQuoteData
 import io.logisticos.driver.feature.delivery.data.DeliveryRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +20,8 @@ import javax.inject.Inject
 
 data class ArrivalUiState(
     val task: TaskEntity? = null,
+    /** Where the driver stands on leaving this stop, and the grace clock. */
+    val leave: LeaveQuoteData? = null,
     val isTransitioning: Boolean = false,
     val isSubmittingPod: Boolean = false,
     val podSubmitted: Boolean = false,
@@ -40,6 +43,17 @@ class ArrivalViewModel @Inject constructor(
                 .filterNotNull()
                 .first()
                 .let { task -> _uiState.update { it.copy(task = task) } }
+        }
+    }
+
+    /**
+     * Tell the server the driver is here. Safe to repeat: it starts the grace
+     * clock once, when the phone's fix is inside the stop's geofence, and the
+     * answer flips from drop to release when the clock runs out.
+     */
+    fun arrive(taskId: String) {
+        viewModelScope.launch {
+            repo.arriveAtStop(taskId)?.let { quote -> _uiState.update { it.copy(leave = quote) } }
         }
     }
 

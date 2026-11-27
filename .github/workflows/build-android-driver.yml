@@ -31,6 +31,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          # The action's default package list includes the legacy `tools`
+          # package, which the runner image's cmdline-tools 20.0 no longer
+          # carries (2026-09): sdkmanager exits 1 on "Failed to find package
+          # 'tools'" before any build step runs, with no code change. Gradle
+          # fetches the platforms it needs; platform-tools is all this needs.
+          packages: platform-tools
 
       - name: Cache Gradle
         uses: actions/cache@v5
@@ -120,6 +127,19 @@ jobs:
         with:
           name: driver-app-staging-debug-${{ github.run_number }}
           path: apps/driver-app-android/app/build/outputs/apk/staging/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # ── Move build: the mobile design's driver app, debug-signed for testing ──
+      - name: Build moveDebug APK
+        working-directory: apps/driver-app-android
+        run: ./gradlew assembleMoveDebug --no-daemon
+
+      - name: Upload moveDebug APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: driver-app-move-debug-${{ github.run_number }}
+          path: apps/driver-app-android/app/build/outputs/apk/move/debug/*.apk
           if-no-files-found: error
           retention-days: 30
 

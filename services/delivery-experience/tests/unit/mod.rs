@@ -800,3 +800,43 @@ mod status_event_ordering_tests {
         assert_eq!(record.status_history.len(), 6);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TrackingRecord::unassign_driver() — a driver dropped the job
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod unassign_driver_tests {
+    use super::*;
+
+    /// Nothing about the driver who left survives: not their name, their
+    /// number (which the masked call would ring) or their dot on the map.
+    #[test]
+    fn the_driver_who_left_is_cleared_and_the_shipment_waits_for_the_next() {
+        let mut record = make_record();
+        record.transition(TrackingStatus::Confirmed, "C".into(), None);
+        record.assign_driver(Uuid::new_v4(), "Driver".into(), "+63 917 000 0001".into(), None);
+        record.update_driver_position(14.6, 121.0);
+
+        record.unassign_driver();
+
+        assert_eq!(record.driver_id, None);
+        assert_eq!(record.driver_name, None);
+        assert_eq!(record.driver_phone, None);
+        assert!(record.driver_position.is_none());
+        assert_eq!(record.current_status, TrackingStatus::Confirmed);
+        assert_eq!(
+            record.status_history.last().map(|e| e.status.clone()),
+            Some(TrackingStatus::Confirmed),
+        );
+    }
+
+    /// A shipment that is already delivered or cancelled keeps its status.
+    #[test]
+    fn a_finished_shipment_keeps_its_status() {
+        let mut record = make_record();
+        record.transition(TrackingStatus::Cancelled, "X".into(), None);
+        record.unassign_driver();
+        assert_eq!(record.current_status, TrackingStatus::Cancelled);
+    }
+}

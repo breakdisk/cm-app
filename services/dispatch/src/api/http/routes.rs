@@ -15,6 +15,7 @@ pub async fn list_routes(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_VIEW);
+    logisticos_auth::partner::require_unscoped(&claims, "dispatch routes")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let routes = state.dispatch_service.list_routes(&tenant_id).await?;
     Ok(Json(serde_json::json!({ "data": routes })))
@@ -26,6 +27,7 @@ pub async fn get_route(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_VIEW);
+    logisticos_auth::partner::require_unscoped(&claims, "dispatch routes")?;
     let route_id = RouteId::from_uuid(id);
     let route = state.dispatch_service.get_route(&route_id).await?;
 

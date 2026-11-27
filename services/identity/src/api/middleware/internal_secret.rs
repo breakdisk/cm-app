@@ -46,8 +46,7 @@ pub async fn require_internal_secret(
 }
 
 fn unauthorized() -> Response {
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .body(Body::from(r#"{"error":{"code":"internal_secret_required"}}"#))
-        .unwrap()
+    let mut resp = Response::new(Body::from(r#"{"error":{"code":"internal_secret_required"}}"#));
+    *resp.status_mut() = StatusCode::UNAUTHORIZED;
+    resp
 }

@@ -19,7 +19,7 @@ pub trait InvoiceRepository: Send + Sync {
     /// only shows B2B billing state.
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Invoice>>;
     async fn save(&self, invoice: &Invoice) -> anyhow::Result<()>;
-    /// Returns the most recently issued (status = 'issued') ShipmentCharges invoice
+    /// Returns the most recently issued (status = 'issued' or 'overdue') ShipmentCharges invoice
     /// for a merchant. Used by the weight-discrepancy consumer to find which invoice
     /// to append the surcharge adjustment to.
     async fn find_latest_issued_for_merchant(
@@ -30,7 +30,7 @@ pub trait InvoiceRepository: Send + Sync {
 
     /// Returns all invoices that:
     ///   - Have their `shipment_id` in the provided list, AND
-    ///   - Are in `draft` or `issued` status (i.e., not yet paid/voided).
+    ///   - Are in `draft`, `issued` or `overdue` status (i.e., not yet paid/voided).
     ///
     /// Used by the billing clearance gate at container departure to identify
     /// per-shipment invoices that are still outstanding.
@@ -302,7 +302,11 @@ pub trait PaymentIntentRepository: Send + Sync {
     /// only ever touches `refund_requested_at`, unconditionally on status.
     /// Idempotent: does not overwrite an already-recorded timestamp, so a
     /// redelivered cancellation event doesn't reset the sweep's clock.
-    async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()>;
+    ///
+    /// `amount_cents` is what is owed: `None` for the whole capture, `Some` for
+    /// a partial refund. It is recorded with the timestamp and, like it, only
+    /// the first obligation counts, so the sweep retries exactly that amount.
+    async fn mark_refund_requested(&self, id: Uuid, amount_cents: Option<i64>) -> anyhow::Result<()>;
 
     /// Atomically claims exclusive ownership of refunding this intent:
     /// `captured` -> `refunding` in one `UPDATE ... WHERE status =

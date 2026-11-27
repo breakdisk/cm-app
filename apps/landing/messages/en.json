@@ -1,0 +1,8 @@
+{
+  "common": {
+    "appTitle": "LogisticOS",
+    "loading": "Loading…",
+    "error": "Something went wrong.",
+    "retry": "Try again"
+  }
+}

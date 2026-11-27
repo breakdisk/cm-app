@@ -21,6 +21,7 @@ android {
 dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:common"))
+    implementation(project(":core:designsystem"))
     implementation(platform(libs.compose.bom))
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)

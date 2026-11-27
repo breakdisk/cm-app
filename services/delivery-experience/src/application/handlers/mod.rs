@@ -9,6 +9,7 @@
 ///   logisticos.pod.pickup.captured        → transition to PickedUp (POP submission — authoritative)
 ///   logisticos.driver.delivery.completed → mark_delivered
 ///   logisticos.driver.delivery.failed    → mark_failed
+///   logisticos.driver.job.dropped        → unassign the driver who left, back to Confirmed
 ///   logisticos.driver.location.updated   → update driver_position (no status transition)
 ///
 /// All events arrive wrapped in Event<T> (CloudEvents envelope):
@@ -37,7 +38,8 @@ use crate::domain::repositories::TrackingRepository;
 #[derive(Debug, Deserialize)]
 struct ShipmentCreated {
     shipment_id:         Uuid,
-    #[allow(dead_code)]
+    /// The booking user — order-intake stamps `merchant_id = claims.user_id`
+    /// for every caller. Becomes the tracking record's owner.
     merchant_id:         Uuid,
     origin_address:      String,
     destination_address: String,
@@ -142,6 +144,7 @@ pub async fn run_consumer(consumer: Arc<StreamConsumer>, repo: Arc<dyn TrackingR
             topics::PICKUP_CAPTURED,
             topics::DELIVERY_COMPLETED,
             topics::DELIVERY_FAILED,
+            topics::JOB_DROPPED,
             topics::LOCATION_UPDATED,
         ])
         .expect("Tracking consumer subscription failed");
@@ -210,7 +213,8 @@ async fn handle_message(
                 tracking_number,
                 evt.origin_address,
                 evt.destination_address,
-            );
+            )
+            .with_owner(evt.merchant_id);
             repo.save(&record).await?;
         }
 
@@ -237,6 +241,19 @@ async fn handle_message(
                 .and_then(|s| s.parse::<DateTime<Utc>>().ok());
             record.assign_driver(evt.driver_id, "Your driver".into(), "".into(), eta);
             repo.save(&record).await?;
+        }
+
+        topics::JOB_DROPPED => {
+            let evt: logisticos_events::payloads::JobDropped = serde_json::from_value(data)?;
+            for shipment_id in evt.shipment_ids {
+                let mut record = require_record(repo, shipment_id).await?;
+                // Only the driver who left. A redelivered or late event must
+                // not clear whoever has been assigned since.
+                if record.driver_id == Some(evt.driver_id) {
+                    record.unassign_driver();
+                    repo.save(&record).await?;
+                }
+            }
         }
 
         topics::PICKUP_COMPLETED => {

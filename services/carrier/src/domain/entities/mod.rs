@@ -328,6 +328,21 @@ impl SizeClass {
         }
     }
 
+    /// Human-readable vehicle name, for the consumer Review screen's base-fee
+    /// row ("Cargo van callout"). `as_str` is the wire value and stays stable;
+    /// this is display copy and may be localised later.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Motorcycle => "Motorcycle",
+            Self::Sedan      => "Sedan",
+            Self::Van        => "Cargo van",
+            Self::L300       => "L300",
+            Self::SixWheeler => "6-wheeler",
+            Self::TenWheeler => "10-wheeler",
+            Self::Trailer    => "Trailer",
+        }
+    }
+
     // Inherent `from_str` is total (unknown input maps to a variant); `FromStr` implies fallible.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
@@ -623,14 +638,9 @@ pub struct MarketplaceBooking {
 /// rather than a security one, because the carrier sees the pickup and dropoff
 /// labels and the resulting quote before accepting, and rejecting is free.
 pub fn quote_price_cents(listing: &VehicleListing, distance_km: f32, weight_kg: f32) -> i64 {
-    let distance = distance_km.max(0.0) as f64;
-    let weight   = weight_kg.max(0.0) as f64;
-    let per_km   = (listing.per_km_cents as f64 * distance).round() as i64;
-    let per_kg   = listing
-        .per_kg_cents
-        .map(|c| (c as f64 * weight).round() as i64)
-        .unwrap_or(0);
-    listing.base_price_cents.saturating_add(per_km).saturating_add(per_kg)
+    // Delegates so the marketplace booking path and the consumer quote path
+    // cannot drift. See quote_breakdown.rs for the arithmetic.
+    quote_breakdown_cents(listing, distance_km, weight_kg).total_cents
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -743,6 +753,23 @@ impl MarketplaceBooking {
         }
     }
 
+    /// A hold landed on a booking that had already been cancelled while its
+    /// checkout was open. The caller voids it at the provider first; this only
+    /// records that the intent exists and is released. Never moves a booking
+    /// whose payment is anything but `Pending`.
+    pub fn late_hold_voided(&mut self, intent_id: Uuid) -> Result<(), BookingPaymentError> {
+        match self.payment_status {
+            BookingPaymentStatus::Pending => {
+                self.payment_status = BookingPaymentStatus::Voided;
+                self.payment_intent_id = Some(intent_id);
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingPaymentStatus::Voided => Ok(()),
+            from => Err(BookingPaymentError::Illegal { from, to: BookingPaymentStatus::Voided }),
+        }
+    }
+
     /// Declined at the gateway, or the checkout session expired unused.
     /// Reachable from `Pending` as well as `Authorized` -- a decline happens
     /// before any hold exists.
@@ -814,6 +841,18 @@ impl MarketplaceBooking {
         Ok(())
     }
 
+    /// The merchant withdrew a booking the carrier has not answered yet.
+    /// Distinct from `expire` (nobody answered) and `reject` (the carrier said
+    /// no) so the audit trail and the log say who ended it.
+    pub fn cancel_by_consumer(&mut self) -> anyhow::Result<()> {
+        if self.status != BookingStatus::Pending {
+            anyhow::bail!("Only a pending booking can be cancelled by the merchant, current status: {}", self.status.as_str());
+        }
+        self.status = BookingStatus::Cancelled;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     pub fn accept(&mut self) -> anyhow::Result<()> {
         if self.status != BookingStatus::Pending {
             anyhow::bail!("Booking can only be accepted when pending, current status: {}", self.status.as_str());
@@ -844,3 +883,6 @@ impl MarketplaceBooking {
         Ok(())
     }
 }
+
+pub mod quote_breakdown;
+pub use quote_breakdown::{quote_breakdown_cents, QuoteBreakdown};

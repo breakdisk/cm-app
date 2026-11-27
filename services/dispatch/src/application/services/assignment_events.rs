@@ -12,6 +12,19 @@ use uuid::Uuid;
 use crate::domain::events::DriverAssigned;
 use crate::infrastructure::db::DispatchQueueRow;
 
+/// Whether a pickup leg is emitted: only when origin data exists.
+fn has_pickup_leg(queue_item: &DispatchQueueRow) -> bool {
+    !queue_item.origin_address_line1.is_empty() || queue_item.origin_lat.is_some()
+}
+
+/// Number of `TASK_ASSIGNED` legs emitted for this job: delivery, plus pickup
+/// when origin data exists. The assignment close waits for this many tasks, so
+/// it is recorded with the assignment itself (`save_with_expected_tasks`, or the
+/// claim transaction), never as a separate step after it.
+pub(crate) fn expected_leg_count(queue_item: &DispatchQueueRow) -> i32 {
+    if has_pickup_leg(queue_item) { 2 } else { 1 }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_assignment_events(
     kafka: &KafkaProducer,
@@ -22,13 +35,13 @@ pub(crate) async fn emit_assignment_events(
     route_id: Uuid,
     shipment_id: Uuid,
     payout_cents: Option<i64>,
+    driver_carrier_id: Option<Uuid>,
 ) -> anyhow::Result<()> {
     // One event per leg — driver-ops creates one DriverTask row per event,
     // sequenced pickup → delivery. Both share assignment_id (same job). The
     // pickup leg is only emitted when origin data exists — legacy shipments
     // without structured origin fall through to a single delivery task.
-    let has_origin = !queue_item.origin_address_line1.is_empty()
-        || queue_item.origin_lat.is_some();
+    let has_origin = has_pickup_leg(queue_item);
 
     let mut next_sequence: i32 = 1;
     if has_origin {
@@ -62,6 +75,7 @@ pub(crate) async fn emit_assignment_events(
             delivery_lat:         queue_item.dest_lat,
             delivery_lng:         queue_item.dest_lng,
             payout_cents,
+            driver_carrier_id,
         });
         kafka.publish_event(topics::TASK_ASSIGNED, &pickup_event).await?;
         next_sequence += 1;
@@ -97,6 +111,7 @@ pub(crate) async fn emit_assignment_events(
         delivery_lat:         queue_item.dest_lat,
         delivery_lng:         queue_item.dest_lng,
         payout_cents,
+        driver_carrier_id,
     });
     kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await?;
 

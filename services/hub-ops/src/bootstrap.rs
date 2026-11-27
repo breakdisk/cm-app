@@ -733,7 +733,7 @@ async fn check_billing_clearance(
 // POP status HTTP client
 // ---------------------------------------------------------------------------
 
-/// Calls pod service `GET /v1/internal/pop-status?shipment_ids=...`
+/// Calls pod service `GET /v1/internal/pop-status?tenant_id=...&shipment_ids=...`
 /// Returns (all_completed, shipment_ids_missing_pop).
 ///
 /// If the pod service returns 404 the `/v1/internal/pop-status` route does not
@@ -743,6 +743,7 @@ async fn check_billing_clearance(
 /// image is redeployed with the POP endpoints.
 async fn check_pop_status(
     pod_url:      &str,
+    tenant_id:    Uuid,
     shipment_ids: &[Uuid],
 ) -> anyhow::Result<(bool, Vec<Uuid>)> {
     if pod_url.is_empty() || shipment_ids.is_empty() {
@@ -755,7 +756,7 @@ async fn check_pop_status(
         .collect::<Vec<_>>()
         .join("&");
 
-    let url = format!("{pod_url}/v1/internal/pop-status?{qs}");
+    let url = format!("{pod_url}/v1/internal/pop-status?tenant_id={tenant_id}&{qs}");
 
     let resp = client.get(&url).send().await
         .map_err(|e| anyhow::anyhow!("Failed to call pod pop-status: {e}"))?;
@@ -1115,7 +1116,7 @@ async fn load_pallet_handler(
 
     if !s.pod_url.is_empty() && !shipment_ids.is_empty() {
         let (all_completed, missing_pop) =
-            check_pop_status(&s.pod_url, &shipment_ids).await
+            check_pop_status(&s.pod_url, claims.tenant_id, &shipment_ids).await
                 .map_err(AppError::internal)?;
 
         if !all_completed {
@@ -1200,7 +1201,7 @@ async fn load_loose_piece_handler(
 
     if !s.pod_url.is_empty() && !shipment_ids.is_empty() {
         let (all_completed, missing_pop) =
-            check_pop_status(&s.pod_url, &shipment_ids).await
+            check_pop_status(&s.pod_url, claims.tenant_id, &shipment_ids).await
                 .map_err(AppError::internal)?;
 
         if !all_completed {
@@ -1276,25 +1277,29 @@ async fn get_hub_by_id(State(s): State<AppState>, claims: AuthClaims, Path(id): 
 
 async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<InductParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.induct_parcel(cmd).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.induct_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(induction)))
 }
 
 async fn sort(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<SortParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.sort_parcel(cmd).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.sort_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }
 
 async fn dispatch(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<Uuid>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.dispatch_parcel(id).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.dispatch_parcel(&tenant_id, id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }
 
 async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): Path<Uuid>) -> impl IntoResponse {
     use logisticos_types::TenantId;
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let parcels = s.svc.hub_manifest(hub_id, &tenant_id).await?;
 
@@ -1443,6 +1448,7 @@ async fn get_pallet_handler(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let pallet = s.pallet_svc
         .find_pallet(logisticos_types::PalletId::from_uuid(id))
         .await?
@@ -1575,6 +1581,7 @@ async fn get_plan(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let plan = s.consolidation_svc.get_plan(id, claims.tenant_id).await
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::NotFound { resource: "plan", id: id.to_string() })?;
@@ -1587,6 +1594,7 @@ async fn list_hub_plans(
     Path(hub_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let plans = s.consolidation_svc.list_plans(hub_id, claims.tenant_id).await
         .map_err(AppError::internal)?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "plans": plans }))))
@@ -1930,6 +1938,7 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: otlp.as_deref(),
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
 
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
@@ -1950,7 +1959,6 @@ pub async fn run() -> anyhow::Result<()> {
     let spec_repo      = Arc::new(PgTruckSpecRepository { pool: pool.clone() });
     let plan_repo      = Arc::new(PgConsolidationPlanRepository { pool: pool.clone() });
     let hub_broadcaster = HubBroadcaster::new();
-    let svc = Arc::new(HubService::new(hub_repo, induction_repo));
     let consolidation_svc = Arc::new(ConsolidationService::new(
         spec_repo, plan_repo, hub_broadcaster.clone(),
     ));
@@ -1959,6 +1967,7 @@ pub async fn run() -> anyhow::Result<()> {
         KafkaProducer::new(&cfg.kafka.brokers)
             .context("failed to create Kafka producer for hub-ops")?,
     );
+    let svc = Arc::new(HubService::new(hub_repo, induction_repo).with_events(kafka.clone()));
     let pallet_repo    = Arc::new(PgPalletRepository::new(pool.clone()));
     let pallet_ctr_repo = Arc::new(PgPalletContainerRepository::new(pool.clone()));
     let pallet_svc     = Arc::new(PalletService::new(pallet_repo, pallet_ctr_repo.clone(), kafka.clone()));
@@ -2110,7 +2119,7 @@ async fn record_scan_handler(
     // POP-before-InboundReceive gate.
     if matches!(req.scan_type, ScanType::InboundReceive) && !s.pod_url.is_empty() {
         let (all_completed, missing_pop) =
-            check_pop_status(&s.pod_url, &[req.shipment_id]).await.map_err(AppError::internal)?;
+            check_pop_status(&s.pod_url, claims.tenant_id, &[req.shipment_id]).await.map_err(AppError::internal)?;
         if !all_completed {
             return Ok::<_, AppError>((
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -2153,6 +2162,7 @@ async fn list_scans_handler(
     Path(shipment_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let scans = s.hub_transfer_svc
         .list_scans(shipment_id, claims.tenant_id)
         .await?;
@@ -2172,6 +2182,9 @@ async fn shipment_by_awb_handler(
     Query(params): Query<AwbQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    // A hub-scanner tool that resolves any tracking number in the tenant. A
+    // token bound to a partner, a store rider's included, has no business here.
+    logisticos_auth::partner::require_unscoped(&claims, "shipment lookup by AWB")?;
 
     #[derive(sqlx::FromRow)]
     struct AwbRow {
@@ -2341,6 +2354,7 @@ async fn get_manifest_handler(
     Path(container_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     match s.hub_transfer_svc.get_manifest(container_id).await? {
         Some(m) => Ok::<_, AppError>((StatusCode::OK, Json(m))),
         None => Err(AppError::NotFound { resource: "manifest", id: container_id.to_string() }),
@@ -2353,6 +2367,7 @@ async fn customs_queue_handler(
     Path(hub_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let queue = s.hub_transfer_svc.list_customs_queue(hub_id, claims.tenant_id).await?;
     let count = queue.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
@@ -2405,6 +2420,7 @@ async fn list_locations_handler(
     Query(q): Query<HubScopedQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let locations = s.hub_transfer_svc.list_locations(q.hub_id, q.zone_id.as_deref()).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(locations)))
 }
@@ -2458,6 +2474,7 @@ async fn list_inventory_handler(
     Query(q): Query<InventoryLocationQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let items = s.hub_transfer_svc.list_inventory_at(q.location_id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(items)))
 }
@@ -2508,6 +2525,7 @@ async fn list_containers_handler(
     Query(q): Query<ListContainersQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let rows: Vec<ContainerSummaryRow> = sqlx::query_as(
         r#"SELECT id, transport_mode, origin_hub_id, destination_hub_id, status,
                   array_length(master_awbs, 1) AS awb_count,
@@ -2538,6 +2556,7 @@ async fn list_routing_handler(
     Query(q): Query<HubScopedQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let configs = s.hub_transfer_svc.list_routing_configs(q.hub_id, claims.tenant_id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(configs)))
 }
@@ -2581,4 +2600,26 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
+#[cfg(test)]
+mod partner_scope_source_tests {
+    /// The AWB lookup resolves any tracking number in the tenant to its shipment
+    /// id, and `shipments:read` is held by a store rider's plain driver role. It is
+    /// a hub-scanner tool, so a partner-bound token must be refused. This handler
+    /// needs a database to run, so the guard is checked in the source: removing the
+    /// call fails here.
+    #[test]
+    fn shipment_lookup_by_awb_refuses_partner_scoped_tokens() {
+        let src = include_str!("bootstrap.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production part");
+        let start = production
+            .find("async fn shipment_by_awb_handler(")
+            .expect("the handler exists");
+        let body = &production[start..(start + 900).min(production.len())];
+        assert!(
+            body.contains("require_unscoped("),
+            "shipment_by_awb_handler must call require_unscoped before reading"
+        );
+    }
 }

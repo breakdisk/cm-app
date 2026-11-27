@@ -5,8 +5,9 @@ use crate::domain::entities::{ProofOfDelivery, OtpCode, ProofOfPickup};
 
 #[async_trait]
 pub trait PodRepository: Send + Sync {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
+    /// Always tenant-scoped: another tenant's id reads as absent.
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
+    async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>>;
     async fn save(&self, pod: &ProofOfDelivery) -> anyhow::Result<()>;
 }
 
@@ -14,19 +15,26 @@ pub trait PodRepository: Send + Sync {
 pub trait OtpRepository: Send + Sync {
     async fn find_active_by_shipment(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<OtpCode>>;
     async fn save(&self, otp: &OtpCode) -> anyhow::Result<()>;
+    /// Atomically spends one attempt against the PIN before it is compared.
+    /// Returns the attempts used including this one, or `None` when the PIN is locked.
+    async fn claim_attempt(&self, id: Uuid, max_attempts: i32) -> anyhow::Result<Option<i32>>;
+    /// Hands back the attempt claimed by a correct PIN, so a legitimate check never counts.
+    async fn release_attempt(&self, id: Uuid) -> anyhow::Result<()>;
 }
 
 // ── Proof of Pickup ────────────────────────────────────────────────────────────
 
 #[async_trait]
 pub trait PickupRepository: Send + Sync {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
-    /// Returns the most recent POP (any status) for a shipment.
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
+    /// Always tenant-scoped: another tenant's id reads as absent.
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
+    /// Returns the most recent POP (any status) for a shipment, within the tenant.
+    async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
     /// Returns the completed (submitted) POP for a shipment, or None if pickup has
     /// not yet been captured. Used by the carrier/container assignment guard to block
     /// sea-container loading until the chain of custody is open.
-    async fn find_completed_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
+    /// Tenant-bound: another tenant's POP never satisfies this tenant's gate.
+    async fn find_completed_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
     /// Upsert — idempotent; uses `ON CONFLICT (id) DO UPDATE` for draft → submitted transitions.
     async fn save(&self, pop: &ProofOfPickup) -> anyhow::Result<()>;
 }
@@ -63,6 +71,7 @@ pub trait TelemetryRepository: Send + Sync {
     /// Query recent telemetry for a shipment, ordered by device_timestamp DESC.
     async fn list_for_shipment(
         &self,
+        tenant_id:   Uuid,
         shipment_id: Uuid,
         limit:       u32,
     ) -> anyhow::Result<Vec<TelemetryEntry>>;
@@ -82,11 +91,33 @@ pub struct ShipmentBillingContext {
     pub service_code:         String,
     /// Declared value in cents; `None` when the merchant booked without one.
     pub declared_value_cents: Option<i64>,
+    /// The recipient's phone, from the booking. The delivery PIN is sent here and
+    /// nowhere else -- a caller-supplied phone is what let a driver mint their
+    /// own PIN. `None` only against an order-intake predating the field.
+    pub customer_phone:       Option<String>,
 }
 
-/// Driven port — resolves a shipment's billing classification from order-intake.
-/// Implemented in `infrastructure/external/order_intake.rs`.
+/// order-intake said, explicitly, that the shipment is not this tenant's: it
+/// does not exist, or it belongs to another tenant (the two are deliberately
+/// indistinguishable). Carried inside the `anyhow::Error` of a failed lookup so
+/// callers can tell it from an outage, which is refused (503) rather than
+/// treated as a pass: ownership that cannot be verified writes nothing.
+#[derive(Debug)]
+pub struct ShipmentNotFound(pub Uuid);
+
+impl std::fmt::Display for ShipmentNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "shipment {} not found", self.0)
+    }
+}
+
+impl std::error::Error for ShipmentNotFound {}
+
+/// Driven port — resolves a shipment's billing classification from order-intake,
+/// for the caller's tenant. Implemented in `infrastructure/external/order_intake.rs`.
 #[async_trait]
 pub trait ShipmentBillingContextSource: Send + Sync {
-    async fn fetch(&self, shipment_id: Uuid) -> anyhow::Result<ShipmentBillingContext>;
+    /// A shipment that is missing, or belongs to a tenant other than `tenant_id`,
+    /// fails with [`ShipmentNotFound`]; every other failure is an outage.
+    async fn fetch(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<ShipmentBillingContext>;
 }

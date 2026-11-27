@@ -1,0 +1,8 @@
+{
+  "common": {
+    "appTitle": "LogisticOS",
+    "loading": "جارٍ التحميل…",
+    "error": "حدث خطأ ما.",
+    "retry": "حاول مرة أخرى"
+  }
+}

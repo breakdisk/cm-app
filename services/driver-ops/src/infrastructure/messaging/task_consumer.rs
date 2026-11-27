@@ -62,6 +62,12 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     let event: Event<TaskAssigned> = serde_json::from_slice(payload)?;
     let t = event.data;
 
+    // Cancelled before this arrived (another topic, another consumer group).
+    if super::shipment_cancelled_consumer::is_cancelled(pool, t.shipment_id).await? {
+        tracing::info!(task_id = %t.task_id, shipment_id = %t.shipment_id, "task consumer: shipment already cancelled — no task");
+        return Ok(());
+    }
+
     // Validate task_type — driver_ops.tasks.task_type has a CHECK constraint and
     // task_service::complete_task only branches on Pickup/Delivery. Anything
     // outside that set is a producer bug; reject early so we don't poison the row.
@@ -80,8 +86,8 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     // Ensure driver row exists before inserting the task.
     // TASK_ASSIGNED may arrive before the driver has ever logged in (driver_ops.drivers is
     // populated on first app login). This guard creates a stub row so the FK doesn't fail.
-    // ON CONFLICT (user_id): a driver registered via POST /v1/drivers may have a different
-    // primary id — we must not overwrite it, just skip if user_id already exists.
+    // ON CONFLICT (user_id): skip if the driver row already exists. Migration 0014
+    // enforces drivers.id = user_id, so this insert's id always matches.
     sqlx::query(
         r#"INSERT INTO driver_ops.drivers (id, user_id, tenant_id, first_name, last_name, phone, status)
            VALUES ($1, $1, $2, 'Driver', '', '', 'offline')
@@ -92,8 +98,8 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     .execute(pool)
     .await?;
 
-    // The task FK references drivers.id, not user_id. If a driver was registered via the API
-    // (id = random uuid ≠ user_id), we must use the actual drivers.id here.
+    // The task FK references drivers.id; migration 0014 guarantees it equals user_id.
+    // The lookup stays as an existence check on the driver row.
     let actual_driver_id: uuid::Uuid = sqlx::query_scalar(
         "SELECT id FROM driver_ops.drivers WHERE user_id = $1",
     )

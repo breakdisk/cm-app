@@ -14,8 +14,22 @@ pub struct CheckoutRequest {
     pub basket_id: Uuid,
     #[serde(default)]
     pub tip_cents: i64,
-    pub delivery_lat: f64,
-    pub delivery_lng: f64,
+    /// Where the courier is going.
+    ///
+    /// **Optional only because a diner has none.** A table session orders food
+    /// to the table it is sitting at; there is no address, and the scan
+    /// response does not carry the venue's coordinates for the client to echo
+    /// back. Requiring them would leave a web diner client sending a magic
+    /// `0,0` -- a real place, in the Gulf of Guinea, that something downstream
+    /// would eventually treat as one.
+    ///
+    /// Still REQUIRED for a delivery order, enforced below against the
+    /// principal rather than by serde, so an omitted field cannot silently
+    /// become `0.0` and dispatch a courier to the Atlantic.
+    #[serde(default)]
+    pub delivery_lat: Option<f64>,
+    #[serde(default)]
+    pub delivery_lng: Option<f64>,
     /// "Unit 12B, gate code 4417." Optional, and the only free text a client
     /// controls that a courier is asked to act on — bounded server-side.
     #[serde(default)]
@@ -53,14 +67,50 @@ async fn checkout(
         return Err((StatusCode::BAD_REQUEST, "tip cannot be negative".into()));
     }
 
+    // A client that ignores the flag on the scan response must not get a
+    // generic 500 from a gateway that was never going to answer. This is the
+    // one place that knows the difference between "payment failed" and
+    // "payment was never available here".
+    if req.payment_method == PaymentMethod::Online && !st.online_payment_enabled {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Online payment is not available here. Please pay on collection.".into(),
+        ));
+    }
+
+    // Dine-in has no destination; delivery must have one. Checked against the
+    // principal, never a default, so a delivery client that omits the fields
+    // gets a 400 instead of an order routed to (0, 0).
+    let (delivery_lat, delivery_lng) = if claims.table_session {
+        (req.delivery_lat.unwrap_or(0.0), req.delivery_lng.unwrap_or(0.0))
+    } else {
+        match (req.delivery_lat, req.delivery_lng) {
+            (Some(lat), Some(lng)) => (lat, lng),
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "delivery_lat and delivery_lng are required for a delivery order".into(),
+                ))
+            }
+        }
+    };
+
     // Tenant from the validated token, never from app state or the body. This
     // is the money path: a tenant the caller could influence would let one
     // tenant's checkout settle against another tenant's basket and vendors.
     let outcome = st
         .checkout
-        .place(claims.tenant_id, req.basket_id, req.tip_cents, req.delivery_lat, req.delivery_lng,
+        .place(claims.tenant_id, req.basket_id, req.tip_cents, delivery_lat, delivery_lng,
                &claims.email, claims.phone.as_deref(), req.delivery_note.as_deref(),
-               req.payment_method)
+               req.payment_method,
+               // Derived from the principal, never from the request body. A
+               // client-supplied fulfilment would let any caller declare their
+               // delivery order dine-in and skip the delivery fee.
+               if claims.table_session {
+                   crate::domain::entities::Fulfilment::DineIn
+               } else {
+                   crate::domain::entities::Fulfilment::Delivery
+               })
         .await
         .map_err(|e| match e {
             // A basket awaiting review is the client's cue to show Screen C,
@@ -98,6 +148,31 @@ async fn checkout(
     // the order.
     if let Err(e) = st.order_events.order_placed(&order).await {
         tracing::error!(err = %e, order_id = %order.id, "order.placed publish failed");
+    }
+
+    // Tell each store about its own leg — the thing that, before ADR-0017, never
+    // happened at all: a restaurant found out it had an order when a courier
+    // walked in.
+    //
+    // COD only. An `Online` order has an authorization hold and nothing more
+    // until the customer finishes the hosted checkout page, and a kitchen told
+    // to start cooking then would be cooking for an order that may never be
+    // paid. That branch publishes from the `payment.intent.authorized`
+    // consumer instead — the same place, and for the same reason, that the
+    // courier offer is deferred to.
+    if order.payment_method == PaymentMethod::Cod {
+        for leg in &order.legs {
+            if let Err(e) = st
+                .vendor_events
+                .leg_received(&crate::infrastructure::messaging::LegRef::of(leg))
+                .await
+            {
+                // The queue endpoint is the record, so a store still sees this
+                // order on its next read. Losing the nudge is not losing the work.
+                tracing::warn!(err = %e, order_id = %order.id, vendor_id = %leg.vendor_id,
+                    "vendor.leg.received publish failed — the queue is still correct");
+            }
+        }
     }
 
     Ok(Json(CheckoutResponse {

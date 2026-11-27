@@ -87,12 +87,20 @@ impl OrderPayments for OmniPaymentsClient {
         Ok(AuthorizedIntent { intent_id: resp.intent_id, checkout_url: resp.checkout_url })
     }
 
-    async fn capture(&self, intent_id: Uuid) -> anyhow::Result<()> {
+    async fn capture(&self, intent_id: Uuid, amount_cents: Option<i64>) -> anyhow::Result<()> {
         let url = format!(
             "{}/v1/internal/payments/intents/{intent_id}/capture",
             self.base_url.trim_end_matches('/'),
         );
-        let resp = self.http.post(&url).send().await?;
+        // A bodyless POST still means "take it all", so the delivery path's
+        // request is byte-identical to what it sent before partial capture
+        // existed.
+        let req = self.http.post(&url);
+        let req = match amount_cents {
+            Some(n) => req.json(&serde_json::json!({ "amount_cents": n })),
+            None => req,
+        };
+        let resp = req.send().await?;
 
         if let Err(e) = resp.error_for_status_ref() {
             let body_text = resp.text().await.unwrap_or_default();

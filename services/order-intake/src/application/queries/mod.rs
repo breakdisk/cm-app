@@ -3,11 +3,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use logisticos_auth::partner::PartnerAccess;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::ShipmentId;
 
 use crate::{
-    application::services::shipment_service::{ShipmentListFilter, ShipmentRepository},
+    application::services::shipment_service::{authorize_shipment, ShipmentListFilter, ShipmentRepository},
+    domain::value_objects::cancel_authority::{effective_merchant_filter, Actor, ActingAs},
     domain::entities::shipment::Shipment,
 };
 
@@ -55,6 +57,34 @@ impl ShipmentQueryService {
         Self { repo }
     }
 
+    /// A user-facing read. Tenant always enforced; merchants and customers see
+    /// only their own. `get_by_id` below stays for mesh-internal callers.
+    ///
+    /// A partner-scoped token additionally needs the shipment linked to its
+    /// partner. An unlinked shipment answers exactly like a missing one, so a
+    /// partner cannot probe which ids exist.
+    pub async fn get_for(
+        &self,
+        id: Uuid,
+        acting_as: &ActingAs,
+        partner: PartnerAccess,
+    ) -> AppResult<Shipment> {
+        let shipment = self.get_by_id(id).await?;
+        authorize_shipment(acting_as, &shipment)?;
+        if let PartnerAccess::Scoped(carrier_id) = partner {
+            let linked = self
+                .repo
+                .is_linked(shipment.tenant_id.inner(), id, carrier_id)
+                .await
+                .map_err(AppError::Internal)?;
+            if !linked {
+                return Err(AppError::NotFound { resource: "Shipment", id: id.to_string() });
+            }
+        }
+        Ok(shipment)
+    }
+
+    /// Unscoped. Only for `/v1/internal/*` callers, which Istio asserts.
     pub async fn get_by_id(&self, id: Uuid) -> AppResult<Shipment> {
         self.repo
             .find_by_id(&ShipmentId::from_uuid(id))
@@ -63,19 +93,26 @@ impl ShipmentQueryService {
             .ok_or_else(|| AppError::NotFound { resource: "Shipment", id: id.to_string() })
     }
 
+    /// A user-facing list. Tenant is always enforced, and an owner-scoped
+    /// caller sees only what they booked whatever `merchant_id` they pass.
     pub async fn list(
         &self,
-        tenant_id: Uuid,
+        actor: &Actor,
+        partner: PartnerAccess,
         q: ListShipmentsQuery,
     ) -> AppResult<(Vec<Shipment>, i64)> {
         let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
         let page     = q.page.unwrap_or(1).max(1);
         let filter = ShipmentListFilter {
-            tenant_id,
-            merchant_id: q.merchant_id,
+            tenant_id: actor.tenant_id,
+            merchant_id: effective_merchant_filter(actor, q.merchant_id),
             status: q.status,
             updated_from: None,
             updated_to:   None,
+            partner_id: match partner {
+                PartnerAccess::Scoped(carrier_id) => Some(carrier_id),
+                PartnerAccess::Unscoped => None,
+            },
             limit:  per_page,
             offset: (page - 1) * per_page,
         };
@@ -101,6 +138,8 @@ impl ShipmentQueryService {
                 status:       Some("delivered".into()),
                 updated_from: Some(q.from),
                 updated_to:   Some(q.to),
+                // Mesh-internal billing reads the merchant's whole period.
+                partner_id:   None,
                 limit:        CHUNK,
                 offset,
             };

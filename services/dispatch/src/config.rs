@@ -6,6 +6,17 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
+    #[serde(default)]
+    pub dispatch: DispatchConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DispatchConfig {
+    /// `DISPATCH__CLOSE_ASSIGNMENTS`. Writes `completed` assignments when work
+    /// ends. Keep false until every replica runs a build that reads
+    /// `completed` (an older image would read it as an active assignment).
+    #[serde(default)]
+    pub close_assignments: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]

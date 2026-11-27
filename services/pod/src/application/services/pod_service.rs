@@ -15,12 +15,16 @@ use crate::{
         events::{PodCaptured, PickupCaptured},
         repositories::{
             PodRepository, OtpRepository, PickupRepository, TelemetryRepository, TelemetryEntry,
-            ShipmentBillingContextSource,
+            ShipmentBillingContext, ShipmentBillingContextSource,
         },
         value_objects::{
             POD_GEOFENCE_METERS, OUT_OF_BOUNDS_HANDOVER_METERS,
             MAX_PHOTOS_PER_POD, MAX_PHOTO_SIZE_BYTES,
             is_allowed_content_type, generate_otp, hash_otp, verify_otp,
+            delivery_pin::{
+                attempts_left, delivered_via, issue_decision, pin_requirement, DeliveryPinPolicy, IssueDecision,
+                IssuedPin, live_pin_state, supersede_decision, PinRejection, SupersedeDecision, PinRequirement,
+            },
         },
     },
     infrastructure::external::storage::StorageAdapter,
@@ -43,6 +47,8 @@ pub struct PodService {
     /// at POP initiation. `None` when `ORDER_INTAKE_URL` is unset, in which case
     /// POP falls back to the client-supplied classification.
     shipment_ctx: Option<Arc<dyn ShipmentBillingContextSource>>,
+    /// Delivery PIN policy — required, lifetime, attempts. `DELIVERY_PIN__*`.
+    pin_policy:   DeliveryPinPolicy,
 }
 
 impl PodService {
@@ -57,8 +63,9 @@ impl PodService {
         sms:         Arc<dyn SmsAdapter>,
         kafka:       Arc<KafkaProducer>,
         shipment_ctx: Option<Arc<dyn ShipmentBillingContextSource>>,
+        pin_policy:  DeliveryPinPolicy,
     ) -> Self {
-        Self { pod_repo, otp_repo, pickup_repo, telemetry, pod_storage, pop_storage, sms, kafka, shipment_ctx }
+        Self { pod_repo, otp_repo, pickup_repo, telemetry, pod_storage, pop_storage, sms, kafka, shipment_ctx, pin_policy }
     }
 
     /// Step 1: Driver initiates POD capture at delivery location.
@@ -83,7 +90,10 @@ impl PodService {
         // by the old driver and the ownership check on submit would 403.
         // Instead we error out and let an operator delete the stale draft —
         // surfacing the inconsistency rather than silently overwriting it.
-        if let Some(existing) = self.pod_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::Internal)? {
+        // The booking decides whose shipment this is, never who wrote a row first.
+        self.verified_booking(tenant_id.inner(), cmd.shipment_id).await?;
+
+        if let Some(existing) = self.pod_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
                 return Ok(existing);
             }
@@ -144,8 +154,8 @@ impl PodService {
     }
 
     /// Step 2a: Attach recipient signature to the POD.
-    pub async fn attach_signature(&self, cmd: AttachSignatureCommand) -> AppResult<()> {
-        let mut pod = self.load_pod(cmd.pod_id).await?;
+    pub async fn attach_signature(&self, tenant_id: &TenantId, cmd: AttachSignatureCommand) -> AppResult<()> {
+        let mut pod = self.load_pod(tenant_id.inner(), cmd.pod_id).await?;
         self.assert_draft(&pod)?;
 
         // Basic size check — signature data shouldn't exceed 500KB (compressed SVG/PNG)
@@ -171,7 +181,7 @@ impl PodService {
             )));
         }
 
-        let pod = self.load_pod(pod_id).await?;
+        let pod = self.load_pod(tenant_id.inner(), pod_id).await?;
         self.assert_draft(&pod)?;
 
         if pod.photos.len() >= MAX_PHOTOS_PER_POD {
@@ -181,10 +191,8 @@ impl PodService {
         }
 
         let s3_key = format!(
-            "pod/{}/{}/{}/{}.{}",
-            tenant_id.inner(),
-            pod.shipment_id,
-            pod_id,
+            "{}{}.{}",
+            pod.upload_key_prefix(),
             Uuid::new_v4(),
             if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" }
         );
@@ -201,9 +209,35 @@ impl PodService {
         })
     }
 
+    /// A presigned PUT for a whole-home survey photo — condition evidence or
+    /// an access constraint. Keyed under the tenant and shipment, which is
+    /// what order-intake checks before it records the photo against the move.
+    pub async fn survey_upload_url(&self, tenant_id: &TenantId, shipment_id: Uuid, content_type: &str) -> AppResult<UploadUrlResponse> {
+        if !is_allowed_content_type(content_type) {
+            return Err(AppError::Validation("A survey photo is a JPEG, PNG or WebP".into()));
+        }
+        let s3_key = survey_key(tenant_id.inner(), shipment_id, content_type);
+        let presigned = self.pod_storage
+            .presign_upload(&s3_key, content_type, 900)
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(UploadUrlResponse { upload_url: presigned.url, s3_key, upload_headers: presigned.headers })
+    }
+
+    /// Viewable URLs for survey photos, an hour each. Only `survey/` keys:
+    /// this is not a way to read a POD's evidence.
+    pub async fn survey_media_urls(&self, keys: &[String]) -> AppResult<std::collections::HashMap<String, String>> {
+        let mut out = std::collections::HashMap::new();
+        for key in keys.iter().filter(|k| is_survey_key(k)).take(100) {
+            let url = self.pod_storage.presign_download(key, 3_600).await.map_err(AppError::Internal)?;
+            out.insert(key.clone(), url);
+        }
+        Ok(out)
+    }
+
     /// Step 2c: Register a completed photo upload (called after driver finishes S3 PUT).
-    pub async fn attach_photo(&self, cmd: AttachPhotoCommand) -> AppResult<()> {
-        let mut pod = self.load_pod(cmd.pod_id).await?;
+    pub async fn attach_photo(&self, tenant_id: &TenantId, cmd: AttachPhotoCommand) -> AppResult<()> {
+        let mut pod = self.load_pod(tenant_id.inner(), cmd.pod_id).await?;
         self.assert_draft(&pod)?;
 
         if cmd.size_bytes > MAX_PHOTO_SIZE_BYTES {
@@ -235,7 +269,7 @@ impl PodService {
         tenant_id: &TenantId,
         cmd: SubmitPodCommand,
     ) -> AppResult<Uuid> {
-        let mut pod = self.load_pod(cmd.pod_id).await?;
+        let mut pod = self.load_pod(tenant_id.inner(), cmd.pod_id).await?;
         self.assert_draft(&pod)?;
 
         // Validate driver owns this POD
@@ -243,26 +277,66 @@ impl PodService {
             return Err(AppError::Forbidden { resource: "POD".into() });
         }
 
-        // OTP verification — validate if code provided
-        if let Some(otp_code) = cmd.otp_code {
-            let otp = self.otp_repo
+        // Delivery PIN. Required unless DELIVERY_PIN__REQUIRED=false, and a PIN
+        // that is supplied is always checked. Every POD is a delivery, so there
+        // is no task type to exempt.
+        //
+        // A PIN is demanded only if it reached the recipient. Shipments booked
+        // outside the customer app, with no SMS provider, never got one; those
+        // deliveries are waived on photo evidence and tagged PIN_UNDELIVERED.
+        let supplied_code = cmd.otp_code.as_deref().map(str::trim).filter(|c| !c.is_empty());
+        let live_pin = if supplied_code.is_none() && self.pin_policy.required {
+            self.otp_repo
                 .find_active_by_shipment(pod.shipment_id, tenant_id.inner()).await
-                .map_err(AppError::Internal)?;
-
-            match otp {
-                None => return Err(AppError::BusinessRule("No active OTP found for this shipment".into())),
-                Some(mut otp_record) => {
-                    if !otp_record.is_valid() {
-                        return Err(AppError::BusinessRule("OTP has expired. Request a new one".into()));
-                    }
-                    if !verify_otp(&otp_code, &otp_record.code_hash) {
-                        return Err(AppError::BusinessRule("Invalid OTP code".into()));
-                    }
-                    pod.mark_otp_verified(otp_record.id);
-                    otp_record.mark_used();
-                    self.otp_repo.save(&otp_record).await.map_err(AppError::Internal)?;
-                }
+                .map_err(AppError::Internal)?
+                .filter(OtpCode::is_valid)
+                .map(|o| live_pin_state(o.delivered_via.as_deref()))
+        } else {
+            None
+        };
+        let mut pin_waived = false;
+        let pin = match (
+            pin_requirement(self.pin_policy.required, supplied_code.is_some(), live_pin),
+            supplied_code,
+        ) {
+            (PinRequirement::Check, Some(code)) => {
+                Some(self.check_delivery_pin(tenant_id.inner(), pod.shipment_id, code).await?)
             }
+            // Unreachable (Check means a code was supplied); refuse rather than skip.
+            (PinRequirement::Check, None) | (PinRequirement::RefuseMissing, _) => {
+                return Err(AppError::BusinessRule(PinRejection::Missing.message()));
+            }
+            (PinRequirement::RefuseNotIssued, _) => {
+                return Err(AppError::BusinessRule(PinRejection::NotIssued.message()));
+            }
+            (PinRequirement::Waive, _) => {
+                pod.waive_undelivered_pin().map_err(|e| AppError::BusinessRule(e.into()))?;
+                // attach_photo records a client-asserted key. The waiver rests on
+                // the photo, so the object must really be in the bucket.
+                let mut stored = false;
+                for key in pod.minted_photo_keys() {
+                    if self.pod_storage.object_exists(&key).await.map_err(AppError::Internal)? {
+                        stored = true;
+                        break;
+                    }
+                }
+                if !stored {
+                    return Err(AppError::BusinessRule(
+                        "The delivery photo has not finished uploading. Wait for the upload, then submit again.".into(),
+                    ));
+                }
+                pin_waived = true;
+                tracing::warn!(
+                    shipment_id = %pod.shipment_id,
+                    pod_id      = %pod.id,
+                    "Delivery PIN never reached the recipient — waived on photo evidence (PIN_UNDELIVERED)"
+                );
+                None
+            }
+            (PinRequirement::NotRequired, _) => None,
+        };
+        if let Some(otp) = &pin {
+            pod.mark_otp_verified(otp.id);
         }
 
         // Record COD collection
@@ -274,6 +348,35 @@ impl PodService {
         pod.submit().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         let pod_id = pod.id;
         self.pod_repo.save(&pod).await.map_err(AppError::Internal)?;
+
+        if pin_waived {
+            if let Err(e) = self.telemetry.append(TelemetryEntry {
+                tenant_id:        tenant_id.inner(),
+                shipment_id:      pod.shipment_id,
+                task_id:          Some(pod.task_id),
+                driver_id:        Some(driver_id.inner()),
+                event_type:       "POD_PIN_UNDELIVERED".into(),
+                device_timestamp: cmd.device_timestamp.unwrap_or(pod.captured_at),
+                server_timestamp: chrono::Utc::now(),
+                lat:              Some(pod.capture_lat),
+                lng:              Some(pod.capture_lng),
+                metadata:         serde_json::json!({ "pin_exception": crate::domain::entities::proof::PIN_UNDELIVERED, "photo_count": pod.photos.len() }),
+            }).await {
+                tracing::warn!(error = %e, pod_id = %pod_id, "Failed to append POD_PIN_UNDELIVERED telemetry — non-fatal");
+            }
+        }
+
+        // The PIN is burned only now. Burning it before the evidence check and the
+        // save meant a missing photo or a failed write consumed the recipient's
+        // PIN, and every retry was refused with no live PIN. The POD is already
+        // final here (assert_draft refuses a second submit), so a failure below
+        // leaves an unused PIN behind, never a stuck delivery.
+        if let Some(mut otp) = pin {
+            otp.mark_used();
+            if let Err(e) = self.otp_repo.save(&otp).await {
+                tracing::error!(error = %e, otp_id = %otp.id, "POD submitted but its delivery PIN was not marked used");
+            }
+        }
 
         // Publish POD captured event — payments service reconciles COD and
         // issues a payment receipt for customer-booked shipments.
@@ -359,8 +462,12 @@ impl PodService {
         tenant_id: &TenantId,
         cmd: InitiatePickupCommand,
     ) -> AppResult<ProofOfPickup> {
+        // Ownership first, and it is verified or refused: a POP written under the
+        // wrong tenant would publish PICKUP_CAPTURED and move that shipment.
+        let booking = self.verified_booking(tenant_id.inner(), cmd.shipment_id).await?;
+
         // Idempotency: return existing draft if this driver already started one.
-        if let Some(existing) = self.pickup_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::Internal)? {
+        if let Some(existing) = self.pickup_repo.find_by_shipment(tenant_id.inner(), cmd.shipment_id).await.map_err(AppError::Internal)? {
             if existing.driver_id == driver_id.inner() {
                 return Ok(existing);
             }
@@ -396,15 +503,10 @@ impl PodService {
         }
 
         // The handset is not authoritative for the billing track, nor for the
-        // amount that debits that same driver's ledger. Resolve both from the
-        // booking record before the POP is written.
-        let (service_code, declared_value_cents) = self
-            .resolve_billing_context(
-                cmd.shipment_id,
-                &cmd.service_code,
-                cmd.declared_value_cents,
-            )
-            .await;
+        // amount that debits that same driver's ledger: both come from the booking
+        // that just proved this shipment is the caller's.
+        let (service_code, declared_value_cents) =
+            billing_from_booking(&booking, cmd.shipment_id, &cmd.service_code);
 
         let pop = ProofOfPickup::new(
             tenant_id.inner(),
@@ -425,60 +527,58 @@ impl PodService {
         Ok(pop)
     }
 
-    /// Resolve the shipment's billing track and declared value from order-intake,
-    /// falling back to the device-supplied values when the lookup is unavailable.
+    /// The recipient's phone for a shipment, from the booking record.
     ///
-    /// Track A (Balikbayan) debits `declared_value_cents` to the driver's ledger at
-    /// pickup, so a wrong or missing value here is a financial control failure, not
-    /// a cosmetic one. It is still non-blocking: a driver standing at the merchant's
-    /// counter must never be stopped by a transient internal HTTP failure, so every
-    /// degraded path logs loudly rather than returning an error.
-    async fn resolve_billing_context(
-        &self,
-        shipment_id:                 Uuid,
-        client_service_code:         &str,
-        client_declared_value_cents: Option<i64>,
-    ) -> (String, Option<i64>) {
-        let Some(source) = self.shipment_ctx.as_ref() else {
-            tracing::warn!(
-                shipment_id = %shipment_id,
-                "ORDER_INTAKE_URL not configured — POP billing track taken from the \
-                 driver device. Track A ledger debits may be missed or misvalued."
-            );
-            return (client_service_code.to_string(), client_declared_value_cents);
-        };
+    /// Resolved through the same verified lookup as POD/POP initiate
+    /// (`verified_booking`): a foreign or missing shipment is NotFound, and an
+    /// unverifiable one is a 503. There is no caller-supplied fallback: that is
+    /// the hole this closes (a driver pointing the PIN at their own handset).
+    pub async fn recipient_phone_for_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<String> {
+        let ctx = self.verified_booking(tenant_id.inner(), shipment_id).await?;
 
-        match source.fetch(shipment_id).await {
-            Ok(ctx) => {
-                if !ctx.service_code.eq_ignore_ascii_case(client_service_code) {
-                    tracing::warn!(
-                        shipment_id  = %shipment_id,
-                        device_value = %client_service_code,
-                        booking_value = %ctx.service_code,
-                        "POP service_code from device disagrees with the booking — \
-                         using the booking value"
-                    );
-                }
-                if ctx.service_code.eq_ignore_ascii_case("balikbayan")
-                    && ctx.declared_value_cents.unwrap_or(0) <= 0
-                {
-                    tracing::warn!(
-                        shipment_id = %shipment_id,
-                        "Track A (Balikbayan) shipment carries no declared value on the \
-                         booking — the driver ledger debit will not fire for this pickup"
-                    );
-                }
-                (ctx.service_code, ctx.declared_value_cents)
-            }
+        ctx.customer_phone
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::BusinessRule(format!(
+                    "Shipment {shipment_id} has no recipient phone on the booking — \
+                     cannot send a delivery PIN"
+                ))
+            })
+    }
+
+    /// The booking of a shipment, for the caller's tenant, or a refusal. Ownership is
+    /// verified or refused, never assumed:
+    ///
+    /// - order-intake answers and the booking's tenant is the caller's: proceed;
+    /// - the shipment is missing or another tenant's (`ShipmentNotFound`): 404;
+    /// - anything else (outage, timeout, 5xx, malformed body, no `tenant_id`, or no
+    ///   order-intake configured): 503, retry later.
+    ///
+    /// A POD/POP written for another tenant's shipment is not inert: it publishes
+    /// events that move that shipment. The courier loses nothing by the 503: the
+    /// driver app queues POD/POP and retries with backoff, with `device_timestamp`
+    /// taken at capture.
+    async fn verified_booking(&self, tenant_id: Uuid, shipment_id: Uuid) -> AppResult<ShipmentBillingContext> {
+        let Some(source) = self.shipment_ctx.as_ref() else {
+            tracing::error!(shipment_id = %shipment_id, "SERVICES__ORDER_INTAKE_URL is not set — shipment ownership cannot be verified");
+            return Err(AppError::ServiceUnavailable(
+                "SERVICES__ORDER_INTAKE_URL is not set — shipment ownership cannot be verified, \
+                 so evidence cannot be opened. Retry later."
+                    .into(),
+            ));
+        };
+        match source.fetch(tenant_id, shipment_id).await {
+            Ok(ctx) => Ok(ctx),
             Err(e) => {
-                tracing::error!(
-                    error       = %e,
-                    shipment_id = %shipment_id,
-                    "Failed to resolve shipment billing context from order-intake — \
-                     falling back to device-supplied values. A Balikbayan pickup may \
-                     not debit the driver ledger."
-                );
-                (client_service_code.to_string(), client_declared_value_cents)
+                if let Some(refusal) = ownership_refusal(&e, shipment_id) {
+                    return Err(refusal);
+                }
+                tracing::warn!(error = %e, shipment_id = %shipment_id, "shipment ownership could not be verified with order-intake; refusing (503)");
+                Err(AppError::ServiceUnavailable(
+                    "Shipment ownership could not be verified (order-intake did not answer \
+                     usably). Nothing was recorded; retry the request."
+                        .into(),
+                ))
             }
         }
     }
@@ -492,7 +592,7 @@ impl PodService {
         cmd:       SubmitPickupCommand,
         tenant_code: String,
     ) -> AppResult<Uuid> {
-        let mut pop = self.pickup_repo.find_by_id(cmd.pop_id).await.map_err(AppError::Internal)?
+        let mut pop = self.pickup_repo.find_by_id(tenant_id.inner(), cmd.pop_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POP", id: cmd.pop_id.to_string() })?;
 
         if pop.driver_id != driver_id.inner() {
@@ -627,7 +727,7 @@ impl PodService {
             )));
         }
 
-        let pop = self.pickup_repo.find_by_id(pop_id).await.map_err(AppError::Internal)?
+        let pop = self.pickup_repo.find_by_id(tenant_id.inner(), pop_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POP", id: pop_id.to_string() })?;
 
         if pop.status == crate::domain::entities::PopStatus::Submitted {
@@ -659,86 +759,119 @@ impl PodService {
         })
     }
 
-    /// Generate and send OTP to recipient's phone for high-value deliveries.
-    /// Should be called by driver before arriving at address.
+    /// Issues the recipient's delivery PIN and texts it to them — or keeps the
+    /// live one.
     ///
-    /// Returns `(otp_id, code)`. The plaintext code is always included so the
-    /// driver app can display it as a fallback when no SMS arrives (e.g. staging
-    /// with no Twilio configured, or the recipient has no mobile signal).
-    /// The endpoint is already auth-gated to drivers so surfacing it here is safe.
+    /// The customer app issues it at booking; the driver app asks at the door
+    /// only when the recipient has none. A live PIN is kept unless
+    /// `cmd.reissue` is set, because replacing it kills the code already on the
+    /// recipient's booking screen or in their earlier text. See
+    /// `delivery_pin::issue_decision`.
+    ///
+    /// Whether the caller sees the code is the handler's decision; a driver never does.
     pub async fn generate_and_send_otp(
         &self,
         tenant_id: &TenantId,
         cmd: GenerateOtpCommand,
-    ) -> AppResult<(Uuid, String)> {
-        // Invalidate any previous OTP for this shipment by letting it expire (no delete needed —
-        // find_active_by_shipment filters by is_used=false AND expires_at > NOW())
-        let code = generate_otp();
-        let code_hash = hash_otp(&code);
-
-        let otp = OtpCode::new(
-            tenant_id.inner(),
-            cmd.shipment_id,
-            cmd.recipient_phone.clone(),
-            code_hash,
-        );
-        let otp_id = otp.id;
-
-        self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
-
-        // SMS is best-effort. A Twilio failure (wrong creds, network, rate-limit)
-        // must NOT prevent the OTP from being issued — the driver app displays
-        // data.code as a fallback so the delivery can still be completed.
-        let message = format!("Your LogisticOS delivery code is: {code}. Valid for 15 minutes. Do not share.");
-        match self.sms.send(&cmd.recipient_phone, &message).await {
-            Ok(()) => {
-                tracing::info!(
-                    shipment_id = %cmd.shipment_id,
-                    phone       = %cmd.recipient_phone,
-                    "OTP dispatched via SMS"
-                );
-            }
-            Err(e) => {
-                // Log at ERROR so it shows up in monitoring, but return 200 so
-                // the driver app can proceed using the code from the response.
-                tracing::error!(
-                    error       = %e,
-                    shipment_id = %cmd.shipment_id,
-                    phone       = %cmd.recipient_phone,
-                    "SMS delivery failed — OTP still valid; code returned in API response"
-                );
+    ) -> AppResult<IssuedPin> {
+        let live = self.otp_repo
+            .find_active_by_shipment(cmd.shipment_id, tenant_id.inner()).await
+            .map_err(AppError::Internal)?
+            .filter(OtpCode::is_valid);
+        if let Some(pin) = &live {
+            if issue_decision(Some(pin.failed_attempts), cmd.reissue, self.pin_policy.max_attempts)
+                == IssueDecision::KeepLive
+            {
+                return Ok(IssuedPin::KeptLive { otp_id: pin.id });
             }
         }
 
-        Ok((otp_id, code))
+        // A replaced PIN needs no delete: find_active_by_shipment takes the newest.
+        let code = generate_otp();
+        let mut otp = OtpCode::new(
+            tenant_id.inner(),
+            cmd.shipment_id,
+            cmd.recipient_phone.clone(),
+            hash_otp(&code),
+            self.pin_policy.ttl(),
+        );
+        let otp_id = otp.id;
+
+        // SMS is best-effort. A Twilio failure (wrong creds, network, rate-limit)
+        // must NOT prevent the PIN from being issued — the customer app shows it
+        // to the booking account, and the recipient can ask for a new one.
+        // It is sent before the single insert so the row records whether the PIN
+        // reached the recipient, without a second write.
+        let message = format!(
+            "Your LogisticOS delivery PIN is {code}. Give it to the driver only when your delivery is in your hands."
+        );
+        let sms_sent = match self.sms.send(&cmd.recipient_phone, &message).await {
+            Ok(()) => {
+                tracing::info!(
+                    shipment_id = %cmd.shipment_id,
+                    phone       = %crate::infrastructure::external::sms::mask_recipient(&cmd.recipient_phone),
+                    "OTP dispatched via SMS"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::error!(
+                    error       = %e,
+                    shipment_id = %cmd.shipment_id,
+                    phone       = %crate::infrastructure::external::sms::mask_recipient(&cmd.recipient_phone),
+                    "SMS delivery failed — delivery PIN still issued"
+                );
+                false
+            }
+        };
+        let via = delivered_via(sms_sent, cmd.reveal_to_caller);
+
+        // The newest row wins in find_active_by_shipment, so an undelivered
+        // replacement would shadow a PIN the recipient holds and make the
+        // delivery waivable. Leave the delivered PIN authoritative.
+        let live_state = live.as_ref().map(|p| live_pin_state(p.delivered_via.as_deref()));
+        if supersede_decision(live_state, via.is_some()) == SupersedeDecision::Refuse {
+            tracing::warn!(
+                shipment_id = %cmd.shipment_id,
+                "New delivery PIN could not be delivered — keeping the recipient's existing PIN"
+            );
+            return Err(AppError::BusinessRule(
+                "The new PIN could not be delivered; the recipient's existing PIN is still valid.".into(),
+            ));
+        }
+        otp.record_delivery(via);
+
+        self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
+
+        Ok(IssuedPin::New { otp_id, code, via })
     }
 
     /// Retrieve a POD record by ID (for admin/ops views).
-    pub async fn get_by_id(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
-        self.load_pod(pod_id).await
+    pub async fn get_by_id(&self, tenant_id: &TenantId, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
+        self.load_pod(tenant_id.inner(), pod_id).await
     }
 
     /// Retrieve a POP record by ID (for admin/ops views).
-    pub async fn get_pop_by_id(&self, pop_id: Uuid) -> AppResult<ProofOfPickup> {
-        self.pickup_repo.find_by_id(pop_id).await.map_err(AppError::Internal)?
+    pub async fn get_pop_by_id(&self, tenant_id: &TenantId, pop_id: Uuid) -> AppResult<ProofOfPickup> {
+        self.pickup_repo.find_by_id(tenant_id.inner(), pop_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POP", id: pop_id.to_string() })
     }
 
     /// Retrieve the most recent POP for a shipment (for admin portal panel).
-    pub async fn get_pop_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
-        self.pickup_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    pub async fn get_pop_by_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
+        self.pickup_repo.find_by_shipment(tenant_id.inner(), shipment_id).await.map_err(AppError::Internal)
     }
 
     /// Retrieve the *completed* (submitted) POP for a shipment.
     /// Returns `None` when pickup has not yet been captured or is still in draft.
     /// Used by `pop_status_internal` and the carrier container-load guard.
-    pub async fn get_completed_pop_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
-        self.pickup_repo.find_completed_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    pub async fn get_completed_pop_by_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
+        self.pickup_repo.find_completed_by_shipment(tenant_id.inner(), shipment_id).await.map_err(AppError::Internal)
     }
 
     /// Retrieve the most recent POD for a shipment (for admin portal panel).
-    pub async fn get_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
-        self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    pub async fn get_by_shipment(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
+        self.pod_repo.find_by_shipment(tenant_id.inner(), shipment_id).await.map_err(AppError::Internal)
     }
 
     /// Map a POP entity to the JSON shape expected by the admin portal.
@@ -877,37 +1010,57 @@ impl PodService {
             "photo_url":           photo_url,
             "signature_url":       signature_url,
             "otp_verified":        pod.otp_verified,
+            "pin_exception":       pod.pin_exception,
             "cod_collected_cents": pod.cod_collected_cents,
             "captured_at":         pod.captured_at,
         })
     }
 
-    /// Standalone OTP verification — driver can pre-verify before submitting POD.
-    /// Returns otp_id on success.
+    /// Standalone PIN check — the driver app verifies before submitting. Counts
+    /// toward the lock exactly as submit does. Returns otp_id on success.
     pub async fn verify_otp_standalone(
         &self,
         tenant_id: Uuid,
         cmd: VerifyOtpCommand,
     ) -> AppResult<Uuid> {
-        let otp = self.otp_repo
-            .find_active_by_shipment(cmd.shipment_id, tenant_id).await
-            .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::BusinessRule("No active OTP found for this shipment".into()))?;
-
-        if !otp.is_valid() {
-            return Err(AppError::BusinessRule("OTP has expired. Request a new one.".into()));
-        }
-
-        if !verify_otp(&cmd.code, &otp.code_hash) {
-            return Err(AppError::BusinessRule("Invalid OTP code".into()));
-        }
-
-        tracing::info!(shipment_id = %cmd.shipment_id, "OTP pre-verified");
+        let otp = self.check_delivery_pin(tenant_id, cmd.shipment_id, cmd.code.trim()).await?;
+        tracing::info!(shipment_id = %cmd.shipment_id, "Delivery PIN pre-verified");
         Ok(otp.id)
     }
 
-    async fn load_pod(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
-        self.pod_repo.find_by_id(pod_id).await.map_err(AppError::Internal)?
+    /// Checks a PIN against the shipment's live one. Shared by the standalone
+    /// verify and by submit, so the two cannot drift.
+    ///
+    /// An attempt is claimed before the comparison and handed back on a match.
+    /// Reading the counter and then comparing would let many parallel guesses
+    /// all see an unlocked PIN; a claim is one UPDATE, so each guess either
+    /// takes a slot or finds none left.
+    async fn check_delivery_pin(&self, tenant_id: Uuid, shipment_id: Uuid, code: &str) -> AppResult<OtpCode> {
+        let otp = self.otp_repo
+            .find_active_by_shipment(shipment_id, tenant_id).await
+            .map_err(AppError::Internal)?
+            .filter(OtpCode::is_valid)
+            .ok_or_else(|| AppError::BusinessRule(PinRejection::NotIssued.message()))?;
+
+        let max = self.pin_policy.max_attempts;
+        let used = self.otp_repo
+            .claim_attempt(otp.id, max).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::BusinessRule(PinRejection::Locked.message()))?;
+
+        if verify_otp(code, &otp.code_hash) {
+            self.otp_repo.release_attempt(otp.id).await.map_err(AppError::Internal)?;
+            Ok(otp)
+        } else {
+            tracing::warn!(shipment_id = %shipment_id, attempts_used = used, "Wrong delivery PIN");
+            Err(AppError::BusinessRule(
+                PinRejection::Wrong { attempts_left: attempts_left(max, used) }.message(),
+            ))
+        }
+    }
+
+    async fn load_pod(&self, tenant_id: Uuid, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
+        self.pod_repo.find_by_id(tenant_id, pod_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POD", id: pod_id.to_string() })
     }
 
@@ -917,5 +1070,73 @@ impl PodService {
             return Err(AppError::BusinessRule("POD has already been submitted".into()));
         }
         Ok(())
+    }
+}
+
+/// POP billing classification from the verified booking. Track A (Balikbayan)
+/// debits `declared_value_cents` to the driver's ledger at pickup, so the value
+/// comes from the booking, never the device. The device's service code
+/// disagreeing is logged and the booking wins; a Balikbayan booking with no
+/// declared value is logged loudly (the ledger debit will not fire) but is not
+/// refused here.
+fn billing_from_booking(
+    booking:             &ShipmentBillingContext,
+    shipment_id:         Uuid,
+    client_service_code: &str,
+) -> (String, Option<i64>) {
+    if !booking.service_code.eq_ignore_ascii_case(client_service_code) {
+        tracing::warn!(
+            shipment_id   = %shipment_id,
+            device_value  = %client_service_code,
+            booking_value = %booking.service_code,
+            "POP service_code from device disagrees with the booking — using the booking value"
+        );
+    }
+    if booking.service_code.eq_ignore_ascii_case("balikbayan")
+        && booking.declared_value_cents.unwrap_or(0) <= 0
+    {
+        tracing::warn!(
+            shipment_id = %shipment_id,
+            "Track A (Balikbayan) shipment carries no declared value on the booking — \
+             the driver ledger debit will not fire for this pickup"
+        );
+    }
+    (booking.service_code.clone(), booking.declared_value_cents)
+}
+
+/// The one rule for turning a failed ownership lookup into a refusal: an explicit
+/// `ShipmentNotFound` (missing or another tenant's, indistinguishable by design)
+/// is `NotFound("Shipment")`; anything else is an outage and is not a refusal.
+fn ownership_refusal(e: &anyhow::Error, shipment_id: Uuid) -> Option<AppError> {
+    e.downcast_ref::<crate::domain::repositories::ShipmentNotFound>()
+        .map(|_| AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })
+}
+
+/// `survey/{tenant}/{shipment}/{uuid}.{ext}`
+pub fn survey_key(tenant_id: Uuid, shipment_id: Uuid, content_type: &str) -> String {
+    let ext = if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" };
+    format!("survey/{tenant_id}/{shipment_id}/{}.{ext}", Uuid::new_v4())
+}
+
+pub fn is_survey_key(key: &str) -> bool {
+    key.starts_with("survey/") && !key.contains("..") && key.len() <= 200
+}
+
+#[cfg(test)]
+mod survey_key_tests {
+    use super::{is_survey_key, survey_key};
+    use uuid::Uuid;
+
+    #[test]
+    fn a_survey_key_names_tenant_and_shipment_and_only_survey_keys_are_signed() {
+        let (t, sh) = (Uuid::new_v4(), Uuid::new_v4());
+        let k = survey_key(t, sh, "image/jpeg");
+        assert!(k.starts_with(&format!("survey/{t}/{sh}/")));
+        assert!(k.ends_with(".jpg"));
+        assert!(survey_key(t, sh, "image/png").ends_with(".png"));
+        assert!(is_survey_key(&k));
+        // Not a way to read a POD's evidence.
+        assert!(!is_survey_key("pod/abc/def.jpg"));
+        assert!(!is_survey_key("survey/../pod/x.jpg"));
     }
 }

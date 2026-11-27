@@ -109,7 +109,9 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState { runner, session_repo, tools, jwt: Arc::clone(&jwt), kafka };
+    // One structured answer of a few hundred tokens — no agent loop.
+    let classifier = Arc::new(ClaudeClient::new(cfg.anthropic.api_key.clone(), cfg.anthropic.classify_model.clone(), 512));
+    let state = AppState { runner, classifier, session_repo, tools, jwt: Arc::clone(&jwt), kafka };
 
     // Outside the auth layer: a probe cannot present a JWT, so /health inside
     // the authenticated router answers 401 and the container reports unhealthy

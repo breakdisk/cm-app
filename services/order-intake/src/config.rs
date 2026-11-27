@@ -8,6 +8,12 @@ pub struct Config {
     pub kafka: KafkaConfig,
     #[serde(default)]
     pub geocoder: GeocoderConfig,
+    #[serde(default)]
+    pub mapbox: MapboxConfig,
+    /// Cancellation fee policy. Every rate defaults to 0 bps, so a deployment
+    /// without `CANCELLATION_POLICY__*` set charges nothing on cancel.
+    #[serde(default)]
+    pub cancellation_policy: crate::domain::value_objects::cancellation_policy::CancellationPolicy,
     /// Base URL of the payments service. Part of the optional "pay online
     /// at booking" capability, together with `quote_token_secret` and
     /// `app.public_base_url` — see the doc comment on `payment_config()`
@@ -21,6 +27,25 @@ pub struct Config {
     /// too so "absent ⇒ None" is visible at the field declaration.
     #[serde(default)]
     pub payments: Option<PaymentsConfig>,
+    /// Mesh-internal base URL for the carrier service, e.g. `http://carrier:8010`,
+    /// set via SERVICES__CARRIER_URL. Needed to price a consumer move off a
+    /// carrier rate card. When unset, a move quote returns 503 rather than
+    /// falling back to the parcel tariff - a sofa is not a parcel, and a wrong
+    /// price is worse than an honest "not configured".
+    #[serde(default)]
+    pub services: ServicesConfig,
+    /// Optional accessorial rate card (helper, assembly, haul-away, carbon
+    /// offset). Each entry is independently optional: an unset accessorial is
+    /// simply not offered, and a quote that requests it is a 422 rather than a
+    /// silent zero. Unlike `payments` these are deliberately NOT bundled -- a
+    /// market offering haul-away but not assembly is ordinary, whereas two of
+    /// three payment fields is always a misconfiguration.
+    #[serde(default)]
+    pub accessorials: AccessorialsConfig,
+    /// Whole-home moving rates, `HOME_MOVE__*` (e.g. `HOME_MOVE__TRIP_CENTS`).
+    /// Absent, every rate is zero and home moves are refused.
+    #[serde(default)]
+    pub home_move: crate::domain::value_objects::home_move::HomeRates,
     /// HMAC-SHA256 signing secret for short-TTL quote tokens
     /// (`domain::value_objects::quote_token`). A top-level field, so it is
     /// read from the env var QUOTE_TOKEN_SECRET directly — no `__` prefix,
@@ -33,6 +58,37 @@ pub struct Config {
     /// with no payment config must still boot and take cash bookings.
     #[serde(default)]
     pub quote_token_secret: Option<String>,
+    /// Delivery-deadline settings, `SLA__*`.
+    #[serde(default)]
+    pub sla: SlaConfig,
+}
+
+/// `SLA__UTC_OFFSET_HOURS` (default 8) is the fixed offset whose midnight ends an
+/// SLA day; `SLA__SWEEP_SECS` (default 300) is the breach sweep interval.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SlaConfig {
+    #[serde(default = "default_sla_offset_hours")]
+    pub utc_offset_hours: i32,
+    #[serde(default = "default_sla_sweep_secs")]
+    pub sweep_secs: u64,
+}
+
+fn default_sla_offset_hours() -> i32 { 8 }
+fn default_sla_sweep_secs() -> u64 { 300 }
+
+impl Default for SlaConfig {
+    fn default() -> Self {
+        Self { utc_offset_hours: default_sla_offset_hours(), sweep_secs: default_sla_sweep_secs() }
+    }
+}
+
+impl SlaConfig {
+    /// The configured offset; an out-of-range value falls back to +08:00.
+    pub fn offset(&self) -> chrono::FixedOffset {
+        chrono::FixedOffset::east_opt(self.utc_offset_hours.saturating_mul(3600))
+            .or_else(|| chrono::FixedOffset::east_opt(8 * 3600))
+            .unwrap_or_else(|| chrono::Offset::fix(&chrono::Utc))
+    }
 }
 
 /// The three fields required for the "pay online at booking" capability,
@@ -114,12 +170,131 @@ pub struct KafkaConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServicesConfig {
+    /// Mesh-internal carrier base URL. `SERVICES__CARRIER_URL`.
+    #[serde(default)]
+    pub carrier_url: Option<String>,
+    /// Mesh-internal promotions base URL. `SERVICES__PROMOTIONS_URL`. Unset,
+    /// quotes carry no discount and one that asked for a code says so.
+    #[serde(default)]
+    pub promotions_url: Option<String>,
+    /// Mesh-internal driver-ops. `SERVICES__DRIVER_OPS_URL`. The home-move
+    /// calendar asks it how many teams each date has; unset, windows are
+    /// offered without a capacity check (and say so).
+    #[serde(default)]
+    pub driver_ops_url: Option<String>,
+    /// Mesh-internal dispatch. `SERVICES__DISPATCH_URL`. The lead who
+    /// reserved a home move, for the customer's "Team {lead}" line.
+    #[serde(default)]
+    pub dispatch_url: Option<String>,
+    /// Mesh-internal pod. `SERVICES__POD_URL`. The media store behind a
+    /// home move's survey photos; unset, photos list without pictures.
+    #[serde(default)]
+    pub pod_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AccessorialsConfig {
+    #[serde(default)] pub helper:        Option<AccessorialRate>,
+    #[serde(default)] pub assembly:      Option<AccessorialRate>,
+    #[serde(default)] pub haulaway:      Option<AccessorialRate>,
+    #[serde(default)] pub carbon_offset: Option<AccessorialRate>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AccessorialRate {
+    /// What the customer is billed, in minor units of the tenant's own currency.
+    /// Never converted. A promotion discounts this column and only this column.
+    /// Env: `ACCESSORIALS__<CODE>__BILLED_CENTS`.
+    pub billed_cents: i64,
+    /// What settlement pays the mover for performing it. Promotions never read
+    /// or change this: a consumer discount comes out of platform margin, never
+    /// out of the driver's fee. Env: `ACCESSORIALS__<CODE>__PAID_CENTS`.
+    pub paid_cents: i64,
+    /// `PHP`, `AED`. Must match the tenant's JWT currency claim or the quote is
+    /// refused, so a misconfigured market cannot underbill.
+    pub currency: String,
+    /// `booking` (once) or `stair_flight` (multiplied by the stated count).
+    #[serde(default)] pub basis: AccessorialBasis,
+    /// Cap on a multiplied basis. `helper` without one lets a caller state 400
+    /// flights.
+    #[serde(default)] pub max_units: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessorialBasis {
+    #[default] Booking,
+    StairFlight,
+}
+
+impl AccessorialsConfig {
+    pub fn lookup(&self, code: &str) -> Option<&AccessorialRate> {
+        match code {
+            "helper"        => self.helper.as_ref(),
+            "assembly"      => self.assembly.as_ref(),
+            "haulaway"      => self.haulaway.as_ref(),
+            "carbon_offset" => self.carbon_offset.as_ref(),
+            // `threshold` is deliberately absent: it is a promise about where the
+            // driver puts the item, not a charge, so it has no config entry and
+            // a request for it is a misuse of the endpoint.
+            _ => None,
+        }
+    }
+
+    /// Every configured accessorial, for `GET /v1/accessorials`.
+    pub fn offered(&self) -> Vec<(&'static str, &AccessorialRate)> {
+        [
+            ("helper",        self.helper.as_ref()),
+            ("assembly",      self.assembly.as_ref()),
+            ("haulaway",      self.haulaway.as_ref()),
+            ("carbon_offset", self.carbon_offset.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(code, rate)| rate.map(|r| (code, r)))
+        .collect()
+    }
+
+    /// Refuse a card that pays the mover more than the customer is billed, or
+    /// carries a negative amount. Either loses money on every job. Called at
+    /// startup so a bad card stops the deploy instead of every quote.
+    pub fn validate(&self) -> Result<(), String> {
+        let bad: Vec<&str> = self
+            .offered()
+            .into_iter()
+            .filter(|(_, r)| r.billed_cents < 0 || r.paid_cents < 0 || r.paid_cents > r.billed_cents)
+            .map(|(code, _)| code)
+            .collect();
+        if bad.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "accessorial rate card pays more than it bills, or is negative, for: {}",
+                bad.join(", ")
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct GeocoderConfig {
     /// Public Mapbox token (pk.*) with Geocoding scope. Set via
     /// GEOCODER__MAPBOX_ACCESS_TOKEN. When empty, the service falls back to
     /// PassthroughNormalizer and shipments are created with coordinates: None.
     #[serde(default)]
     pub mapbox_access_token: Option<String>,
+}
+
+/// Mapbox geocoding options: `MAPBOX__PERMANENT_GEOCODING` (default false).
+///
+/// `permanent=true` is Mapbox's separately-priced mode that licenses storing
+/// results. Until that is decided a forward geocode is sent without it, and
+/// only the quality and source are stored, never the provider's place id or
+/// confidence.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct MapboxConfig {
+    #[serde(default)]
+    pub permanent_geocoding: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -175,6 +350,7 @@ mod config_tests {
             std::env::remove_var("APP__PUBLIC_BASE_URL");
             std::env::remove_var("APP__CORS_ORIGINS");
             std::env::remove_var("GEOCODER__MAPBOX_ACCESS_TOKEN");
+            std::env::remove_var("MAPBOX__PERMANENT_GEOCODING");
         }
 
         let result = Config::load();
@@ -200,6 +376,7 @@ mod config_tests {
         assert!(cfg.payments.is_none());
         assert!(cfg.quote_token_secret.is_none());
         assert!(cfg.app.public_base_url.is_none());
+        assert!(!cfg.mapbox.permanent_geocoding, "permanent geocoding is off unless asked for");
 
         let missing = cfg.payment_config().expect_err(
             "payment_config() must report the capability disabled, not fabricate a config",
@@ -217,6 +394,10 @@ mod config_tests {
     #[test]
     fn payment_config_is_disabled_when_only_some_of_the_three_fields_are_set() {
         let cfg = Config {
+            services: ServicesConfig::default(),
+            accessorials: AccessorialsConfig::default(),
+            home_move: Default::default(),
+            cancellation_policy: Default::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,
@@ -228,9 +409,11 @@ mod config_tests {
             redis: RedisConfig { url: "redis://x".into() },
             kafka: KafkaConfig { brokers: "x".into(), group_id: "x".into() },
             geocoder: GeocoderConfig::default(),
+            mapbox: MapboxConfig::default(),
             payments: Some(PaymentsConfig { url: "http://payments:8012".into() }),
             // quote_token_secret deliberately missing — two of three set.
             quote_token_secret: None,
+            sla: Default::default(),
         };
 
         let missing = cfg.payment_config().expect_err("two of three set must still be disabled");
@@ -241,6 +424,10 @@ mod config_tests {
     #[test]
     fn payment_config_is_enabled_when_all_three_fields_are_set() {
         let cfg = Config {
+            services: ServicesConfig::default(),
+            accessorials: AccessorialsConfig::default(),
+            home_move: Default::default(),
+            cancellation_policy: Default::default(),
             app: AppConfig {
                 host: "0.0.0.0".into(),
                 port: 8004,
@@ -252,8 +439,10 @@ mod config_tests {
             redis: RedisConfig { url: "redis://x".into() },
             kafka: KafkaConfig { brokers: "x".into(), group_id: "x".into() },
             geocoder: GeocoderConfig::default(),
+            mapbox: MapboxConfig::default(),
             payments: Some(PaymentsConfig { url: "http://payments:8012".into() }),
             quote_token_secret: Some("shh".into()),
+            sla: Default::default(),
         };
 
         let enabled = cfg.payment_config().expect("all three set must enable the capability");

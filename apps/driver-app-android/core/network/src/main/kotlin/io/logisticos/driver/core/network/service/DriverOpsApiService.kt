@@ -115,6 +115,47 @@ data class DriverProfileData(
      *  ratio replaces the decline counter as THE gig metric. */
     @SerialName("offers_seen")    val offersSeen: Long = 0L,
     @SerialName("offers_claimed") val offersClaimed: Long = 0L,
+    /** The rate itself, net of dropped jobs — dividing the two counts above
+     *  cannot see drops. Null before any offer has been seen. */
+    @SerialName("acceptance_pct") val acceptancePct: Int? = null,
+)
+
+// ─── Leaving an accepted job ─────────────────────────────────────────────────
+
+@Serializable
+data class LeaveQuoteResponse(val data: LeaveQuoteData)
+
+/**
+ * Where the driver stands on leaving a stop — GET/POST /v1/tasks/{id}/leave and
+ * POST /v1/tasks/{id}/arrive. The server decides drop or release from its own
+ * clock; the app only shows it.
+ */
+@Serializable
+data class LeaveQuoteData(
+    /** "drop" | "release"; null when the stop cannot be left this way. */
+    val mode: String? = null,
+    /** "GOODS_ABOARD" | "TASK_CLOSED" when [mode] is null. */
+    val refusal: String? = null,
+    /** The server's clock when this was worked out (ISO-8601). */
+    @SerialName("as_of")                      val asOf: String,
+    @SerialName("fee_cents")                  val feeCents: Long = 0L,
+    @SerialName("payout_cents")               val payoutCents: Long = 0L,
+    @SerialName("fee_pct")                    val feePct: Int = 0,
+    @SerialName("waiting_fee_cents")          val waitingFeeCents: Long = 0L,
+    @SerialName("waiting_fee_cents_per_hour") val waitingFeeCentsPerHour: Long = 0L,
+    @SerialName("minutes_past_grace")         val minutesPastGrace: Long = 0L,
+    /** When the driver may leave for free (ISO-8601); null = no clock running. */
+    @SerialName("grace_expires_at")           val graceExpiresAt: String? = null,
+    @SerialName("acceptance_before")          val acceptanceBefore: Int? = null,
+    @SerialName("acceptance_after")           val acceptanceAfter: Int? = null,
+)
+
+@Serializable
+data class LeaveTaskRequest(
+    @SerialName("reason_code") val reasonCode: String,
+    val note: String? = null,
+    val lat: Double? = null,
+    val lng: Double? = null,
 )
 
 // ─── Gig offer ("grab") models ───────────────────────────────────────────────
@@ -149,11 +190,21 @@ data class OpenOfferItem(
 @Serializable
 data class ClaimOfferResponse(val data: ClaimOfferData)
 
+/**
+ * A won claim. A whole-home move is reserved for its day instead of assigned:
+ * [reserved] is true, [assignmentId] is null until the assignment is made
+ * twelve hours before the move, and [moveDate] names the day.
+ */
 @Serializable
 data class ClaimOfferData(
-    @SerialName("assignment_id") val assignmentId: String,
+    @SerialName("assignment_id") val assignmentId: String? = null,
     @SerialName("shipment_id")   val shipmentId: String,
     @SerialName("payout_cents")  val payoutCents: Long? = null,
+    val reserved: Boolean = false,
+    /** YYYY-MM-DD; present on a reservation. */
+    @SerialName("move_date")     val moveDate: String? = null,
+    /** sole | captain | support | emergency; present on a reservation. */
+    val role: String? = null,
 )
 
 // ─── Earnings models ─────────────────────────────────────────────────────────
@@ -167,6 +218,18 @@ data class EarningsData(
     @SerialName("week_cents")  val weekCents: Long = 0L,
     val daily: List<DailyEarningItem> = emptyList(),
     val entries: List<EarningEntryItem> = emptyList(),
+    /** Waiting pay (positive) and drop fees (negative), already in the totals. */
+    val adjustments: List<EarningAdjustmentItem> = emptyList(),
+)
+
+@Serializable
+data class EarningAdjustmentItem(
+    /** "waiting_fee" | "drop_fee" */
+    val kind: String,
+    @SerialName("reference_id")    val referenceId: String,
+    @SerialName("tracking_number") val trackingNumber: String? = null,
+    @SerialName("amount_cents")    val amountCents: Long,
+    val at: String,
 )
 
 @Serializable
@@ -190,6 +253,25 @@ data class EarningEntryItem(
 @Serializable
 data class DriverProfileResponse(val data: DriverProfileData)
 
+// ─── Hours of service ────────────────────────────────────────────────────────
+
+@Serializable
+data class HosResponse(val data: HosData)
+
+/** GET /v1/drivers/me/hos. Shown and recorded only — [enforced] is false today. */
+@Serializable
+data class HosData(
+    @SerialName("window_hours")            val windowHours: Int = 14,
+    @SerialName("limit_minutes")           val limitMinutes: Long = 660,
+    @SerialName("on_duty_minutes")         val onDutyMinutes: Long = 0,
+    @SerialName("remaining_minutes")       val remainingMinutes: Long = 0,
+    @SerialName("over_limit")              val overLimit: Boolean = false,
+    /** ISO-8601; present only while the driver is on duty. */
+    @SerialName("on_duty_since")           val onDutySince: String? = null,
+    @SerialName("current_stretch_minutes") val currentStretchMinutes: Long = 0,
+    val enforced: Boolean = false,
+)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface DriverOpsApiService {
@@ -208,6 +290,19 @@ interface DriverOpsApiService {
         @Path("id") taskId: String,
         @Body body: CompleteTaskRequest
     )
+
+    /** POST /v1/tasks/{id}/arrive — at the stop: starts the grace clock when the
+     *  driver's own GPS fix is inside the stop's geofence. Answers with the quote. */
+    @POST("v1/tasks/{id}/arrive")
+    suspend fun arriveAtStop(@Path("id") taskId: String): LeaveQuoteResponse
+
+    /** GET /v1/tasks/{id}/leave — what leaving this job would cost. */
+    @GET("v1/tasks/{id}/leave")
+    suspend fun getLeaveQuote(@Path("id") taskId: String): LeaveQuoteResponse
+
+    /** POST /v1/tasks/{id}/leave — drop or release, decided by the server. */
+    @POST("v1/tasks/{id}/leave")
+    suspend fun leaveTask(@Path("id") taskId: String, @Body body: LeaveTaskRequest): LeaveQuoteResponse
 
     /** PUT /v1/tasks/{id}/fail — mark task as failed */
     @PUT("v1/tasks/{id}/fail")
@@ -236,6 +331,10 @@ interface DriverOpsApiService {
     /** POST /v1/drivers/go-offline */
     @POST("v1/drivers/go-offline")
     suspend fun goOffline()
+
+    /** GET /v1/drivers/me/hos — hours-of-service clock over the rolling window. */
+    @GET("v1/drivers/me/hos")
+    suspend fun getMyHos(): HosResponse
 
     /**
      * GET /v1/drivers/me — returns the authenticated driver's own profile.

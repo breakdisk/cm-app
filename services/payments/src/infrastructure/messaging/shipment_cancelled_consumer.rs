@@ -49,6 +49,7 @@ use uuid::Uuid;
 
 use crate::application::services::PaymentIntentService;
 use crate::domain::repositories::PaymentIntentRepository;
+use crate::domain::value_objects::refund_decision::{refund_decision, RefundDecision};
 
 pub struct ShipmentCancelledConsumer {
     inner: KafkaConsumer,
@@ -108,11 +109,39 @@ async fn handle(
         return Ok(());
     };
 
-    // Durably record the obligation BEFORE attempting the gateway call, so a
-    // crash between this line and `refund()` completing still leaves the
-    // obligation discoverable by `sweep_pending_refunds` on the next tick —
-    // see the module doc comment above.
-    intent_repo.mark_refund_requested(intent.id).await?;
+    // How much is kept. order-intake sends a rate, never an amount: it cannot
+    // reliably know what was captured, and this service can. An event from an
+    // order-intake that predates the penalty policy carries no `retention_bps`,
+    // and those were always full refunds. A field that is present but not an
+    // integer is an error, never a silent fall-through to a full refund.
+    let retention_bps = match data.get("retention_bps") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_i64().ok_or_else(|| {
+            anyhow::anyhow!("shipment.cancelled for {shipment_id} has a non-integer retention_bps: {v}")
+        })?),
+    };
+
+    let owed = match refund_decision(intent.captured_or_full(), retention_bps)
+        .map_err(|e| anyhow::anyhow!("shipment.cancelled for {shipment_id}: {e}"))?
+    {
+        RefundDecision::None => {
+            tracing::info!(
+                shipment_id = %shipment_id,
+                intent_id = %intent.id,
+                "shipment cancelled with the full amount retained — nothing to refund",
+            );
+            return Ok(());
+        }
+        RefundDecision::Full => None,
+        RefundDecision::Partial(cents) => Some(cents),
+    };
+
+    // Durably record the obligation, with its amount, BEFORE attempting the
+    // gateway call, so a crash between this line and `refund()` completing still
+    // leaves it discoverable by `sweep_pending_refunds` on the next tick — and
+    // the sweep retries that same amount, never a full refund. See the module
+    // doc comment above.
+    intent_repo.mark_refund_requested(intent.id, owed).await?;
 
     if let Err(e) = intent_service.refund(intent.id).await {
         tracing::error!(
@@ -218,10 +247,11 @@ mod tests {
                 .cloned())
         }
 
-        async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()> {
+        async fn mark_refund_requested(&self, id: Uuid, amount_cents: Option<i64>) -> anyhow::Result<()> {
             if let Some(intent) = self.intents.lock().unwrap().get_mut(&id) {
                 if intent.refund_requested_at.is_none() {
                     intent.refund_requested_at = Some(Utc::now());
+                    intent.refund_requested_cents = amount_cents;
                 }
             }
             Ok(())
@@ -449,5 +479,134 @@ mod tests {
             stored.refund_requested_at.is_some(),
             "the obligation must be durably recorded regardless of the gateway outcome"
         );
+    }
+
+    // ── 5–9: the penalty policy — refund only what a cancellation returns ────
+
+    fn cancelled_event_retaining(shipment_id: Uuid, retention_bps: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "id": Uuid::new_v4(),
+            "source": "logisticos/order-intake",
+            "event_type": "shipment.cancelled",
+            "time": Utc::now(),
+            "tenant_id": Uuid::new_v4(),
+            "data": {
+                "shipment_id": shipment_id,
+                "reason": "late_cancellation",
+                "retention_bps": retention_bps,
+            },
+        })
+    }
+
+    fn service(repo: &Arc<FakeRepo>, gateway: &Arc<FakeGateway>) -> Arc<PaymentIntentService> {
+        Arc::new(PaymentIntentService::new(
+            repo.clone() as _,
+            gateway.clone() as _,
+            test_kafka_producer(),
+        ))
+    }
+
+    /// A late cancellation retains a fee. Before this, the consumer refunded the
+    /// whole capture on every cancel, so any retention was handed straight back.
+    #[tokio::test]
+    async fn a_late_cancellation_refunds_only_the_remainder() {
+        let repo = Arc::new(FakeRepo::default());
+        let gateway = Arc::new(FakeGateway::default());
+        let svc = service(&repo, &gateway);
+
+        let shipment_id = Uuid::new_v4();
+        let intent = captured_intent(Uuid::new_v4(), shipment_id, 21_400);
+        let (intent_id, expected_ref) = (intent.id, intent.gateway_payment_ref.clone().unwrap());
+        repo.seed(intent);
+
+        handle(cancelled_event_retaining(shipment_id, serde_json::json!(1_500)), &*repo, &svc).await
+            .expect("a partial refund must succeed");
+
+        assert_eq!(gateway.refund_calls(), vec![(expected_ref, 18_190)]);
+        let stored = repo.find_by_id(intent_id).await.unwrap().unwrap();
+        assert_eq!(stored.status, PaymentIntentStatus::Refunded);
+        assert_eq!(stored.refunded_cents, Some(18_190), "what came back must be recorded");
+    }
+
+    /// Move day: the whole capture is retained. No gateway call, and no
+    /// obligation for the sweep to find and turn into a refund later.
+    #[tokio::test]
+    async fn a_fully_retained_cancellation_calls_no_gateway_and_owes_nothing() {
+        let repo = Arc::new(FakeRepo::default());
+        let gateway = Arc::new(FakeGateway::default());
+        let svc = service(&repo, &gateway);
+
+        let shipment_id = Uuid::new_v4();
+        let intent = captured_intent(Uuid::new_v4(), shipment_id, 21_400);
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        handle(cancelled_event_retaining(shipment_id, serde_json::json!(10_000)), &*repo, &svc).await
+            .expect("a fully retained cancellation is not an error");
+
+        assert_eq!(gateway.refund_calls(), Vec::new());
+        let stored = repo.find_by_id(intent_id).await.unwrap().unwrap();
+        assert_eq!(stored.status, PaymentIntentStatus::Captured);
+        assert!(stored.refund_requested_at.is_none(), "nothing is owed, so nothing may be recorded as owed");
+    }
+
+    /// The trap this change exists for: the obligation used to be a timestamp
+    /// only, and the sweep retried with a full refund. A failed partial refund
+    /// must be retried for the same partial amount.
+    #[tokio::test]
+    async fn a_failed_partial_refund_is_retried_for_the_same_partial_amount() {
+        let repo = Arc::new(FakeRepo::default());
+        let failing = Arc::new(FakeGateway::with_refund_failure());
+        let shipment_id = Uuid::new_v4();
+        let intent = captured_intent(Uuid::new_v4(), shipment_id, 21_400);
+        let (intent_id, expected_ref) = (intent.id, intent.gateway_payment_ref.clone().unwrap());
+        repo.seed(intent);
+
+        handle(cancelled_event_retaining(shipment_id, serde_json::json!(1_500)), &*repo, &service(&repo, &failing)).await
+            .expect("handle returns Ok even when the gateway fails");
+        let owed = repo.find_by_id(intent_id).await.unwrap().unwrap();
+        assert_eq!(owed.refund_requested_cents, Some(18_190), "the owed amount must be durable");
+
+        let healthy = Arc::new(FakeGateway::default());
+        let retried = service(&repo, &healthy).sweep_pending_refunds().await.expect("sweep must not error");
+
+        assert_eq!(retried, 1);
+        assert_eq!(healthy.refund_calls(), vec![(expected_ref, 18_190)], "the retry must not become a full refund");
+    }
+
+    /// A rate above 100% is a malformed event. Nothing moves.
+    #[tokio::test]
+    async fn a_retention_above_100_percent_is_refused() {
+        let repo = Arc::new(FakeRepo::default());
+        let gateway = Arc::new(FakeGateway::default());
+        let svc = service(&repo, &gateway);
+
+        let shipment_id = Uuid::new_v4();
+        let intent = captured_intent(Uuid::new_v4(), shipment_id, 21_400);
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        handle(cancelled_event_retaining(shipment_id, serde_json::json!(10_001)), &*repo, &svc).await
+            .expect_err("a rate above 100% must be refused");
+
+        assert_eq!(gateway.refund_calls(), Vec::new());
+        let stored = repo.find_by_id(intent_id).await.unwrap().unwrap();
+        assert!(stored.refund_requested_at.is_none());
+    }
+
+    /// A retention_bps that is present but not an integer must not fall through
+    /// to "absent", which means a full refund.
+    #[tokio::test]
+    async fn a_malformed_retention_is_refused_not_refunded_in_full() {
+        let repo = Arc::new(FakeRepo::default());
+        let gateway = Arc::new(FakeGateway::default());
+        let svc = service(&repo, &gateway);
+
+        let shipment_id = Uuid::new_v4();
+        repo.seed(captured_intent(Uuid::new_v4(), shipment_id, 21_400));
+
+        handle(cancelled_event_retaining(shipment_id, serde_json::json!("1500")), &*repo, &svc).await
+            .expect_err("a string rate must be refused");
+        assert_eq!(gateway.refund_calls(), Vec::new(), "must not refund in full on a malformed rate");
     }
 }

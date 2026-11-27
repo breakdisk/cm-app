@@ -104,6 +104,16 @@ pub struct CreateShipmentCommand {
     /// until the corresponding payment intent captures.
     #[serde(default)]
     pub quote_token: Option<String>,
+    /// Set only by the home-move booking path, never from a request body: the
+    /// booked move time decides the cancellation tier, so a client that could
+    /// set it could choose its own fee.
+    #[serde(skip)]
+    pub home_booking: Option<HomeBooking>,
+    /// How the booking was described, when it came from the prompt box or
+    /// voice: what was read from the sentence, before the customer corrected
+    /// it. Stored for measuring the reader; never used to price or route.
+    #[serde(default)]
+    pub intake: Option<IntakeInput>,
     /// Client-generated idempotency key — a retry with the same key returns
     /// the shipment already created for it instead of creating a duplicate
     /// (and a duplicate charge).
@@ -111,7 +121,7 @@ pub struct CreateShipmentCommand {
     pub idempotency_key: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Validate, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Validate, Serialize)]
 pub struct AddressInput {
     #[validate(length(min = 5))]
     pub line1: String,
@@ -123,6 +133,22 @@ pub struct AddressInput {
     pub postal_code: String,
     #[validate(length(min = 2, max = 2))]
     pub country_code: String,   // "PH"
+    /// Where the customer placed the pin. Both or neither: one alone, a value
+    /// out of range, or (0, 0) is refused at booking rather than dropped.
+    #[serde(default)]
+    pub pin_lat: Option<f64>,
+    #[serde(default)]
+    pub pin_lng: Option<f64>,
+    /// UAE-style address parts; kept with the destination, never geocoded.
+    #[serde(default)]
+    #[validate(length(max = 100))]
+    pub building: Option<String>,
+    #[serde(default)]
+    #[validate(length(max = 100))]
+    pub unit: Option<String>,
+    #[serde(default)]
+    #[validate(length(max = 100))]
+    pub area: Option<String>,
 }
 
 /// Command issued by the connectors service via the internal (Istio mTLS) endpoint.
@@ -168,6 +194,10 @@ pub struct RescheduleShipmentCommand {
     pub preferred_date: chrono::NaiveDate,
     pub preferred_time_slot: Option<String>, // "morning" | "afternoon" | "anytime"
     pub reason: String,
+    /// Set in code by the caller, never read from the request body. Defaults to
+    /// `Unset`, which the service refuses.
+    #[serde(skip)]
+    pub acting_as: crate::domain::value_objects::cancel_authority::ActingAs,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +206,10 @@ pub struct CancelShipmentCommand {
     #[serde(default)]
     pub shipment_id: uuid::Uuid,
     pub reason: String,
+    /// Set in code by the caller, never read from the request body. Defaults to
+    /// `Unset`, which the service refuses.
+    #[serde(skip)]
+    pub acting_as: crate::domain::value_objects::cancel_authority::ActingAs,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,4 +233,82 @@ pub struct BulkRowError {
     pub row_index: usize,
     pub merchant_reference: Option<String>,
     pub error: String,
+}
+
+/// A whole-home move being booked: the move time, already held to the
+/// calendar by the home-move path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeBooking {
+    pub move_at: chrono::DateTime<chrono::Utc>,
+    /// What the lead who takes it must bring; carried on shipment.created.
+    pub requirement: logisticos_events::payloads::HomeMoveRequirement,
+}
+
+/// What the prompt box read, as the app sends it with the booking.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct IntakeInput {
+    /// prompt_ai | prompt_offline | voice_ai | voice_offline
+    pub source: String,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub extracted: serde_json::Value,
+}
+
+/// The largest `extracted` kept. A sentence's worth of items and two
+/// addresses is well under this; anything bigger is not a prompt's parse.
+pub const INTAKE_MAX_BYTES: usize = 8 * 1024;
+
+impl IntakeInput {
+    /// What is stored, or None for anything that is not a prompt's parse —
+    /// an unknown source, an oversized payload. Never an error: intake is
+    /// measurement, and a booking must not fail over it.
+    pub fn to_store(&self) -> Option<(String, Option<String>, Option<f64>, serde_json::Value)> {
+        let source = self.source.trim();
+        if !matches!(source, "prompt_ai" | "prompt_offline" | "voice_ai" | "voice_offline") {
+            return None;
+        }
+        if serde_json::to_vec(&self.extracted).map_or(true, |b| b.len() > INTAKE_MAX_BYTES) {
+            return None;
+        }
+        let intent = self.intent.as_deref().filter(|i| matches!(*i, "book" | "home_move" | "support")).map(str::to_owned);
+        let confidence = self.confidence.filter(|c| c.is_finite()).map(|c| c.clamp(0.0, 1.0));
+        let extracted = if self.extracted.is_object() { self.extracted.clone() } else { serde_json::json!({}) };
+        Some((source.to_owned(), intent, confidence, extracted))
+    }
+}
+
+#[cfg(test)]
+mod intake_tests {
+    use super::*;
+
+    fn input(source: &str, extracted: serde_json::Value) -> IntakeInput {
+        IntakeInput { source: source.into(), intent: Some("book".into()), confidence: Some(1.4), extracted }
+    }
+
+    #[test]
+    fn a_prompt_parse_is_kept_with_its_numbers_clamped() {
+        let (source, intent, confidence, extracted) =
+            input("prompt_ai", serde_json::json!({ "from": "BGC" })).to_store().unwrap();
+        assert_eq!((source.as_str(), intent.as_deref(), confidence), ("prompt_ai", Some("book"), Some(1.0)));
+        assert_eq!(extracted["from"], "BGC");
+    }
+
+    #[test]
+    fn anything_else_is_dropped_not_refused() {
+        assert!(input("spreadsheet", serde_json::json!({})).to_store().is_none());
+        let huge = serde_json::json!({ "from": "x".repeat(INTAKE_MAX_BYTES) });
+        assert!(input("prompt_ai", huge).to_store().is_none());
+    }
+
+    #[test]
+    fn an_unknown_intent_is_not_recorded_as_one() {
+        let mut i = input("voice_offline", serde_json::json!([1, 2]));
+        i.intent = Some("launch".into());
+        let (_, intent, _, extracted) = i.to_store().unwrap();
+        assert!(intent.is_none());
+        assert_eq!(extracted, serde_json::json!({}));
+    }
 }

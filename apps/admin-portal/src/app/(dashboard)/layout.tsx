@@ -26,7 +26,7 @@ import {
   Zap,
   Menu,
   X,
-  Container, Bike } from "lucide-react";
+  Container, Bike, QrCode, BadgePercent } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { DriverRosterProvider } from "@/context/driver-roster-context";
 import { usePermissions, clearPermissionsCache } from "@/hooks/usePermissions";
@@ -66,6 +66,12 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Carriers",         href: "/carriers",    icon: Boxes,      requiredPermission: "carriers:read"      },
   { label: "Marketplace",      href: "/marketplace", icon: Store                                                },
   { label: "OmniDeliv Vendors",href: "/vendors",     icon: Store,      requiredPermission: "vendors:manage"     },
+  // Table QR ordering. Operator-owned on purpose: a foodcourt venue spans
+  // many vendors, each a separate merchant account this same permission
+  // approved, so no single merchant can own the link between them.
+  { label: "Venues & Tables", href: "/venues",     icon: QrCode,     requiredPermission: "vendors:manage"     },
+  // Move app promotions: codes, the loyalty ladder, company rates, credit.
+  { label: "Promotions",       href: "/promotions",  icon: BadgePercent, requiredPermission: "campaigns:create" },
   { label: "Finance",          href: "/finance",     icon: Receipt,    requiredPermission: "payments:read"      },
   { label: "Analytics",        href: "/analytics",   icon: BarChart3,  requiredPermission: "analytics:view"     },
   { label: "AI Agents",        href: "/ai-agents",   icon: Bot,        requiredPermission: "users:manage"       },
@@ -90,6 +96,8 @@ const PAGE_TITLE_MAP: Record<string, string> = {
   "/carriers":   "Carriers",
   "/marketplace": "Marketplace",
   "/vendors":     "OmniDeliv Vendors",
+  "/venues":      "Venues & Tables",
+  "/promotions": "Promotions",
   "/finance":    "Finance Oversight",
   "/analytics":  "Analytics",
   "/ai-agents":  "AI Agents",

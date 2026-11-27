@@ -36,6 +36,7 @@ struct PodRow {
     cod_collected_cents:    Option<i64>,
     requires_photo:         bool,
     requires_signature:     bool,
+    pin_exception:          Option<String>,
     captured_at:            chrono::DateTime<chrono::Utc>,
     created_at:             chrono::DateTime<chrono::Utc>,
 }
@@ -81,6 +82,7 @@ impl From<PodRow> for ProofOfDelivery {
             cod_collected_cents:    r.cod_collected_cents,
             requires_photo:         r.requires_photo,
             requires_signature:     r.requires_signature,
+            pin_exception:          r.pin_exception,
             captured_at:            r.captured_at,
             created_at:             r.created_at,
         }
@@ -89,7 +91,7 @@ impl From<PodRow> for ProofOfDelivery {
 
 #[async_trait]
 impl PodRepository for PgPodRepository {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
         let row = sqlx::query_as::<_, PodRow>(
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,
@@ -97,17 +99,18 @@ impl PodRepository for PgPodRepository {
                       COALESCE(out_of_bounds_handover, false) AS out_of_bounds_handover,
                       device_timestamp,
                       otp_verified, otp_id, cod_collected_cents,
-                      requires_photo, requires_signature,
+                      requires_photo, requires_signature, pin_exception,
                       captured_at, created_at
-               FROM pod.proofs WHERE id = $1"#
+               FROM pod.proofs WHERE id = $1 AND tenant_id = $2"#
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(ProofOfDelivery::from))
     }
 
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
+    async fn find_by_shipment(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
         let row = sqlx::query_as::<_, PodRow>(
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,
@@ -115,12 +118,13 @@ impl PodRepository for PgPodRepository {
                       COALESCE(out_of_bounds_handover, false) AS out_of_bounds_handover,
                       device_timestamp,
                       otp_verified, otp_id, cod_collected_cents,
-                      requires_photo, requires_signature,
+                      requires_photo, requires_signature, pin_exception,
                       captured_at, created_at
-               FROM pod.proofs WHERE shipment_id = $1
+               FROM pod.proofs WHERE shipment_id = $1 AND tenant_id = $2
                ORDER BY created_at DESC LIMIT 1"#
         )
         .bind(shipment_id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(ProofOfDelivery::from))
@@ -137,8 +141,8 @@ impl PodRepository for PgPodRepository {
                     out_of_bounds_handover, device_timestamp,
                     otp_verified, otp_id, cod_collected_cents,
                     requires_photo, requires_signature,
-                    captured_at, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+                    captured_at, created_at, pin_exception)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
                ON CONFLICT (id) DO UPDATE SET
                    status                 = EXCLUDED.status,
                    signature_data         = EXCLUDED.signature_data,
@@ -147,7 +151,8 @@ impl PodRepository for PgPodRepository {
                    device_timestamp       = EXCLUDED.device_timestamp,
                    otp_verified           = EXCLUDED.otp_verified,
                    otp_id                 = EXCLUDED.otp_id,
-                   cod_collected_cents    = EXCLUDED.cod_collected_cents"#
+                   cod_collected_cents    = EXCLUDED.cod_collected_cents,
+                   pin_exception          = EXCLUDED.pin_exception"#
         )
         .bind(pod.id)
         .bind(pod.tenant_id)
@@ -170,6 +175,7 @@ impl PodRepository for PgPodRepository {
         .bind(pod.requires_signature)
         .bind(pod.captured_at)
         .bind(pod.created_at)
+        .bind(&pod.pin_exception)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -120,6 +120,7 @@ impl ExpiryCheckerService {
 
             if days_past > grace_days {
                 self.compliance.suspend(
+                    profile.tenant_id,
                     profile.id,
                     Uuid::nil(),
                     Some(format!("Auto-suspended: document expired {days_past} days ago (grace: {grace_days}d)")),

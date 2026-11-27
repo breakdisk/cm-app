@@ -13,7 +13,7 @@ import { LiveDispatchMap } from "@/components/maps/live-dispatch-map";
 import type { DriverPin } from "@/components/maps/live-dispatch-map";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
-import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
+import { fetchAllBookings, type AdminBooking } from "@/lib/api/marketplace";
 import { useDriverRoster } from "@/context/driver-roster-context";
 import { usePermissions } from "@/hooks/usePermissions";
 
@@ -36,7 +36,6 @@ interface QueueItem {
   cod_amount_cents?: number | null;
   tracking_number?: string | null;
   origin?:        "dispatch" | "marketplace";
-  partner_display?: string;
   auto_dispatch_attempts?: number | null;
   last_dispatch_error?:    string | null;
   last_attempt_at?:        string | null;
@@ -45,19 +44,18 @@ interface QueueItem {
 
 type QueueFilter = "pending" | "dispatched" | "all";
 
-function busToQueueItem(b: BusBooking): QueueItem {
+function bookingToQueueItem(b: AdminBooking): QueueItem {
   return {
     id:                 `mp-${b.id}`,
     shipment_id:        b.shipment_id,
-    customer_name:      b.merchant_display,
+    customer_name:      b.consumer_name,
     dest_address_line1: b.dropoff_label,
     dest_city:          b.dropoff_label.split(",").pop()?.trim() ?? "—",
-    service_type:       b.size_class,
+    service_type:       "marketplace",
     status:             "pending",
     cod_amount_cents:   null,
     tracking_number:    b.awb,
     origin:             "marketplace",
-    partner_display:    b.partner_display_name,
   };
 }
 
@@ -211,6 +209,7 @@ function DispatchPageInner() {
 
   const [queue,             setQueue]             = useState<QueueItem[]>([]);
   const [marketplaceQueue,  setMarketplaceQueue]  = useState<QueueItem[]>([]);
+  const [marketplaceError,   setMarketplaceError]   = useState(false);
   const [drivers,           setDrivers]           = useState<DriverProfile[]>([]);
   const [driverSummary,     setDriverSummary]     = useState<DriverSummary | null>(null);
   const [dispatching,       setDispatching]       = useState<string | null>(null);
@@ -272,18 +271,41 @@ function DispatchPageInner() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  // Marketplace-origin queue: accepted bookings from the bus become synthetic queue rows
-  const refreshMarketplaceQueue = useCallback(() => {
-    const accepted = readBus()
-      .filter((b) => b.status === "accepted")
-      .map(busToQueueItem);
-    setMarketplaceQueue(accepted);
+  // Marketplace-origin queue: accepted bookings (GET /v1/marketplace/admin/bookings, the
+  // same call the Marketplace page makes) become synthetic queue rows. The
+  // booking carries no carrier name or vehicle class, so rows show neither.
+  const marketplaceInFlight = useRef(false);
+  const marketplaceSeq      = useRef(0);
+  const refreshMarketplaceQueue = useCallback(async (isMounted: () => boolean) => {
+    if (marketplaceInFlight.current) return;   // skip a tick while a request is outstanding
+    marketplaceInFlight.current = true;
+    const seq = ++marketplaceSeq.current;
+    try {
+      const bookings = await fetchAllBookings();
+      if (!isMounted() || seq !== marketplaceSeq.current) return;
+      setMarketplaceQueue(
+        bookings.filter((b) => b.status === "accepted").map(bookingToQueueItem),
+      );
+      setMarketplaceError(false);
+    } catch {
+      // Keep the previous rows: an outage is not "no marketplace bookings".
+      if (isMounted() && seq === marketplaceSeq.current) setMarketplaceError(true);
+    } finally {
+      marketplaceInFlight.current = false;
+    }
   }, []);
 
   useEffect(() => {
-    refreshMarketplaceQueue();
-    const unsubscribe = subscribeToBus(refreshMarketplaceQueue);
-    return unsubscribe;
+    let mounted = true;
+    const isMounted = () => mounted;
+    void refreshMarketplaceQueue(isMounted);
+    const id = setInterval(() => void refreshMarketplaceQueue(isMounted), 30_000);
+    return () => {
+      mounted = false;
+      // A dev StrictMode remount must not find the first load skipped as "in flight".
+      marketplaceInFlight.current = false;
+      clearInterval(id);
+    };
   }, [refreshMarketplaceQueue]);
 
   useEffect(() => {
@@ -591,6 +613,12 @@ function DispatchPageInner() {
              "All Shipments"} · {mergedQueue.length}
           </span>
 
+          {marketplaceError && (
+            <p role="alert" className="rounded-md border border-red-signal/40 bg-red-surface px-3 py-2 text-xs text-red-signal">
+              Marketplace bookings could not be refreshed; the list may be out of date.
+            </p>
+          )}
+
           {mergedQueue.length === 0 && !loading && (
             <p className="text-xs font-mono text-white/25 text-center py-4">
               {queueFilter === "pending"    ? "No pending shipments"    :
@@ -611,11 +639,6 @@ function DispatchPageInner() {
                       <p className="text-sm font-medium text-white truncate">{item.customer_name}</p>
                       <p className="text-xs font-mono text-white/40 truncate">{item.dest_address_line1}</p>
                       <p className="text-xs font-mono text-white/25">{item.dest_city} · {item.service_type}</p>
-                      {item.origin === "marketplace" && item.partner_display && (
-                        <p className="text-[10px] font-mono text-cyan-neon/70 mt-1 truncate">
-                          via {item.partner_display}
-                        </p>
-                      )}
                     </div>
                     <div className="flex flex-col items-end gap-1">
                       {item.origin === "marketplace" && (

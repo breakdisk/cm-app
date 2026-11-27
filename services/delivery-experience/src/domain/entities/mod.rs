@@ -78,6 +78,12 @@ pub struct TrackingRecord {
     pub tenant_id:            TenantId,
     pub tracking_number:      String,
 
+    /// Who booked it (order-intake's `merchant_id`, which is the booking
+    /// user). Owner-scoped readers see only their own. `None` on records
+    /// projected before the owner was carried.
+    #[serde(default)]
+    pub owner_id:             Option<Uuid>,
+
     pub current_status:       TrackingStatus,
     pub status_history:       Vec<StatusEvent>,   // chronological, JSONB in DB
 
@@ -127,6 +133,7 @@ impl TrackingRecord {
             shipment_id,
             tenant_id,
             tracking_number,
+            owner_id:            None,
             current_status:      TrackingStatus::Pending,
             status_history:      vec![initial_event],
             origin_address,
@@ -147,6 +154,13 @@ impl TrackingRecord {
         }
     }
 
+    /// Stamp who booked it. Set once, from `shipment.created`.
+    #[must_use]
+    pub fn with_owner(mut self, owner_id: Uuid) -> Self {
+        self.owner_id = Some(owner_id);
+        self
+    }
+
     /// Transition to a new status, appending to the history.
     pub fn transition(&mut self, status: TrackingStatus, description: String, location: Option<String>) {
         // Don't append duplicate adjacent status.
@@ -165,6 +179,22 @@ impl TrackingRecord {
         });
         self.current_status = status;
         self.updated_at = Utc::now();
+    }
+
+    /// The driver left the job before finishing it. Their name, number and
+    /// position come off the record, so the customer is not shown — or put
+    /// through to — someone who has gone, and the shipment waits for the next.
+    pub fn unassign_driver(&mut self) {
+        self.driver_id = None;
+        self.driver_name = None;
+        self.driver_phone = None;
+        self.driver_position = None;
+        self.estimated_delivery = None;
+        self.transition(
+            TrackingStatus::Confirmed,
+            "Your driver changed — finding you a new one".into(),
+            None,
+        );
     }
 
     pub fn assign_driver(

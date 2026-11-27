@@ -38,6 +38,7 @@ use std::{
 use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
+    response::IntoResponse,
     Router,
 };
 use serde_json::{json, Value};
@@ -48,7 +49,6 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use logisticos_auth::{claims::Claims, jwt::JwtService};
-use logisticos_errors::AppError;
 use logisticos_types::TenantId;
 
 use logisticos_delivery_experience::{
@@ -57,6 +57,7 @@ use logisticos_delivery_experience::{
         entities::{TrackingRecord, TrackingStatus},
         repositories::TrackingRepository,
     },
+    infrastructure::external::PodClient,
     AppState,
 };
 
@@ -92,22 +93,6 @@ fn make_internal_token(tenant_id: Uuid, user_id: Uuid) -> String {
     svc.issue_access_token(claims).expect("JWT issue failed")
 }
 
-/// Issue a JWT scoped only to shipment reads (no write).
-fn make_read_only_token(tenant_id: Uuid) -> String {
-    let svc = build_jwt_service();
-    let claims = Claims::new(
-        Uuid::new_v4(),
-        tenant_id,
-        "test-tenant".into(),
-        "starter".into(),
-        "merchant@test.logisticos.io".into(),
-        vec!["merchant".into()],
-        vec!["shipments:read".into()],
-        3600,
-    );
-    svc.issue_access_token(claims).expect("JWT issue failed")
-}
-
 /// Issue a JWT for a different tenant (cross-tenant isolation test).
 fn make_other_tenant_token() -> String {
     let svc = build_jwt_service();
@@ -124,10 +109,6 @@ fn make_other_tenant_token() -> String {
     svc.issue_access_token(claims).expect("JWT issue failed")
 }
 
-fn auth_header(token: &str) -> (&'static str, String) {
-    ("authorization", format!("Bearer {}", token))
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // MockTrackingRepository — in-memory, keyed by tracking_number
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +119,19 @@ struct MockTrackingRepo {
     by_number: Arc<Mutex<HashMap<String, TrackingRecord>>>,
     /// Secondary index: shipment_id → tracking_number (for O(1) lookup)
     by_shipment: Arc<Mutex<HashMap<Uuid, String>>>,
+    /// (tracking_number, reason) per `reschedule` call.
+    reschedules: Arc<Mutex<Vec<(String, String)>>>,
+    feedback: Arc<Mutex<Vec<FeedbackRow>>>,
+    confirmed: Arc<Mutex<Vec<String>>>,
+    receipt_requests: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+#[derive(Clone, Debug)]
+struct FeedbackRow {
+    tracking_number: String,
+    rating: i16,
+    tags: Vec<String>,
+    comments: Option<String>,
 }
 
 impl MockTrackingRepo {
@@ -155,10 +149,6 @@ impl MockTrackingRepo {
     /// Read the current stored state of a record by tracking number.
     fn get_by_number(&self, tn: &str) -> Option<TrackingRecord> {
         self.by_number.lock().unwrap().get(tn).cloned()
-    }
-
-    fn count(&self) -> usize {
-        self.by_number.lock().unwrap().len()
     }
 }
 
@@ -181,6 +171,7 @@ impl TrackingRepository for MockTrackingRepo {
     async fn list_by_tenant(
         &self,
         tenant_id: &TenantId,
+        owner_id: Option<Uuid>,
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<TrackingRecord>> {
@@ -188,6 +179,9 @@ impl TrackingRepository for MockTrackingRepo {
         let records: Vec<TrackingRecord> = guard
             .values()
             .filter(|r| r.tenant_id.inner() == tenant_id.inner())
+            // Same predicate as the SQL: `None` is the whole tenant, `Some` is
+            // only records that owner booked.
+            .filter(|r| owner_id.is_none_or(|o| r.owner_id == Some(o)))
             .cloned()
             .collect();
         let offset = offset as usize;
@@ -200,6 +194,62 @@ impl TrackingRepository for MockTrackingRepo {
         let sid = record.shipment_id;
         self.by_number.lock().unwrap().insert(tn.clone(), record.clone());
         self.by_shipment.lock().unwrap().insert(sid, tn);
+        Ok(())
+    }
+
+    async fn reschedule(
+        &self,
+        tracking_number: &str,
+        preferred_date: chrono::NaiveDate,
+        preferred_time_slot: Option<&str>,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        // Mirrors PgTrackingRepository::reschedule: bump the counter and move
+        // next_attempt_at to 13:00 UTC for "afternoon", 09:00 UTC otherwise.
+        let hour = if preferred_time_slot == Some("afternoon") { 13 } else { 9 };
+        if let Some(rec) = self.by_number.lock().unwrap().get_mut(tracking_number) {
+            rec.reschedule_count += 1;
+            rec.next_attempt_at = preferred_date.and_hms_opt(hour, 0, 0).map(|dt| {
+                chrono::DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)
+            });
+        }
+        self.reschedules
+            .lock()
+            .unwrap()
+            .push((tracking_number.to_owned(), reason.to_owned()));
+        Ok(())
+    }
+
+    async fn save_feedback(
+        &self,
+        tracking_number: &str,
+        rating: i16,
+        tags: &[String],
+        comments: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.feedback.lock().unwrap().push(FeedbackRow {
+            tracking_number: tracking_number.to_owned(),
+            rating,
+            tags: tags.to_vec(),
+            comments: comments.map(str::to_owned),
+        });
+        Ok(())
+    }
+
+    async fn confirm_customer_receipt(&self, tracking_number: &str) -> anyhow::Result<()> {
+        self.confirmed.lock().unwrap().push(tracking_number.to_owned());
+        Ok(())
+    }
+
+    async fn record_receipt_email_request(
+        &self,
+        tracking_number: &str,
+        email: &str,
+    ) -> anyhow::Result<()> {
+        self.receipt_requests
+            .lock()
+            .unwrap()
+            .push((tracking_number.to_owned(), email.to_owned()));
         Ok(())
     }
 }
@@ -270,17 +320,28 @@ impl TestApp {
         let tracking_svc = Arc::new(TrackingService::new(
             repo.clone() as Arc<dyn TrackingRepository>,
         ));
-        let state = AppState { tracking_svc };
+        // Nothing listens on port 1; `get_evidence` is best-effort and degrades
+        // to "no evidence" on a refused connection, which is what these tests
+        // want (the pod service is out of scope).
+        let pod_client = Arc::new(
+            PodClient::new("http://127.0.0.1:1".into()).expect("PodClient builds"),
+        );
+        let state = AppState { tracking_svc, pod_client };
 
-        // Mount the production router plus the auth middleware for /v1 routes.
+        // Composed exactly as `bootstrap::run` does it: the public half bare,
+        // `require_auth` layered over the authenticated half only.
         let jwt_svc = Arc::new(build_jwt_service());
         let auth_state = jwt_svc.clone();
 
-        let router = logisticos_delivery_experience::api::http::router()
-            .layer(axum::middleware::from_fn_with_state(
-                auth_state,
-                logisticos_auth::middleware::require_auth,
-            ))
+        let router = logisticos_delivery_experience::api::http::public_router()
+            .merge(
+                logisticos_delivery_experience::api::http::authenticated_router().layer(
+                    axum::middleware::from_fn_with_state(
+                        auth_state,
+                        logisticos_auth::middleware::require_auth,
+                    ),
+                ),
+            )
             .with_state(state);
 
         Self {
@@ -293,10 +354,6 @@ impl TestApp {
 
     fn internal_token(&self) -> String {
         make_internal_token(self.tenant_id, self.user_id)
-    }
-
-    fn read_only_token(&self) -> String {
-        make_read_only_token(self.tenant_id)
     }
 
     fn seed(&self, record: TrackingRecord) {
@@ -393,7 +450,7 @@ mod public_track_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-2026-0002")).await;
 
-        assert_eq!(body["tracking_number"].as_str(), Some("LGS-2026-0002"));
+        assert_eq!(body["data"]["tracking_number"].as_str(), Some("LGS-2026-0002"));
     }
 
     #[tokio::test]
@@ -403,7 +460,7 @@ mod public_track_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-2026-0003")).await;
 
-        assert!(body.get("status").is_some(), "response must include status");
+        assert!(body["data"].get("status").is_some(), "response must include status");
     }
 
     #[tokio::test]
@@ -414,7 +471,7 @@ mod public_track_tests {
         let (_, body) = send(app.router, get_req("/track/LGS-2026-0004")).await;
 
         assert_eq!(
-            body["status_label"].as_str(),
+            body["data"]["status_label"].as_str(),
             Some("Order Placed"),
             "Pending status should have label 'Order Placed'"
         );
@@ -427,8 +484,8 @@ mod public_track_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-2026-0005")).await;
 
-        assert!(body.get("origin").is_some());
-        assert!(body.get("destination").is_some());
+        assert!(body["data"].get("origin").is_some());
+        assert!(body["data"].get("destination").is_some());
     }
 
     #[tokio::test]
@@ -438,7 +495,7 @@ mod public_track_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-2026-0006")).await;
 
-        let history = &body["history"];
+        let history = &body["data"]["history"];
         assert!(history.is_array(), "history must be an array");
         assert_eq!(history.as_array().unwrap().len(), 1, "new record has 1 history entry");
     }
@@ -491,7 +548,7 @@ mod public_track_tests {
         let (status, body) = send(app.router, get_req("/track/LGS-2026-DELIVERED")).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["status_label"].as_str(), Some("Delivered"));
+        assert_eq!(body["data"]["status_label"].as_str(), Some("Delivered"));
     }
 
     #[tokio::test]
@@ -503,7 +560,7 @@ mod public_track_tests {
 
         // delivered_at should be present (non-null) for a delivered shipment
         assert!(
-            !body["delivered_at"].is_null(),
+            !body["data"]["delivered_at"].is_null(),
             "delivered_at should be set for a delivered shipment"
         );
     }
@@ -517,7 +574,7 @@ mod public_track_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-2026-ATTEMPT")).await;
 
-        assert_eq!(body["attempt_number"].as_u64(), Some(1));
+        assert_eq!(body["data"]["attempt_number"].as_u64(), Some(1));
     }
 
     #[tokio::test]
@@ -529,7 +586,7 @@ mod public_track_tests {
         let (_, body) = send(app.router, get_req("/track/LGS-2026-NODRVLOC")).await;
 
         assert!(
-            body["driver_location"].is_null(),
+            body["data"]["driver_location"].is_null(),
             "driver_location should be null for non-active delivery"
         );
     }
@@ -542,7 +599,7 @@ mod public_track_tests {
         let (_, body) = send(app.router, get_req("/track/LGS-2026-DRVLOC")).await;
 
         // The production handler returns driver_location when status == OutForDelivery
-        let driver_loc = &body["driver_location"];
+        let driver_loc = &body["data"]["driver_location"];
         assert!(
             !driver_loc.is_null(),
             "driver_location should be present for OutForDelivery status"
@@ -577,7 +634,7 @@ mod timeline_tests {
         let (status, body) = send(app.router, get_req("/track/LGS-TIMELINE-001")).await;
 
         assert_eq!(status, StatusCode::OK);
-        let history = body["history"].as_array().unwrap();
+        let history = body["data"]["history"].as_array().unwrap();
         // 1 initial + 4 transitions
         assert_eq!(history.len(), 5);
     }
@@ -591,7 +648,7 @@ mod timeline_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-TIMELINE-002")).await;
 
-        let history = body["history"].as_array().unwrap();
+        let history = body["data"]["history"].as_array().unwrap();
         let confirmed_entry = &history[1];
         assert!(confirmed_entry.get("status").is_some());
         assert!(confirmed_entry.get("description").is_some());
@@ -605,7 +662,7 @@ mod timeline_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-TIMELINE-003")).await;
 
-        let history = body["history"].as_array().unwrap();
+        let history = body["data"]["history"].as_array().unwrap();
         assert_eq!(history.len(), 1);
     }
 
@@ -618,7 +675,7 @@ mod timeline_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-TIMELINE-004")).await;
 
-        let history = body["history"].as_array().unwrap();
+        let history = body["data"]["history"].as_array().unwrap();
         // The first entry status serializes as "pending" (snake_case)
         assert_eq!(history[0]["status"].as_str(), Some("pending"));
     }
@@ -632,9 +689,9 @@ mod timeline_tests {
 
         let (_, body) = send(app.router, get_req("/track/LGS-TIMELINE-005")).await;
 
-        let history = body["history"].as_array().unwrap();
+        let history = body["data"]["history"].as_array().unwrap();
         let last_status = &history.last().unwrap()["status"];
-        let current_status = &body["status"];
+        let current_status = &body["data"]["status"];
         assert_eq!(last_status, current_status);
     }
 }
@@ -720,7 +777,7 @@ mod get_by_shipment_id_tests {
     }
 
     #[tokio::test]
-    async fn returns_403_for_cross_tenant_access() {
+    async fn returns_404_for_cross_tenant_access() {
         let app = TestApp::build();
         let record = make_tracking_record("LGS-AUTH-004", app.tenant_id);
         let shipment_id = record.shipment_id;
@@ -729,13 +786,18 @@ mod get_by_shipment_id_tests {
         // Token belongs to a different tenant
         let other_token = make_other_tenant_token();
 
-        let (status, _) = send(
+        let (status, body) = send(
             app.router,
             get_req_auth(&format!("/v1/tracking/{}", shipment_id), &other_token),
         )
         .await;
 
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        // A record the caller may not read is a 404, not a 403, so ids cannot
+        // be probed across tenants (TrackingService::get_for). Nothing of the
+        // record may leak in the body.
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.get("tracking_number").is_none());
+        assert!(body.get("driver").is_none());
     }
 
     #[tokio::test]
@@ -856,376 +918,246 @@ mod list_shipments_tests {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /track/:tracking_number/reschedule — customer reschedules delivery
-// Note: This endpoint is not in the current production router. The test below
-// exercises the domain behavior (mark_failed with next_attempt_at) and verifies
-// that a handler wired with the TrackingService behaves correctly.
-// The test uses an inline handler mounted on a test-only router.
+//
+// Rewritten against the production `public_router`. The old tests drove a
+// test-local handler that took `delay_hours` and called `mark_failed`; the
+// production route takes `preferred_date` / `preferred_time_slot` / `reason`,
+// validates the window and delegates to `TrackingRepository::reschedule`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod reschedule_tests {
     use super::*;
-    use axum::{extract::{Path, State}, routing::post};
 
-    /// Builds a test router with a reschedule endpoint wired to mock repo.
-    fn build_reschedule_app(repo: Arc<MockTrackingRepo>) -> Router {
-        #[derive(Clone)]
-        struct RescheduleState {
-            repo: Arc<MockTrackingRepo>,
-        }
-
-        async fn reschedule_handler(
-            State(st): State<RescheduleState>,
-            Path(tracking_number): Path<String>,
-            axum::Json(body): axum::Json<Value>,
-        ) -> impl axum::response::IntoResponse {
-            let delay_hours = body["delay_hours"].as_u64().unwrap_or(24) as i64;
-            let mut guard = st.repo.by_number.lock().unwrap();
-            match guard.get_mut(&tracking_number) {
-                Some(record) => {
-                    let next_attempt = Utc::now() + chrono::Duration::hours(delay_hours);
-                    record.mark_failed(
-                        "Customer requested reschedule".into(),
-                        (record.attempt_number + 1) as u32,
-                        Some(next_attempt),
-                    );
-                    (
-                        StatusCode::OK,
-                        axum::Json(json!({
-                            "tracking_number": tracking_number,
-                            "next_attempt_at": record.next_attempt_at,
-                            "attempt_number": record.attempt_number,
-                        })),
-                    )
-                        .into_response()
-                }
-                None => (
-                    StatusCode::NOT_FOUND,
-                    axum::Json(json!({ "error": "Tracking number not found" })),
-                )
-                    .into_response(),
-            }
-        }
-
-        Router::new()
-            .route(
-                "/track/:tracking_number/reschedule",
-                post(reschedule_handler),
-            )
-            .with_state(RescheduleState { repo })
+    fn in_days(n: i64) -> String {
+        (Utc::now().date_naive() + chrono::Duration::days(n)).to_string()
     }
 
     #[tokio::test]
     async fn reschedule_returns_200_for_known_shipment() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        repo.seed(make_tracking_record("LGS-RESCHED-001", fixed_tenant_id()));
-        let router = build_reschedule_app(repo.clone());
+        let app = TestApp::build();
+        app.seed(make_tracking_record("LGS-RESCHED-001", fixed_tenant_id()));
 
-        let (status, _) = send(
-            router,
+        let (status, body) = send(
+            app.router.clone(),
             post_req_json(
                 "/track/LGS-RESCHED-001/reschedule",
-                &json!({ "delay_hours": 24 }),
+                &json!({ "preferred_date": in_days(2) }),
             ),
         )
         .await;
 
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["rescheduled"], json!(true));
+        assert_eq!(body["data"]["tracking_number"], json!("LGS-RESCHED-001"));
     }
 
     #[tokio::test]
-    async fn reschedule_sets_next_attempt_at() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        repo.seed(make_tracking_record("LGS-RESCHED-002", fixed_tenant_id()));
-        let router = build_reschedule_app(repo.clone());
+    async fn reschedule_sets_next_attempt_at_from_date_and_slot() {
+        let app = TestApp::build();
+        app.seed(make_tracking_record("LGS-RESCHED-002", fixed_tenant_id()));
+        let date = Utc::now().date_naive() + chrono::Duration::days(3);
 
-        let (_, body) = send(
-            router,
+        let (status, _) = send(
+            app.router.clone(),
             post_req_json(
                 "/track/LGS-RESCHED-002/reschedule",
-                &json!({ "delay_hours": 48 }),
+                &json!({ "preferred_date": date.to_string(), "preferred_time_slot": "afternoon" }),
             ),
         )
         .await;
+        assert_eq!(status, StatusCode::OK);
 
-        assert!(
-            !body["next_attempt_at"].is_null(),
-            "next_attempt_at should be set after reschedule"
+        let stored = app.repo.get_by_number("LGS-RESCHED-002").unwrap();
+        let expected = chrono::DateTime::<Utc>::from_naive_utc_and_offset(
+            date.and_hms_opt(13, 0, 0).unwrap(),
+            Utc,
         );
+        assert_eq!(stored.next_attempt_at, Some(expected));
     }
 
     #[tokio::test]
-    async fn reschedule_increments_attempt_number() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        repo.seed(make_tracking_record("LGS-RESCHED-003", fixed_tenant_id()));
-        let router = build_reschedule_app(repo.clone());
+    async fn reschedule_increments_reschedule_count_and_records_default_reason() {
+        let app = TestApp::build();
+        app.seed(make_tracking_record("LGS-RESCHED-003", fixed_tenant_id()));
 
-        let (_, body) = send(
-            router,
-            post_req_json(
-                "/track/LGS-RESCHED-003/reschedule",
-                &json!({ "delay_hours": 24 }),
-            ),
-        )
-        .await;
+        for _ in 0..2 {
+            let (status, _) = send(
+                app.router.clone(),
+                post_req_json(
+                    "/track/LGS-RESCHED-003/reschedule",
+                    &json!({ "preferred_date": in_days(1) }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
 
-        // attempt_number starts at 0, after one reschedule it should be 1
-        assert_eq!(body["attempt_number"].as_u64(), Some(1));
+        assert_eq!(app.repo.get_by_number("LGS-RESCHED-003").unwrap().reschedule_count, 2);
+        let calls = app.repo.reschedules.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, "Customer reschedule request");
     }
 
     #[tokio::test]
     async fn reschedule_returns_404_for_unknown_tracking_number() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        let router = build_reschedule_app(repo);
+        let app = TestApp::build();
 
         let (status, _) = send(
-            router,
+            app.router.clone(),
             post_req_json(
                 "/track/LGS-NOSUCH-999/reschedule",
-                &json!({ "delay_hours": 24 }),
+                &json!({ "preferred_date": in_days(1) }),
             ),
         )
         .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(app.repo.reschedules.lock().unwrap().is_empty());
+    }
+
+    // New coverage of the validation window the production route enforces
+    // (the old test-local handler had none of it).
+    #[tokio::test]
+    async fn reschedule_rejects_past_and_too_far_dates_without_writing() {
+        let app = TestApp::build();
+        app.seed(make_tracking_record("LGS-RESCHED-004", fixed_tenant_id()));
+
+        for days in [-1, 91] {
+            let (status, body) = send(
+                app.router.clone(),
+                post_req_json(
+                    "/track/LGS-RESCHED-004/reschedule",
+                    &json!({ "preferred_date": in_days(days) }),
+                ),
+            )
+            .await;
+            // The handler maps every non-NotFound service error to 500; the
+            // validation message distinguishes it.
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "days={days}");
+            assert!(body["error"].as_str().unwrap_or_default().contains("Preferred date"), "days={days}");
+        }
+        assert!(app.repo.reschedules.lock().unwrap().is_empty());
+        assert_eq!(app.repo.get_by_number("LGS-RESCHED-004").unwrap().reschedule_count, 0);
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /track/:tracking_number/feedback — customer submits delivery feedback
-// Note: Not in production router. Tested via inline handler wired to mock repo.
+//
+// Rewritten against the production `public_router`: 200 with
+// `{"data":{"submitted":true}}`, body field `comments`, rating validated 1..=5
+// by `TrackingService::submit_feedback`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod feedback_tests {
     use super::*;
-    use axum::{extract::{Path, State}, routing::post};
-
-    /// In-memory feedback store for test verification.
-    #[derive(Default, Clone)]
-    struct FeedbackStore {
-        entries: Arc<Mutex<Vec<FeedbackEntry>>>,
-    }
-
-    #[derive(Clone, Debug)]
-    struct FeedbackEntry {
-        tracking_number: String,
-        rating: u8,
-        comment: Option<String>,
-    }
-
-    fn build_feedback_app(
-        repo: Arc<MockTrackingRepo>,
-        feedback: Arc<FeedbackStore>,
-    ) -> Router {
-        #[derive(Clone)]
-        struct FeedbackState {
-            repo: Arc<MockTrackingRepo>,
-            feedback: Arc<FeedbackStore>,
-        }
-
-        async fn feedback_handler(
-            State(st): State<FeedbackState>,
-            Path(tracking_number): Path<String>,
-            axum::Json(body): axum::Json<Value>,
-        ) -> impl axum::response::IntoResponse {
-            // Validate rating 1-5
-            let rating = match body["rating"].as_u64() {
-                Some(r) if r >= 1 && r <= 5 => r as u8,
-                Some(_) => {
-                    return (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        axum::Json(json!({ "error": "Rating must be 1-5" })),
-                    )
-                        .into_response();
-                }
-                None => {
-                    return (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        axum::Json(json!({ "error": "Rating is required" })),
-                    )
-                        .into_response();
-                }
-            };
-
-            // Verify the shipment exists
-            if st.repo.get_by_number(&tracking_number).is_none() {
-                return (
-                    StatusCode::NOT_FOUND,
-                    axum::Json(json!({ "error": "Tracking number not found" })),
-                )
-                    .into_response();
-            }
-
-            let comment = body["comment"].as_str().map(str::to_owned);
-            st.feedback.entries.lock().unwrap().push(FeedbackEntry {
-                tracking_number: tracking_number.clone(),
-                rating,
-                comment,
-            });
-
-            (
-                StatusCode::CREATED,
-                axum::Json(json!({
-                    "tracking_number": tracking_number,
-                    "rating": rating,
-                    "message": "Thank you for your feedback!",
-                })),
-            )
-                .into_response()
-        }
-
-        Router::new()
-            .route(
-                "/track/:tracking_number/feedback",
-                post(feedback_handler),
-            )
-            .with_state(FeedbackState { repo, feedback })
-    }
 
     #[tokio::test]
-    async fn feedback_returns_201_for_valid_rating() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        let feedback = Arc::new(FeedbackStore::default());
-        repo.seed(make_delivered_record("LGS-FB-001", fixed_tenant_id()));
+    async fn feedback_returns_200_for_valid_rating() {
+        let app = TestApp::build();
+        app.seed(make_delivered_record("LGS-FB-001", fixed_tenant_id()));
 
-        let router = build_feedback_app(repo, feedback.clone());
-
-        let (status, _) = send(
-            router,
+        let (status, body) = send(
+            app.router.clone(),
             post_req_json(
                 "/track/LGS-FB-001/feedback",
-                &json!({ "rating": 5, "comment": "Fast delivery!" }),
+                &json!({ "rating": 5, "comments": "Fast delivery!" }),
             ),
         )
         .await;
 
-        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["submitted"], json!(true));
     }
 
     #[tokio::test]
-    async fn feedback_stores_rating_and_comment() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        let feedback = Arc::new(FeedbackStore::default());
-        repo.seed(make_delivered_record("LGS-FB-002", fixed_tenant_id()));
-
-        let router = build_feedback_app(repo, feedback.clone());
+    async fn feedback_stores_rating_tags_and_comments() {
+        let app = TestApp::build();
+        app.seed(make_delivered_record("LGS-FB-002", fixed_tenant_id()));
 
         send(
-            router,
+            app.router.clone(),
             post_req_json(
                 "/track/LGS-FB-002/feedback",
-                &json!({ "rating": 4, "comment": "Good service" }),
+                &json!({ "rating": 4, "comments": "Good service", "tags": ["on_time"] }),
             ),
         )
         .await;
 
-        let entries = feedback.entries.lock().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].rating, 4);
-        assert_eq!(entries[0].comment.as_deref(), Some("Good service"));
+        let rows = app.repo.feedback.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tracking_number, "LGS-FB-002");
+        assert_eq!(rows[0].rating, 4);
+        assert_eq!(rows[0].comments.as_deref(), Some("Good service"));
+        assert_eq!(rows[0].tags, vec!["on_time".to_string()]);
     }
 
     #[tokio::test]
-    async fn feedback_rating_below_1_returns_422() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        let feedback = Arc::new(FeedbackStore::default());
-        repo.seed(make_delivered_record("LGS-FB-003", fixed_tenant_id()));
+    async fn feedback_rating_below_1_returns_422_and_stores_nothing() {
+        let app = TestApp::build();
+        app.seed(make_delivered_record("LGS-FB-003", fixed_tenant_id()));
 
-        let router = build_feedback_app(repo, feedback);
-
-        let (status, _) = send(
-            router,
-            post_req_json(
-                "/track/LGS-FB-003/feedback",
-                &json!({ "rating": 0 }),
-            ),
+        let (status, body) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-003/feedback", &json!({ "rating": 0 })),
         )
         .await;
 
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"], json!("Rating must be between 1 and 5"));
+        assert!(app.repo.feedback.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn feedback_rating_above_5_returns_422() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        let feedback = Arc::new(FeedbackStore::default());
-        repo.seed(make_delivered_record("LGS-FB-004", fixed_tenant_id()));
+    async fn feedback_rating_above_5_returns_422_and_stores_nothing() {
+        let app = TestApp::build();
+        app.seed(make_delivered_record("LGS-FB-004", fixed_tenant_id()));
 
-        let router = build_feedback_app(repo, feedback);
-
-        let (status, _) = send(
-            router,
-            post_req_json(
-                "/track/LGS-FB-004/feedback",
-                &json!({ "rating": 6 }),
-            ),
+        let (status, body) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-004/feedback", &json!({ "rating": 6 })),
         )
         .await;
 
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"], json!("Rating must be between 1 and 5"));
+        assert!(app.repo.feedback.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn feedback_returns_404_for_unknown_tracking_number() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        let feedback = Arc::new(FeedbackStore::default());
-        let router = build_feedback_app(repo, feedback);
+    async fn feedback_without_comments_is_accepted() {
+        let app = TestApp::build();
+        app.seed(make_delivered_record("LGS-FB-005", fixed_tenant_id()));
 
         let (status, _) = send(
-            router,
-            post_req_json(
-                "/track/NOSUCH/feedback",
-                &json!({ "rating": 5 }),
-            ),
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-005/feedback", &json!({ "rating": 3 })),
         )
         .await;
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn feedback_without_comment_is_accepted() {
-        let repo = Arc::new(MockTrackingRepo::new());
-        let feedback = Arc::new(FeedbackStore::default());
-        repo.seed(make_delivered_record("LGS-FB-005", fixed_tenant_id()));
-
-        let router = build_feedback_app(repo, feedback.clone());
-
-        let (status, _) = send(
-            router,
-            post_req_json(
-                "/track/LGS-FB-005/feedback",
-                &json!({ "rating": 3 }),
-            ),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CREATED);
-        let entries = feedback.entries.lock().unwrap();
-        assert!(entries[0].comment.is_none());
+        assert_eq!(status, StatusCode::OK);
+        let rows = app.repo.feedback.lock().unwrap();
+        assert!(rows[0].comments.is_none());
+        assert!(rows[0].tags.is_empty());
     }
 
     #[tokio::test]
     async fn feedback_each_valid_rating_value_is_accepted() {
-        for rating in 1u8..=5 {
-            let repo = Arc::new(MockTrackingRepo::new());
-            let feedback = Arc::new(FeedbackStore::default());
+        for rating in 1i16..=5 {
+            let app = TestApp::build();
             let tn = format!("LGS-FB-RATING-{}", rating);
-            repo.seed(make_delivered_record(&tn, fixed_tenant_id()));
-
-            let router = build_feedback_app(repo, feedback);
+            app.seed(make_delivered_record(&tn, fixed_tenant_id()));
 
             let (status, _) = send(
-                router,
-                post_req_json(
-                    &format!("/track/{}/feedback", tn),
-                    &json!({ "rating": rating }),
-                ),
+                app.router.clone(),
+                post_req_json(&format!("/track/{}/feedback", tn), &json!({ "rating": rating })),
             )
             .await;
 
-            assert_eq!(status, StatusCode::CREATED, "rating {} should be accepted", rating);
+            assert_eq!(status, StatusCode::OK, "rating {} should be accepted", rating);
+            assert_eq!(app.repo.feedback.lock().unwrap()[0].rating, rating);
         }
     }
 }
@@ -1396,7 +1328,7 @@ mod patch_status_tests {
                 .to_string();
             let location = body["location"].as_str().map(str::to_owned);
 
-            let mut guard = st.repo.by_shipment.lock().unwrap();
+            let guard = st.repo.by_shipment.lock().unwrap();
             let tn = match guard.get(&id) {
                 Some(tn) => tn.clone(),
                 None => {
@@ -1486,7 +1418,7 @@ mod patch_status_tests {
 
         let req = Request::builder()
             .method(Method::PATCH)
-            .uri(&format!("/shipments/{}/status", shipment_id))
+            .uri(format!("/shipments/{}/status", shipment_id))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
                 serde_json::to_vec(&json!({ "status": "confirmed" })).unwrap(),
@@ -1586,7 +1518,7 @@ mod add_event_tests {
 
             let location = body["location"].as_str().map(str::to_owned);
 
-            let mut guard = st.repo.by_shipment.lock().unwrap();
+            let guard = st.repo.by_shipment.lock().unwrap();
             let tn = match guard.get(&id) {
                 Some(tn) => tn.clone(),
                 None => {
@@ -1685,7 +1617,7 @@ mod add_event_tests {
 
         let req = Request::builder()
             .method(Method::POST)
-            .uri(&format!("/shipments/{}/events", shipment_id))
+            .uri(format!("/shipments/{}/events", shipment_id))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
                 serde_json::to_vec(&json!({ "description": "test" })).unwrap(),

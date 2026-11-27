@@ -3,13 +3,25 @@
 //! TENANCY: every method takes `tenant_id` first. There is no database-level
 //! policy in this schema (see migration 0001), so the signature is the
 //! enforcement point.
+//!
+//! ONE EXCEPTION, and it is deliberate: `VenueRepository::find_table_by_token`.
+//! A diner scanning a printed QR code is unauthenticated and carries no tenant,
+//! so the tenant is an *output* of that lookup rather than an input. It is the
+//! only method here that resolves across tenants, its key is unique
+//! platform-wide to make that unambiguous, and every caller re-scopes on the
+//! tenant it returns. If a second such method is ever added, say why in the
+//! same breath — an unnoticed second one is how the rule quietly stops being a
+//! rule.
 
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use chrono::{DateTime, Utc};
+
 use crate::domain::entities::{
-    Availability, Basket, BasketConflict, CatalogItem, CatalogSource, LedgerStatus, Order,
-    TelemetryEvent, Vendor, VendorLedger, Vertical,
+    Availability, Basket, BasketConflict, CatalogItem, CatalogSource, LedgerStatus, LegStatus,
+    Order, Table, TableSession, TableStatus, TelemetryEvent, Vendor, VendorLedger, Venue,
+    Vertical,
 };
 
 /// One period's headline figures, without its entries.
@@ -31,6 +43,36 @@ pub struct LedgerPeriod {
 pub trait VendorRepository: Send + Sync {
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Vendor>>;
     async fn save(&self, vendor: &Vendor) -> anyhow::Result<()>;
+
+    /// Resolve a public storefront by its slug or its custom domain.
+    ///
+    /// **The second method in this file that does not take `tenant_id`, and
+    /// like `find_table_by_token` it cannot.** A stranger opening
+    /// `/s/kanto-freestyle`, or a browser arriving with `Host: menu.kanto.ph`,
+    /// carries no tenant. The tenant is an OUTPUT of this lookup, which is why
+    /// `vendors.slug` and `vendors.custom_domain` are UNIQUE platform-wide
+    /// rather than per tenant.
+    ///
+    /// The rule that both exceptions share: a lookup keyed on something the
+    /// public types or DNS resolves cannot be tenant-scoped, because there is
+    /// no tenant yet. Everything downstream re-scopes on the tenant returned.
+    /// A third one needs the same justification or the rule quietly dies.
+    ///
+    /// Returns `None` unless `public_enabled` is true, so an unpublished
+    /// storefront is indistinguishable from one that does not exist.
+    async fn find_public_storefront(&self, handle: &str) -> anyhow::Result<Option<Vendor>>;
+
+    /// Claim or change a vendor's public handle. Returns false when the vendor
+    /// is not this tenant's, and errors on a slug or domain already taken.
+    async fn set_public_handle(
+        &self,
+        tenant_id:      Uuid,
+        vendor_id:      Uuid,
+        slug:           Option<&str>,
+        custom_domain:  Option<&str>,
+        tagline:        Option<&str>,
+        public_enabled: bool,
+    ) -> anyhow::Result<bool>;
 
     /// The vendor a portal user operates. `None` when the user runs no store —
     /// which is the answer for every customer, so it is not an error.
@@ -267,6 +309,306 @@ pub trait OrderRepository: Send + Sync {
         customer_id: Uuid,
         limit:       i64,
     ) -> anyhow::Result<Vec<OrderSummary>>;
+}
+
+/// The outcome of asking a leg to move.
+///
+/// `NoOp` is not an error. A tablet that retried, or a second member of staff
+/// who tapped Accept a moment later, should be told the leg is accepted — which
+/// is true — rather than shown a failure for something that did happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegTransition {
+    /// Carries the leg's identifying context because the caller publishes an
+    /// event immediately afterwards and would otherwise have to read the row
+    /// back to learn which order it belonged to. The UPDATE returns it.
+    Applied {
+        to:                   LegStatus,
+        order_id:             Uuid,
+        goods_subtotal_cents: i64,
+    },
+    NoOp { current: LegStatus },
+}
+
+/// What a vendor action returns, and what a replayed idempotency key returns
+/// verbatim on a retry.
+///
+/// Lives here rather than in the HTTP module because the repository stores it:
+/// the stored response and the live response must be the same shape, or a
+/// retried request would answer differently from the original.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransitionResponse {
+    pub leg_id: Uuid,
+    pub status: String,
+    /// False when the leg was already in the target state — a retry from a
+    /// tablet that lost its connection, or a second member of staff.
+    pub changed: bool,
+}
+
+/// A queue row.
+///
+/// Carries the order context a store needs to cook and nothing about the
+/// customer: a stall has no reason to hold a delivery address, and a foodcourt
+/// neighbour has no reason to learn what this one is making.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VendorLegRow {
+    pub leg_id:               Uuid,
+    pub order_id:             Uuid,
+    pub status:               String,
+    pub goods_subtotal_cents: i64,
+    pub ready_in_minutes:     Option<i32>,
+    pub accepted_at:          Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at:           chrono::DateTime<chrono::Utc>,
+}
+
+/// A leg the sweep is considering.
+///
+/// Carries what an alert needs and nothing else. The sweep runs across every
+/// tenant, so it must not become proportional to basket size — the same reason
+/// `find_awaiting_courier` does not hydrate an order's legs.
+#[derive(Debug, Clone)]
+pub struct AwaitingLeg {
+    pub leg_id:               Uuid,
+    pub order_id:             Uuid,
+    pub tenant_id:            Uuid,
+    pub vendor_id:            Uuid,
+    pub goods_subtotal_cents: i64,
+    pub created_at:           chrono::DateTime<chrono::Utc>,
+    /// Set once the sweep has raised this leg to a human. Present so the sweep
+    /// escalates once rather than on every tick — a leg unanswered for an hour
+    /// otherwise pages ops sixty times about one order.
+    pub escalated_at:         Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[async_trait]
+pub trait VendorLegRepository: Send + Sync {
+    /// Legs still waiting for their store to answer, oldest first.
+    ///
+    /// Deliberately across all tenants: an unanswered order is an operator
+    /// concern, not a customer request, and scoping it per tenant would mean
+    /// the sweep only runs for tenants someone remembered to enumerate. Same
+    /// reasoning as `OrderRepository::find_awaiting_courier`.
+    async fn find_awaiting_acceptance(&self) -> anyhow::Result<Vec<AwaitingLeg>>;
+
+    /// Stamps a leg as raised, so it is not raised again on the next tick.
+    ///
+    /// Deliberately not a status change: the collection consumer refuses to
+    /// credit a leg that is not awaiting collection, so moving the status here
+    /// would stop a store being paid for food it actually cooked.
+    async fn mark_escalated(&self, tenant_id: Uuid, leg_id: Uuid) -> anyhow::Result<()>;
+
+    /// Moves one leg to `to`, atomically, from whichever states legally precede
+    /// it.
+    ///
+    /// The caller does not pass a predecessor list. It is derived from
+    /// `LegStatus::can_transition_to`, so the transition graph is stated in the
+    /// domain exactly once instead of being re-hand-written at every call site
+    /// where the two could silently drift apart.
+    ///
+    /// Scoped by `vendor_id` as well as `tenant_id` so a store cannot transition
+    /// another store's leg by guessing an id — the same reason the HTTP surface
+    /// resolves the vendor from claims rather than from the path.
+    ///
+    /// No network I/O happens inside this call. Publishing the event is the
+    /// caller's job, after the write has committed — the same rule dispatch's
+    /// claim transaction follows.
+    async fn transition(
+        &self,
+        tenant_id:        Uuid,
+        vendor_id:        Uuid,
+        leg_id:           Uuid,
+        to:               LegStatus,
+        ready_in_minutes: Option<i32>,
+        rejected_reason:  Option<&str>,
+    ) -> anyhow::Result<LegTransition>;
+
+    /// This vendor's live legs, oldest first. The queue.
+    async fn list_open(&self, tenant_id: Uuid, vendor_id: Uuid)
+        -> anyhow::Result<Vec<VendorLegRow>>;
+
+    /// A previously stored response for this key, if the request is a replay.
+    async fn find_idempotent_response(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        key:       &str,
+    ) -> anyhow::Result<Option<TransitionResponse>>;
+
+    async fn record_idempotent_response(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        key:       &str,
+        leg_id:    Uuid,
+        action:    &str,
+        response:  &TransitionResponse,
+    ) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait VenueRepository: Send + Sync {
+    /// Resolve a printed table code.
+    ///
+    /// **The one method in this file that does not take `tenant_id`, and it
+    /// cannot.** A diner scanning a code is unauthenticated and carries no
+    /// tenant; the tenant is an OUTPUT of this lookup, not an input. That is
+    /// why `tables.token` is UNIQUE platform-wide rather than per venue — a
+    /// per-venue unique would make this query ambiguous.
+    ///
+    /// Everything downstream re-scopes on the tenant this returns. The token
+    /// itself is the only credential, which is why `orderable_now` and the
+    /// session cap exist: holding it must not be enough.
+    async fn find_table_by_token(&self, token: &str) -> anyhow::Result<Option<(Table, Venue)>>;
+
+    /// How many sessions are live at this table right now.
+    ///
+    /// Bounds how many parties one printed code can open at once. A four-top
+    /// does not need fifty, and without this a photographed code is an
+    /// unbounded session factory.
+    async fn count_live_sessions(&self, table_id: Uuid, now: DateTime<Utc>) -> anyhow::Result<i64>;
+
+    async fn create_session(&self, session: &TableSession) -> anyhow::Result<()>;
+
+    /// Every table at a venue, for the operator printing them.
+    async fn list_tables(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<Vec<Table>>;
+
+    /// The live session behind a diner's token, if it is still live.
+    ///
+    /// The token's `user_id` IS the session id, so this is a primary-key read.
+    /// Returns `None` for an ended or expired session even though the JWT may
+    /// still verify — the row is the record, and a token outliving its session
+    /// must not still order.
+    async fn find_live_session(
+        &self,
+        tenant_id: Uuid,
+        session_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<TableSession>>;
+
+    /// Does this vendor sell at this venue?
+    ///
+    /// The guard that makes a table order a VENUE order. Without it a diner at
+    /// one restaurant could add items from a vendor across town, because the
+    /// basket takes `vendor_id` from the client.
+    async fn vendor_is_at_venue(
+        &self,
+        tenant_id: Uuid,
+        venue_id: Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool>;
+
+    /// Replace a table's printed code, invalidating the one on the wall.
+    ///
+    /// The answer to a leaked code: rotation is an operator action taking
+    /// minutes, not an incident. Returns false when the table is not this
+    /// tenant's, so a caller cannot rotate someone else's code by guessing.
+    async fn rotate_token(
+        &self,
+        tenant_id: Uuid,
+        table_id: Uuid,
+        new_token: &str,
+    ) -> anyhow::Result<bool>;
+
+    // ---- Setup. Without these the whole feature is unreachable: the schema
+    // ---- shipped with no way to put a row in it, so every venue and table on
+    // ---- the platform had to be inserted by hand in SQL.
+
+    /// Persist a new venue.
+    async fn create_venue(&self, venue: &Venue) -> anyhow::Result<()>;
+
+    /// Every venue this tenant runs, newest first.
+    async fn list_venues(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Venue>>;
+
+    /// One venue, scoped to the tenant so a guessed id reads as absent.
+    async fn find_venue(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<Option<Venue>>;
+
+    /// Persist new tables, all or none.
+    ///
+    /// **In one transaction on purpose.** `tables` has `UNIQUE (venue_id,
+    /// label)`, so one clash partway down a batch of twenty would otherwise
+    /// leave the earlier rows committed and the operator unable to tell which
+    /// of their labels landed.
+    ///
+    /// The caller must have already confirmed the venue is this tenant's --
+    /// `tables.venue_id` has a foreign key but no tenant check of its own, so
+    /// nothing at the database layer stops a table being hung off another
+    /// tenant's venue.
+    async fn create_tables(&self, tables: &[Table]) -> anyhow::Result<()>;
+
+    /// Let a vendor sell at a venue.
+    ///
+    /// The write side of `vendor_is_at_venue`, which is the guard that makes a
+    /// table order a venue order. With no rows here no vendor is orderable from
+    /// any table, which is exactly the state the platform shipped in.
+    ///
+    /// Idempotent: linking twice is not an error, because an operator clicking
+    /// twice is not one. Returns false when the venue or vendor is not this
+    /// tenant's.
+    async fn link_vendor(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool>;
+
+    /// Stop a vendor selling at a venue. Returns false when no link existed.
+    async fn unlink_vendor(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+        vendor_id: Uuid,
+    ) -> anyhow::Result<bool>;
+
+    /// The vendors selling at a venue, as (id, name).
+    async fn list_venue_vendors(
+        &self,
+        tenant_id: Uuid,
+        venue_id:  Uuid,
+    ) -> anyhow::Result<Vec<(Uuid, String)>>;
+
+    /// Persist an edited venue. Returns false when it is not this tenant's.
+    ///
+    /// The write side of the kill switch: `status` is what `orderable_now`
+    /// checks, so this is how table ordering gets stopped and restarted.
+    async fn update_venue(&self, venue: &Venue) -> anyhow::Result<bool>;
+
+    /// Remove a venue. Returns false when it is not this tenant's.
+    ///
+    /// **The caller must confirm it has no tables first.** The schema cascades
+    /// -- tables, venue_vendors and table_sessions all go -- so an unguarded
+    /// delete silently destroys every printed code in the building. The guard
+    /// lives in the handler so the refusal can say how many.
+    async fn delete_venue(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<bool>;
+
+    /// How many tables a venue has, for that guard.
+    async fn count_tables(&self, tenant_id: Uuid, venue_id: Uuid) -> anyhow::Result<i64>;
+
+    /// Open or close one table.
+    ///
+    /// Closing stops NEW scans at that table and leaves sessions already open
+    /// alone -- `find_live_session` does not consult table status. That split
+    /// is the point: a table being cleared, repaired or re-laid should stop
+    /// taking orders without cancelling the meal in progress on it.
+    async fn set_table_status(
+        &self,
+        tenant_id: Uuid,
+        table_id:  Uuid,
+        status:    TableStatus,
+    ) -> anyhow::Result<bool>;
+
+    /// Remove a table and its printed code. Returns false when it is not this
+    /// tenant's. The caller must check for live sessions first.
+    async fn delete_table(&self, tenant_id: Uuid, table_id: Uuid) -> anyhow::Result<bool>;
+
+    /// Stamp `printed_at` once the codes are actually on paper.
+    ///
+    /// The counterpart to rotation clearing it. Together they answer "is what
+    /// is on the wall the current code", which is otherwise unknowable.
+    async fn mark_printed(
+        &self,
+        tenant_id: Uuid,
+        table_id:  Uuid,
+        now:       DateTime<Utc>,
+    ) -> anyhow::Result<bool>;
 }
 
 #[async_trait]

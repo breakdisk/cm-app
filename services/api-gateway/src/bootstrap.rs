@@ -123,6 +123,16 @@ async fn proxy_handler(
         // customer app. The path carries only UUIDs and the response is image
         // bytes — no other item data is exposed.
         || path.starts_with("/v1/omnideliv/public/")
+        // Scanning a table QR. A diner has no account and never will, so this
+        // one write is reachable by anyone who can photograph a sticker -- the
+        // token in the path IS the credential, and the service bounds it with
+        // `orderable_now`, a live-session cap and a per-token/per-IP rate limit.
+        //
+        // Without this the whole feature is unreachable through the public
+        // entry point: `diner_may_reach` allowlists this same path, but it runs
+        // AFTER token validation, so a request carrying no token 401s here and
+        // never gets that far.
+        || (path.starts_with("/v1/omnideliv/tables/") && path.ends_with("/session"))
         || path == "/v1/auth/login"
         || path == "/v1/auth/register"
         || path == "/v1/auth/refresh"
@@ -155,6 +165,32 @@ async fn proxy_handler(
         match state.jwt.validate_access_token(&token) {
             Ok(token_data) => {
                 let claims = token_data.claims;
+
+                // An anonymous diner is bounded here, at the one place that sees
+                // every request before it is routed. The token is minted from a
+                // code printed on vinyl in a public room, and it is signed with
+                // the shared platform secret — so it is structurally valid at
+                // EVERY service, not just the one that minted it.
+                //
+                // It carries no permissions, but that alone is not a control:
+                // most handlers on this platform are gated by `require_auth`
+                // only, so "no permissions" still reaches every route that never
+                // checks one. Deny by default, allowlist the dine-in path.
+                if claims.table_session
+                    && !crate::proxy::diner_may_reach(req.method().as_str(), path)
+                {
+                    tracing::warn!(
+                        %path, method = %req.method(),
+                        tenant_id = %claims.tenant_id,
+                        "table-session principal refused a path outside the dine-in allowlist",
+                    );
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"error": "This session cannot access that resource"})),
+                    )
+                        .into_response();
+                }
+
                 (claims.tenant_id.to_string(), claims.subscription_tier.clone())
             },
             Err(_) => {

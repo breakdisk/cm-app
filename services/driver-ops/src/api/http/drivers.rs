@@ -97,9 +97,14 @@ pub async fn list_drivers(
     State(state): State<Arc<AppState>>,
     AxumQuery(q): AxumQuery<ListDriversQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_VIEW);
+    // Operators list the tenant; a token bound to a partner lists only that
+    // partner's own riders, with its own authority rather than fleet:read.
+    let carrier = crate::api::http::partner_scope::roster_scope(&claims)?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let mut drivers = state.driver_service.list_by_tenant(&tenant_id).await?;
+    if let Some(carrier_id) = carrier {
+        drivers.retain(|d| d.carrier_id == Some(carrier_id));
+    }
 
     // Filter by hub_id when provided (Hub Staff tab — assigned scanners).
     if let Some(hub_id) = q.hub_id {
@@ -225,6 +230,9 @@ pub async fn get_me_driver(
         data["offers_seen"]    = serde_json::json!(seen);
         data["offers_claimed"] = serde_json::json!(claimed);
     }
+    // The rate itself, net of dropped jobs. The app shows this rather than
+    // dividing the two counts, which cannot see drops.
+    data["acceptance_pct"] = serde_json::json!(state.task_service.acceptance(claims.user_id).await);
     Ok(Json(serde_json::json!({ "data": data })))
 }
 
@@ -259,6 +267,20 @@ pub async fn go_offline(
         active_route_id: None,
     });
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// `GET /v1/drivers/me/hos` — the authenticated driver's hours-of-service clock:
+/// on-duty minutes in the rolling window against the configured limit
+/// (`HOS__MAX_ON_DUTY_MINUTES`, `HOS__WINDOW_HOURS`). Shown and recorded only —
+/// the body says `enforced: false` and nothing is refused on it.
+pub async fn get_my_hos(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let clock = state.location_service.hours_of_service(&driver_id, &tenant_id).await?;
+    Ok(Json(serde_json::json!({ "data": clock })))
 }
 
 #[derive(Debug, serde::Deserialize)]

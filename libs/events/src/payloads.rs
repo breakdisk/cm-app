@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -45,6 +46,37 @@ pub struct TenantFinalized {
 }
 
 // Enriched ShipmentCreated — consumed by dispatch, engagement, analytics, delivery-experience
+/// What a whole-home move asks of the lead who takes it. Dispatch offers the
+/// job only to a home-move lead who can meet it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeMoveRequirement {
+    pub trucks:       i64,
+    pub helpers:      i64,
+    pub crew_total:   i64,
+    /// Over the Large Estate volume: only a multi-truck capable lead.
+    pub large_estate: bool,
+    /// Origin and destination in different countries.
+    pub international: bool,
+    pub move_at:      chrono::DateTime<chrono::Utc>,
+    /// The move's date on order-intake's local calendar — the day a lead's
+    /// working days and off days are about.
+    #[serde(default)]
+    pub move_date:    Option<chrono::NaiveDate>,
+    #[serde(default)]
+    pub survey_at:    Option<chrono::DateTime<chrono::Utc>>,
+    /// The lead's net pay for the move, after the platform's commission —
+    /// shown on the offer before a lead accepts. Absent from older events.
+    #[serde(default)]
+    pub lead_payout_cents: Option<i64>,
+    /// A two-truck move taken by two single-truck leads (a Joint Mission):
+    /// the Mission Captain's part of the pay and the Support Lead's. The
+    /// same split order-intake credits on delivery.
+    #[serde(default)]
+    pub captain_payout_cents: Option<i64>,
+    #[serde(default)]
+    pub support_payout_cents: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipmentCreated {
     pub shipment_id:          Uuid,
@@ -52,6 +84,9 @@ pub struct ShipmentCreated {
     pub customer_id:          Uuid,
     pub customer_name:        String,
     pub customer_phone:       String,
+    /// Set only on a whole-home move: the crew and trucks the job needs.
+    #[serde(default)]
+    pub home_move:            Option<HomeMoveRequirement>,
     /// Customer email — used by engagement for receipt delivery. Empty if not provided.
     #[serde(default)]
     pub customer_email:       String,
@@ -482,6 +517,12 @@ pub struct TaskAssigned {
     /// record: later rate changes never alter accepted work.
     #[serde(default)]
     pub payout_cents:         Option<i64>,
+    /// The carrier (partner) the assigned driver belongs to, from
+    /// `driver_ops.drivers.carrier_id`. None for the platform's own drivers.
+    /// order-intake links the shipment to this partner so a partner token can
+    /// read exactly the shipments its own riders handle.
+    #[serde(default)]
+    pub driver_carrier_id:    Option<Uuid>,
 }
 
 /// Broadcast gig offer — fanned out to N candidate drivers simultaneously.
@@ -558,6 +599,60 @@ pub struct AssignmentRejected {
     pub tenant_id:     Uuid,
     pub route_id:      Uuid,
     pub reason:        String,
+}
+
+/// Emitted by driver-ops when a driver leaves an accepted job before its grace
+/// clock ran out (a penalised drop, not a free release). Every shipment the
+/// driver still had open on the route goes back to dispatch.
+///
+/// A release after grace is not this event: that is a failed stop, published
+/// as `delivery.failed` with reason `customer_absent`.
+/// A completed move lifted an account to a higher loyalty tier. Only
+/// upgrades are published: a tier lost to the 12-month window going by is
+/// not news anyone wants pushed at them.
+/// A notice to a customer about their whole-home move. `kind` picks the
+/// message ("waitlist_offered", "addendum_pending"); an unknown kind is
+/// logged and dropped by the notifier, never guessed at.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomeNotice {
+    pub tenant_id:    Uuid,
+    /// Identity user id — the key engagement's push channel looks tokens up by.
+    pub account_id:   Uuid,
+    pub kind:         String,
+    /// What it is about: a waitlist place, a shipment.
+    pub reference_id: Uuid,
+    /// The words the message needs, and `deep_link`.
+    #[serde(default)]
+    pub vars:         serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierChanged {
+    pub tenant_id:       Uuid,
+    /// Identity user id — the key engagement's push channel looks tokens up by.
+    pub account_id:      Uuid,
+    pub tier_name:       String,
+    /// The tier before, None when this is the account's first.
+    pub previous_tier:   Option<String>,
+    /// What the tier gives, in words, e.g. "10% off extras on every move".
+    pub perk:            String,
+    /// Completed moves in the last 12 months, this one included.
+    pub moves:           i64,
+    pub reached_at:      chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobDropped {
+    pub tenant_id:    Uuid,
+    /// Identity user id — dispatch keys assignments on it. Equal to
+    /// driver_ops.drivers.id (enforced by driver-ops migration 0014).
+    pub driver_id:    Uuid,
+    pub route_id:     Uuid,
+    pub shipment_ids: Vec<Uuid>,
+    pub reason_code:  String,
+    /// The dispatch fee charged to the driver, summed over the shipments.
+    pub fee_cents:    i64,
+    pub dropped_at:   chrono::DateTime<chrono::Utc>,
 }
 
 /// Emitted by delivery-experience when a customer taps "Email Receipt" on the
@@ -869,6 +964,10 @@ pub struct HubDispatchRequested {
     pub sla_hours:                 i64,
     #[serde(default)]
     pub total_cost_cents:          i64,
+    /// Carrier configured for the zone; set under Auto routing so the dispatch
+    /// fallback books this carrier. `None` for OwnDriver.
+    #[serde(default)]
+    pub fallback_carrier_id:       Option<Uuid>,
     pub requested_at:              String,
 }
 
@@ -956,4 +1055,77 @@ mod cross_border_tests {
         let back: ContainerDeconsolidated = serde_json::from_str(&json).unwrap();
         assert_eq!(back.child_awbs.len(), 2);
     }
+}
+
+#[cfg(test)]
+mod task_assigned_carrier_tests {
+    use super::*;
+
+    fn minimal_task_assigned(extra: serde_json::Value) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "task_id": Uuid::new_v4(), "assignment_id": Uuid::new_v4(),
+            "shipment_id": Uuid::new_v4(), "route_id": Uuid::new_v4(),
+            "driver_id": Uuid::new_v4(), "tenant_id": Uuid::new_v4(),
+            "sequence": 1,
+            "address_line1": "1 Test St", "address_city": "Abu Dhabi",
+            "address_province": "AD", "address_postal_code": "00000",
+            "customer_name": "C", "customer_phone": "+971500000000",
+        });
+        if let (Some(base), Some(add)) = (v.as_object_mut(), extra.as_object()) {
+            base.extend(add.clone());
+        }
+        v
+    }
+
+    /// Events already on the broker, and any producer not yet redeployed, carry
+    /// no carrier. They must keep decoding, as a platform driver's task.
+    #[test]
+    fn old_task_assigned_payload_without_the_field_decodes() {
+        let t: TaskAssigned = serde_json::from_value(minimal_task_assigned(serde_json::json!({}))).unwrap();
+        assert_eq!(t.driver_carrier_id, None);
+    }
+
+    #[test]
+    fn driver_carrier_id_round_trips() {
+        let carrier = Uuid::new_v4();
+        let t: TaskAssigned = serde_json::from_value(
+            minimal_task_assigned(serde_json::json!({ "driver_carrier_id": carrier })),
+        ).unwrap();
+        assert_eq!(t.driver_carrier_id, Some(carrier));
+    }
+}
+
+/// Published on `topics::HUB_LOAD_CHANGED` whenever a hub's load changes.
+/// Consumed by business-logic (`HubCapacityExceeded` fires on an upward crossing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubLoadChanged {
+    pub hub_id: Uuid,
+    pub capacity: i32,
+    pub previous_load: i32,
+    pub current_load: i32,
+}
+
+/// Published on `topics::INVOICE_OVERDUE` each time an invoice's overdue age advances.
+/// Consumed by business-logic (`PaymentOverdue` fires when `days` is crossed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceOverdue {
+    pub invoice_id: Uuid,
+    pub merchant_id: Uuid,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub due_at: DateTime<Utc>,
+    pub days_overdue: i32,
+    pub previous_days_overdue: i32,
+}
+
+/// Published on `topics::SHIPMENT_SLA_BREACHED` when a shipment misses its SLA.
+/// Consumed by business-logic (`SlaBreach` matches on `sla_type`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShipmentSlaBreached {
+    pub shipment_id: Uuid,
+    pub merchant_id: Uuid,
+    pub service_type: String,
+    pub sla_type: String,
+    pub sla_due_at: DateTime<Utc>,
+    pub breached_at: DateTime<Utc>,
 }

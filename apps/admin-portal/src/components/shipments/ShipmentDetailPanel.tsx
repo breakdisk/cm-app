@@ -36,6 +36,7 @@ import {
   overrideShipmentStatus,
 } from "@/lib/api/shipments";
 import { usePermissions } from "@/hooks/usePermissions";
+import { HomeMoveSection } from "./HomeMoveSection";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -604,6 +605,14 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                   />
                 </GlassCard>
               </section>
+
+              {/* ── Whole-home move: what ops need to assign a crew ── */}
+              {shipment.service_type === "home_move" && (
+                <section>
+                  <SectionHeading>Whole-Home Move</SectionHeading>
+                  <HomeMoveSection shipmentId={shipment.id} />
+                </section>
+              )}
 
               {/* ── POP Evidence ── */}
               <section>

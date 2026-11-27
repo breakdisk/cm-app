@@ -83,6 +83,99 @@ pub async fn internal_assign(
     })))
 }
 
+/// Internal (no JWT): GET /v1/internal/home-reservations/:shipment_id
+///
+/// The lead who reserved a whole-home move, for order-intake to tell the
+/// customer "Team {lead}". 404 until a lead claims it.
+pub async fn internal_home_reservation(
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let home = state.home.as_ref().ok_or_else(|| AppError::ServiceUnavailable("Home moves are not wired here".into()))?;
+    let view = home
+        .reservation(shipment_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Home reservation", id: shipment_id.to_string() })?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SideSlotsRequest {
+    pub tenant_id: Uuid,
+    /// support | emergency
+    pub slot: String,
+    #[serde(default = "one")]
+    pub count: usize,
+    /// Each lead's net pay for their truck, after commission.
+    pub payout_cents: Option<i64>,
+    /// How long the offer stands. An emergency truck is needed now.
+    #[serde(default = "default_side_ttl_minutes")]
+    pub ttl_minutes: i64,
+}
+
+fn one() -> usize { 1 }
+fn default_side_ttl_minutes() -> i64 { 15 }
+
+#[derive(Debug, Deserialize)]
+pub struct OpsSlotsRequest {
+    /// support | emergency
+    pub slot: String,
+    #[serde(default = "one")]
+    pub count: usize,
+    /// Each lead's net pay for their truck. Left out, the offer shows none.
+    #[serde(default)]
+    pub payout_cents: Option<i64>,
+    #[serde(default = "default_side_ttl_minutes")]
+    pub ttl_minutes: i64,
+}
+
+/// Ops console: POST /v1/home-moves/:shipment_id/slots
+///
+/// Offer a home move's second truck again - a joint mission whose support
+/// slot nobody took, or an extra truck an addendum needs. The automatic
+/// paths (a captain's claim, a paid addendum) do this by themselves; this is
+/// how ops does it when one went unfilled.
+pub async fn ops_side_slots(
+    AuthClaims(claims): AuthClaims,
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<OpsSlotsRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_ASSIGN);
+    if !(1..=4).contains(&req.count) {
+        return Err(AppError::Validation("One to four trucks at a time".into()));
+    }
+    let ttl = req.ttl_minutes.clamp(5, 24 * 60) * 60;
+    let offers = state
+        .offer_service
+        .broadcast_side_slots(TenantId::from_uuid(claims.tenant_id), shipment_id, &req.slot, req.count, req.payout_cents, ttl)
+        .await?;
+    tracing::info!(%shipment_id, slot = %req.slot, by = %claims.user_id, offers = offers.len(), "ops offered a home-move slot");
+    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "data": { "offers": offers } }))))
+}
+
+/// Internal (no JWT): POST /v1/internal/home-moves/:shipment_id/slots
+///
+/// order-intake asks for more trucks on a home move: an Emergency Secondary
+/// Dispatch when a paid addendum outgrows the trucks booked, or a support
+/// slot offered again. 201 with the offers made; 422 when no lead can fill it.
+pub async fn internal_side_slots(
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SideSlotsRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    if !(1..=4).contains(&req.count) {
+        return Err(AppError::Validation("One to four trucks at a time".into()));
+    }
+    let ttl = req.ttl_minutes.clamp(5, 24 * 60) * 60;
+    let offers = state
+        .offer_service
+        .broadcast_side_slots(TenantId::from_uuid(req.tenant_id), shipment_id, &req.slot, req.count, req.payout_cents, ttl)
+        .await?;
+    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "data": { "offers": offers } }))))
+}
+
 /// Internal (no JWT): GET /v1/internal/drivers/available
 ///
 /// Called by the AI layer's `get_available_drivers` MCP tool.

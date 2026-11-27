@@ -62,6 +62,29 @@ pub struct Config {
     #[serde(default = "default_stock_freshness_mins")]
     pub stock_freshness_mins: i64,
 
+    /// How long a scanned table session stays valid.
+    ///
+    /// Minutes, not hours. The credential that mints it is printed on vinyl in
+    /// a public room, so the blast radius of a photographed code is bounded
+    /// mostly by how quickly what it mints stops working. Long enough for a
+    /// meal, short enough that a code photographed at lunch is useless by
+    /// dinner.
+    #[serde(default = "default_table_session_mins")]
+    pub table_session_mins: i64,
+
+    /// How many parties may hold a live session at one table at once.
+    ///
+    /// A four-top does not need fifty. Without a cap, one photographed code is
+    /// an unbounded session factory. Above one so a table of friends can each
+    /// order from their own phone, which is the normal case this exists for.
+    #[serde(default = "default_table_session_cap")]
+    pub table_session_cap: i64,
+
+    /// Base URL the printed QR code points at, e.g. `https://eat.example.com`.
+    /// The code encodes `{base}/t/{token}`.
+    #[serde(default = "default_table_scan_base_url")]
+    pub table_scan_base_url: String,
+
     /// See the KNOWN LIMITATION in bootstrap: the mesh tool box is built once
     /// at startup, so these stand in for per-run request context until it is
     /// built per run.
@@ -84,6 +107,21 @@ pub struct Config {
     /// at startup.
     #[serde(default = "default_payments_url")]
     pub payments_url: String,
+
+    /// Whether to offer paying online at all.
+    ///
+    /// **Off by default, and deliberately.** `Online` checkout reaches a real
+    /// payment gateway, and a deployment whose gateway credentials are absent
+    /// or placeholder produces a "Pay now" button that fails every single time
+    /// — which is worse than no button, because the customer has no way to know
+    /// the difference between "this is broken" and "I did something wrong".
+    ///
+    /// A sandbox run against Network International on 2026-09-04 returned
+    /// `401 invalid_token` with the outlet reference literally set to
+    /// `sandbox-outlet-ref`: the credentials on that deployment were
+    /// placeholders. Turn this on once a real gateway answers.
+    #[serde(default)]
+    pub online_payment_enabled: bool,
 
     /// The currency every `Online` authorization is opened in. One value for
     /// the whole service: OmniDeliv has no multi-currency concept anywhere
@@ -143,6 +181,20 @@ fn default_claude_model() -> String { "claude-opus-4-6".to_string() }
 fn default_claude_max_tokens() -> u32 { 8192 }
 
 fn default_stock_freshness_mins() -> i64 { 30 }
+
+fn default_table_session_mins() -> i64 { 120 }
+fn default_table_session_cap() -> i64 { 8 }
+/// The landing app's dev origin, because that app serves `/t/:token`.
+///
+/// Deliberately a localhost default. The previous one --
+/// `https://order.cargomarket.net` -- was a host that **does not resolve at
+/// all**, which is the worst shape a default can take: it looks configured, so
+/// nobody sets the variable, and every printed QR encodes a URL a phone cannot
+/// even reach. A localhost default is correct in dev and obviously wrong the
+/// moment it appears on a sticker, which is the failure you want.
+///
+/// Production sets `TABLE_SCAN_BASE_URL` in `docker-compose.yml`.
+fn default_table_scan_base_url() -> String { "http://localhost:3004".to_string() }
 
 impl Config {
     pub fn load() -> anyhow::Result<Self> {

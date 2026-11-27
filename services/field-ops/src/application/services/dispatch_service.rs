@@ -352,11 +352,8 @@ impl DispatchService {
         if let Some(existing) = self.couriers.find_by_user(tenant_id, user_id).await? {
             return Ok(existing);
         }
-        let mut c = Courier::new(tenant_id, user_id, first_name, last_name, phone);
-        // The collapse from ADR-0015: one identity for a field worker. Set
-        // explicitly rather than relying on the constructor, because this is
-        // the invariant `drivers_id_is_user_id` enforces on the sibling table.
-        c.id = user_id;
+        // `Courier::new` sets id = user_id (ADR-0015; CHECK couriers_id_is_user_id).
+        let c = Courier::new(tenant_id, user_id, first_name, last_name, phone);
         self.couriers.save(&c).await?;
 
         // Open a compliance profile for them.

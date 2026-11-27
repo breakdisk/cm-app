@@ -57,6 +57,7 @@ internal fun categoryEmoji(category: String): String = when (category) {
     "medicine" -> "💊"
     "heavy"    -> "⚖️"
     "large"    -> "🚛"
+    "home_move", "home_move_joint", "home_move_support", "home_move_emergency" -> "🏠"
     else       -> "📦"   // parcel (default)
 }
 
@@ -66,7 +67,8 @@ internal fun categoryLabel(category: String): String = when (category) {
     "medicine" -> "Medicine"
     "heavy"    -> "Heavy"
     "large"    -> "Big Shipment"
-    else       -> "Parcel"
+    else       -> io.logisticos.driver.core.common.JobKind.homeHeadline(category)
+        ?.lowercase()?.replaceFirstChar { it.uppercase() } ?: "Parcel"
 }
 
 // ─── Distance / ETA helpers ───────────────────────────────────────────────────

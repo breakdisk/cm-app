@@ -11,6 +11,8 @@ import io.logisticos.driver.core.network.interceptor.TenantInterceptor
 import io.logisticos.driver.core.network.service.ComplianceApiService
 import io.logisticos.driver.core.network.service.DirectionsApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.EngagementApiService
+import io.logisticos.driver.core.network.service.HomeMoveApiService
 import io.logisticos.driver.core.network.service.HubOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
 import io.logisticos.driver.core.network.service.PaymentsApiService
@@ -155,4 +157,13 @@ object NetworkModule {
     @Provides @Singleton
     fun providePaymentsApiService(retrofit: Retrofit): PaymentsApiService =
         retrofit.create(PaymentsApiService::class.java)
+
+    /** Job chat with the customer — engagement, through the gateway. */
+    @Provides @Singleton
+    fun provideEngagementApiService(retrofit: Retrofit): EngagementApiService =
+        retrofit.create(EngagementApiService::class.java)
+
+    @Provides @Singleton
+    fun provideHomeMoveApiService(retrofit: Retrofit): HomeMoveApiService =
+        retrofit.create(HomeMoveApiService::class.java)
 }

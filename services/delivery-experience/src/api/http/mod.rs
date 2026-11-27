@@ -11,9 +11,18 @@ use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
-use logisticos_types::TenantId;
 
+use crate::domain::value_objects::Reader;
 use crate::AppState;
+
+/// The tracking reader for this token.
+fn reader(claims: &AuthClaims) -> Reader {
+    Reader {
+        tenant_id: claims.tenant_id,
+        user_id: claims.user_id,
+        tenant_wide: claims.reaches_all_tenant_shipments(),
+    }
+}
 
 /// Routes a customer reaches with a tracking number and no account.
 pub fn public_router() -> Router<AppState> {
@@ -55,7 +64,7 @@ async fn public_track(
         Ok(record) => {
             // Optional POP/POD photos from the pod service. Best-effort: a miss
             // degrades to absent evidence, never a 500.
-            let evidence = state.pod_client.get_evidence(record.shipment_id).await;
+            let evidence = state.pod_client.get_evidence(record.tenant_id.inner(), record.shipment_id).await;
 
             // Timeline: the customer tracking portal reads `events[]` with
             // { status, description, location, occurred_at } — the StatusEvent
@@ -165,18 +174,16 @@ async fn get_by_shipment_id(
     Path(shipment_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "tenant tracking")?;
 
-    let record = state.tracking_svc.get_by_shipment_id(shipment_id).await?;
-
-    // Tenants can only see their own shipments.
-    if record.tenant_id != TenantId::from_uuid(claims.tenant_id) {
-        return Err(AppError::Forbidden { resource: "shipment".to_owned() });
-    }
+    // Tenant, and for merchants and customers, owner. This view carries the
+    // driver's phone and position.
+    let record = state.tracking_svc.get_for(shipment_id, &reader(&claims)).await?;
 
     // Fetch POP + POD evidence from the pod service (non-blocking; optional).
     // Failure is logged by PodClient and surfaced as None so the tracking
     // response degrades gracefully instead of returning 500.
-    let evidence = state.pod_client.get_evidence(record.shipment_id).await;
+    let evidence = state.pod_client.get_evidence(record.tenant_id.inner(), record.shipment_id).await;
 
     // Build the enriched response: start with all TrackingRecord fields, then
     // inject the nested `pop` and `pod` evidence objects the merchant portal
@@ -210,10 +217,11 @@ async fn list_shipments(
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    logisticos_auth::partner::require_unscoped(&claims, "tenant tracking")?;
 
     let records = state
         .tracking_svc
-        .list(&TenantId::from_uuid(claims.tenant_id), q.limit.unwrap_or(50), q.offset.unwrap_or(0))
+        .list_for(&reader(&claims), q.limit.unwrap_or(50), q.offset.unwrap_or(0))
         .await?;
 
     let count = records.len();

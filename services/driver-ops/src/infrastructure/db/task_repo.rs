@@ -53,6 +53,8 @@ struct TaskRow {
     started_at:           Option<chrono::DateTime<chrono::Utc>>,
     completed_at:         Option<chrono::DateTime<chrono::Utc>>,
     failed_reason:        Option<String>,
+    grace_expires_at:     Option<chrono::DateTime<chrono::Utc>>,
+    waiting_fee_cents:    i64,
 }
 
 fn parse_task_status(s: &str) -> TaskStatus {
@@ -61,6 +63,7 @@ fn parse_task_status(s: &str) -> TaskStatus {
         "completed"   => TaskStatus::Completed,
         "failed"      => TaskStatus::Failed,
         "skipped"     => TaskStatus::Skipped,
+        "cancelled"   => TaskStatus::Cancelled,
         _             => TaskStatus::Pending,
     }
 }
@@ -72,6 +75,7 @@ fn status_str(s: TaskStatus) -> &'static str {
         TaskStatus::Completed  => "completed",
         TaskStatus::Failed     => "failed",
         TaskStatus::Skipped    => "skipped",
+        TaskStatus::Cancelled  => "cancelled",
     }
 }
 
@@ -118,12 +122,30 @@ impl From<TaskRow> for DriverTask {
             started_at: r.started_at,
             completed_at: r.completed_at,
             failed_reason: r.failed_reason,
+            grace_expires_at: r.grace_expires_at,
+            waiting_fee_cents: r.waiting_fee_cents,
         }
     }
 }
 
 #[async_trait]
 impl TaskRepository for PgTaskRepository {
+    async fn driver_phone_on_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<String>> {
+        let phone: Option<String> = sqlx::query_scalar(
+            r#"SELECT d.phone
+               FROM driver_ops.tasks t
+               JOIN driver_ops.drivers d ON d.id = t.driver_id
+               WHERE t.shipment_id = $1
+                 AND t.status IN ('pending', 'in_progress')
+               ORDER BY t.sequence
+               LIMIT 1"#,
+        )
+        .bind(shipment_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(phone.filter(|p| !p.trim().is_empty()))
+    }
+
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverTask>> {
         let row = sqlx::query_as::<_, TaskRow>(
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
@@ -132,7 +154,8 @@ impl TaskRepository for PgTaskRepository {
                       cod_amount_cents, special_instructions,
                       merchant_name, delivery_category, weight_grams,
                       pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
-                      pod_id, pop_id, started_at, completed_at, failed_reason
+                      pod_id, pop_id, started_at, completed_at, failed_reason,
+                      grace_expires_at, waiting_fee_cents
                FROM driver_ops.tasks WHERE id = $1"#
         )
         .bind(id)
@@ -153,7 +176,8 @@ impl TaskRepository for PgTaskRepository {
                       t.cod_amount_cents, t.special_instructions,
                       t.merchant_name, t.delivery_category, t.weight_grams,
                       t.pickup_lat, t.pickup_lng, t.delivery_lat, t.delivery_lng, t.payout_cents,
-                      t.pod_id, t.pop_id, t.started_at, t.completed_at, t.failed_reason
+                      t.pod_id, t.pop_id, t.started_at, t.completed_at, t.failed_reason,
+                      t.grace_expires_at, t.waiting_fee_cents
                FROM driver_ops.tasks t
                WHERE t.driver_id = $1
                ORDER BY t.sequence ASC"#
@@ -172,7 +196,8 @@ impl TaskRepository for PgTaskRepository {
                       cod_amount_cents, special_instructions,
                       merchant_name, delivery_category, weight_grams,
                       pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
-                      pod_id, pop_id, started_at, completed_at, failed_reason
+                      pod_id, pop_id, started_at, completed_at, failed_reason,
+                      grace_expires_at, waiting_fee_cents
                FROM driver_ops.tasks
                WHERE route_id = $1
                ORDER BY sequence ASC"#
@@ -194,17 +219,20 @@ impl TaskRepository for PgTaskRepository {
                     cod_amount_cents, special_instructions,
                     merchant_name, delivery_category, weight_grams,
                     pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
-                    pod_id, pop_id, started_at, completed_at, failed_reason)
+                    pod_id, pop_id, started_at, completed_at, failed_reason,
+                    grace_expires_at, waiting_fee_cents)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
                        $23,$24,$25,$26,$27,$28,$29,$30,
-                       $31,$32,$33,$34,$35)
+                       $31,$32,$33,$34,$35,$36,$37)
                ON CONFLICT (id) DO UPDATE SET
-                   status        = EXCLUDED.status,
-                   pod_id        = EXCLUDED.pod_id,
-                   pop_id        = EXCLUDED.pop_id,
-                   started_at    = EXCLUDED.started_at,
-                   completed_at  = EXCLUDED.completed_at,
-                   failed_reason = EXCLUDED.failed_reason"#
+                   status            = EXCLUDED.status,
+                   pod_id            = EXCLUDED.pod_id,
+                   pop_id            = EXCLUDED.pop_id,
+                   started_at        = EXCLUDED.started_at,
+                   completed_at      = EXCLUDED.completed_at,
+                   failed_reason     = EXCLUDED.failed_reason,
+                   grace_expires_at  = EXCLUDED.grace_expires_at,
+                   waiting_fee_cents = EXCLUDED.waiting_fee_cents"#
         )
         .bind(t.id)
         .bind(t.driver_id.inner())
@@ -241,6 +269,8 @@ impl TaskRepository for PgTaskRepository {
         .bind(t.started_at)
         .bind(t.completed_at)
         .bind(&t.failed_reason)
+        .bind(t.grace_expires_at)
+        .bind(t.waiting_fee_cents)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -362,16 +392,15 @@ impl TaskRepository for PgTaskRepository {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<EarningEntry>> {
-        // Join through drivers.user_id (tasks.driver_id is drivers.id, which
-        // may differ from the identity user UUID for API-registered drivers).
+        // tasks.driver_id is drivers.id, and migration 0014 enforces
+        // drivers.id = user_id, so the identity user UUID filters it directly.
         // Delivery tasks only: the pickup+delivery pair of a shipment pays
         // once, on the delivery leg.
         let rows = sqlx::query(
             r#"SELECT t.id AS task_id, t.tracking_number, t.merchant_name,
                       t.delivery_category, t.completed_at, t.payout_cents
                FROM driver_ops.tasks t
-               JOIN driver_ops.drivers d ON d.id = t.driver_id
-               WHERE d.user_id = $1
+               WHERE t.driver_id = $1
                  AND t.task_type = 'delivery'
                  AND t.status = 'completed'
                  AND t.completed_at >= $2 AND t.completed_at < $3
@@ -403,15 +432,34 @@ impl TaskRepository for PgTaskRepository {
         to: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<DailyEarning>> {
         let rows = sqlx::query(
-            r#"SELECT (t.completed_at AT TIME ZONE 'UTC')::date AS day,
-                      COALESCE(SUM(t.payout_cents), 0)::bigint  AS total_cents,
-                      COUNT(*)::bigint                          AS deliveries
-               FROM driver_ops.tasks t
-               JOIN driver_ops.drivers d ON d.id = t.driver_id
-               WHERE d.user_id = $1
-                 AND t.task_type = 'delivery'
-                 AND t.status = 'completed'
-                 AND t.completed_at >= $2 AND t.completed_at < $3
+            // Net of penalties: delivery payouts, plus pay for waiting past
+            // grace, less drop fees. The count is deliveries only.
+            r#"WITH lines AS (
+                   SELECT t.completed_at AS at, COALESCE(t.payout_cents, 0) AS cents, 1 AS delivery
+                   FROM driver_ops.tasks t
+                   WHERE t.driver_id = $1
+                     AND t.task_type = 'delivery'
+                     AND t.status = 'completed'
+                   UNION ALL
+                   SELECT t.completed_at, t.waiting_fee_cents, 0
+                   FROM driver_ops.tasks t
+                   WHERE t.driver_id = $1
+                     AND t.waiting_fee_cents > 0
+                   UNION ALL
+                   SELECT jd.dropped_at, -jd.fee_cents, 0
+                   FROM driver_ops.job_drops jd
+                   WHERE jd.driver_id = $1
+                     AND jd.fee_cents > 0
+                   UNION ALL
+                   SELECT ec.credited_at, ec.amount_cents, 0
+                   FROM driver_ops.earning_credits ec
+                   WHERE ec.driver_id = $1
+               )
+               SELECT (at AT TIME ZONE 'UTC')::date     AS day,
+                      COALESCE(SUM(cents), 0)::bigint    AS total_cents,
+                      COALESCE(SUM(delivery), 0)::bigint AS deliveries
+               FROM lines
+               WHERE at >= $2 AND at < $3
                GROUP BY day
                ORDER BY day DESC"#,
         )
@@ -429,8 +477,8 @@ impl TaskRepository for PgTaskRepository {
     }
 
     async fn cancel_all_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<u64> {
-        // driver_id on tasks is drivers.id (not identity user_id).
-        // The caller (TaskService) resolves drivers.id from user_id before calling here.
+        // driver_id on tasks is drivers.id, which equals the identity user_id
+        // (migration 0014). The caller (TaskService) still resolves it via the driver row.
         let result = sqlx::query(
             r#"UPDATE driver_ops.tasks
                SET status = 'cancelled'

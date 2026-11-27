@@ -26,6 +26,7 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:database"))
     implementation(project(":core:common"))
+    implementation(project(":core:designsystem"))
     implementation(project(":feature:scanner"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.bundles.camerax)

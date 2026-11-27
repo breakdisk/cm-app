@@ -68,6 +68,10 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/omnideliv/vendors", get(list_near))
         .route("/v1/omnideliv/vendors/me", get(me).patch(patch_me))
+        .route(
+            "/v1/omnideliv/vendors/me/storefront",
+            get(my_storefront).patch(patch_my_storefront),
+        )
         .route("/v1/omnideliv/vendors/me/earnings", get(my_earnings))
         .route("/v1/omnideliv/vendors/apply", post(apply))
         .route("/v1/omnideliv/admin/vendors", get(list_all))
@@ -407,4 +411,172 @@ async fn patch_me(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// What a vendor has claimed for their public storefront.
+#[derive(Debug, serde::Serialize)]
+pub struct StorefrontSettings {
+    pub slug:           Option<String>,
+    pub custom_domain:  Option<String>,
+    pub tagline:        Option<String>,
+    pub public_enabled: bool,
+    /// The shareable link, assembled server-side from the same base the table
+    /// QRs use. The portal must not build this: it does not know the public
+    /// origin, and a second copy of it in a `NEXT_PUBLIC_*` would be compiled
+    /// into the bundle and wrong for every tenant it was not built for.
+    pub public_url:     Option<String>,
+}
+
+/// A partial update.
+///
+/// Absent leaves a field alone; `""` clears it. Empty-string-as-clear rather
+/// than a tri-state `Option<Option<_>>`, because the latter needs `serde_with`
+/// — and adding a crate here changes `Cargo.lock`, which rebuilds every service
+/// image in CI. None of these three fields can legitimately be empty (a slug is
+/// at least 3 characters, a domain at least 4), so the encoding is unambiguous.
+#[derive(Debug, serde::Deserialize)]
+pub struct StorefrontPatch {
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub custom_domain: Option<String>,
+    #[serde(default)]
+    pub tagline: Option<String>,
+    #[serde(default)]
+    pub public_enabled: Option<bool>,
+}
+
+fn settings_of(v: &crate::domain::entities::Vendor, base: &str) -> StorefrontSettings {
+    // A custom domain wins when set: that is the whole point of pointing one at
+    // us, and showing the platform link instead would be showing the vendor a
+    // URL they did not ask their customers to use.
+    let public_url = if !v.public_enabled {
+        None
+    } else if let Some(d) = &v.custom_domain {
+        Some(format!("https://{d}"))
+    } else {
+        v.slug
+            .as_ref()
+            .map(|s| format!("{}/s/{s}", base.trim_end_matches('/')))
+    };
+
+    StorefrontSettings {
+        slug:           v.slug.clone(),
+        custom_domain:  v.custom_domain.clone(),
+        tagline:        v.tagline.clone(),
+        public_enabled: v.public_enabled,
+        public_url,
+    }
+}
+
+async fn my_storefront(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+) -> Result<Json<StorefrontSettings>, (StatusCode, String)> {
+    let vendor = st
+        .vendors
+        .find_by_user(claims.tenant_id, claims.user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "vendor lookup failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "could not load".to_string())
+        })?
+        .ok_or((StatusCode::NOT_FOUND, "you do not operate a store".to_string()))?;
+
+    Ok(Json(settings_of(&vendor, &st.table_scan_base_url)))
+}
+
+/// `PATCH /v1/omnideliv/vendors/me/storefront`
+///
+/// A vendor claims their own public link. Deliberately `/me`-scoped rather than
+/// operator-only: the slug is the vendor's public identity, and needing a
+/// support ticket to change it is how nobody ever sets one.
+async fn patch_my_storefront(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Json(p): Json<StorefrontPatch>,
+) -> Result<Json<StorefrontSettings>, (StatusCode, String)> {
+    let mut vendor = st
+        .vendors
+        .find_by_user(claims.tenant_id, claims.user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "vendor lookup failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "could not load".to_string())
+        })?
+        .ok_or((StatusCode::NOT_FOUND, "you do not operate a store".to_string()))?;
+
+    // Validate before assigning anything, so a rejected change leaves the
+    // storefront exactly as it was.
+    if let Some(raw) = p.slug {
+        vendor.slug = if raw.trim().is_empty() {
+            None
+        } else {
+            Some(
+                crate::domain::entities::check_slug(&raw)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+            )
+        };
+    }
+    if let Some(raw) = p.custom_domain {
+        vendor.custom_domain = if raw.trim().is_empty() {
+            None
+        } else {
+            Some(
+                crate::domain::entities::check_custom_domain(&raw)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+            )
+        };
+    }
+    if let Some(raw) = p.tagline {
+        let t: String = raw.trim().chars().take(160).collect();
+        vendor.tagline = if t.is_empty() { None } else { Some(t) };
+    }
+    if let Some(on) = p.public_enabled {
+        vendor.public_enabled = on;
+    }
+
+    // Publishing with no handle produces a storefront nobody can reach, which
+    // reads to the vendor as the feature being broken.
+    if vendor.public_enabled && vendor.slug.is_none() && vendor.custom_domain.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "choose a link name before publishing — otherwise the storefront has no address"
+                .to_string(),
+        ));
+    }
+
+    let saved = st
+        .vendors
+        .set_public_handle(
+            claims.tenant_id,
+            vendor.id,
+            vendor.slug.as_deref(),
+            vendor.custom_domain.as_deref(),
+            vendor.tagline.as_deref(),
+            vendor.public_enabled,
+        )
+        .await
+        .map_err(|e| {
+            // The unique indexes are the arbiter of who owns a name, and a
+            // clash is a normal race between two vendors, not a fault.
+            let taken = e
+                .to_string()
+                .contains("idx_vendor_slug")
+                || e.to_string().contains("idx_vendor_custom_domain");
+            if taken {
+                return (
+                    StatusCode::CONFLICT,
+                    "that link name or domain is already taken".to_string(),
+                );
+            }
+            tracing::error!(err = %e, "storefront settings save failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "could not save".to_string())
+        })?;
+
+    if !saved {
+        return Err((StatusCode::NOT_FOUND, "you do not operate a store".to_string()));
+    }
+
+    Ok(Json(settings_of(&vendor, &st.table_scan_base_url)))
 }

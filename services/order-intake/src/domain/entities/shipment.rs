@@ -83,6 +83,31 @@ pub struct Shipment {
     /// ShipmentStatus variant. `None` once paid (or if payment was never required).
     pub pending_dispatch_events: Option<serde_json::Value>,
     pub idempotency_key: Option<String>,
+    /// When the job is booked to start. `None` for a shipment booked without a
+    /// slot, which the cancellation policy does not price.
+    #[serde(default)]
+    pub scheduled_pickup_at: Option<DateTime<Utc>>,
+    /// The delivery promise as a deadline. `None` for shipments that predate
+    /// it, which never breach. Set once at creation; the sweep owns
+    /// `sla_breached_at`, which is not on this struct.
+    #[serde(default)]
+    pub sla_due_at: Option<DateTime<Utc>>,
+    /// The cancellation policy version in force when the customer booked.
+    #[serde(default)]
+    pub cancellation_policy_version: Option<String>,
+    /// The verified quote total. Display only, for the cancellation preview;
+    /// payments computes money on what it captured.
+    #[serde(default)]
+    pub booking_amount_cents: Option<i64>,
+    #[serde(default)]
+    pub booking_currency: Option<String>,
+    /// How precisely the destination was geocoded. Read by the store resolver
+    /// only; dispatch never gates on it.
+    #[serde(default)]
+    pub dest_geocoding: crate::domain::value_objects::GeocodingRecord,
+    /// Building, unit and area of the destination, when the customer gave them.
+    #[serde(default)]
+    pub dest_parts: crate::domain::value_objects::AddressParts,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -98,12 +123,17 @@ impl Shipment {
         Ok(())
     }
 
-    /// Business rule: Shipment can only be cancelled before pickup
+    /// Business rule: a shipment can be cancelled before pickup assignment.
+    ///
+    /// A scheduled job can also be cancelled after its crew is assigned, because
+    /// the cancellation policy prices that case. An unscheduled shipment keeps
+    /// the old rule (decided 2026-09-14).
     pub fn can_cancel(&self) -> bool {
-        matches!(
-            self.status,
-            ShipmentStatus::Pending | ShipmentStatus::Confirmed
-        )
+        match self.status {
+            ShipmentStatus::Pending | ShipmentStatus::Confirmed => true,
+            ShipmentStatus::PickupAssigned => self.scheduled_pickup_at.is_some(),
+            _ => false,
+        }
     }
 
     /// Business rule: Reschedule only allowed on failed delivery
@@ -123,6 +153,8 @@ impl Shipment {
             ServiceType::SameDay       => 20000,  // PHP 200.00
             ServiceType::Balikbayan    => 50000,  // PHP 500.00 per box (fallback)
             ServiceType::International => 75000,  // PHP 750.00 per box (fallback)
+            // Priced by its own path and always booked from its quote.
+            ServiceType::HomeMove      => 0,
         };
         // Weight surcharge: +PHP 10 per 0.5kg over 1kg
         let weight_kg = self.weight.grams as f64 / 1000.0;
@@ -188,6 +220,7 @@ pub fn ae_base_fee_for(service_type: ServiceType, weight_grams: u32) -> logistic
         ServiceType::SameDay       => 4_500,   // AED 45.00
         ServiceType::Balikbayan    => 12_000,  // AED 120.00 per box (fallback)
         ServiceType::International => 15_000,  // AED 150.00 per box (fallback)
+        ServiceType::HomeMove      => 0,
     };
     let weight_kg = weight_grams as f64 / 1000.0;
     let surcharge = if weight_kg > 1.0 {
@@ -265,6 +298,13 @@ mod tests {
             idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
+            scheduled_pickup_at:         None,
+            sla_due_at:                  None,
+            cancellation_policy_version: None,
+            booking_amount_cents:        None,
+            booking_currency:            None,
+            dest_geocoding:              Default::default(),
+            dest_parts:                Default::default(),
         };
         assert_eq!(s.customer_name,  "Test Customer");
         assert_eq!(s.customer_phone, "+63912345678");
@@ -303,6 +343,13 @@ mod tests {
             idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
+            scheduled_pickup_at:         None,
+            sla_due_at:                  None,
+            cancellation_policy_version: None,
+            booking_amount_cents:        None,
+            booking_currency:            None,
+            dest_geocoding:              Default::default(),
+            dest_parts:                Default::default(),
         };
         let fee = s.compute_base_fee();
         assert_eq!(fee, logisticos_types::Money::new(8500, Currency::PHP));
@@ -370,6 +417,13 @@ mod tests {
             idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
+            scheduled_pickup_at:         None,
+            sla_due_at:                  None,
+            cancellation_policy_version: None,
+            booking_amount_cents:        None,
+            booking_currency:            None,
+            dest_geocoding:              Default::default(),
+            dest_parts:                Default::default(),
         };
         let fee = s.compute_base_fee_aed();
         assert_eq!(fee, ae_base_fee_for(ServiceType::Standard, 1_500));

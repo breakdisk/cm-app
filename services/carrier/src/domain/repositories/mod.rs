@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use logisticos_types::TenantId;
-use crate::domain::entities::{Carrier, CarrierId, MarketplaceBooking, SlaRecord, VehicleListing, ZoneSlaRow};
+use crate::domain::entities::{BookingPaymentStatus, BookingStatus, Carrier, CarrierId, MarketplaceBooking, SlaRecord, VehicleListing, ZoneSlaRow};
 
 #[async_trait]
 pub trait CarrierRepository: Send + Sync {
@@ -68,6 +68,15 @@ pub trait MarketplaceRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<VehicleListing>>;
+    /// Every listing in a tenant, across all carriers, newest first. Only the
+    /// admin oversight route uses this; carrier-facing reads stay on
+    /// `list_listings_by_carrier`.
+    async fn list_listings_by_tenant(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<VehicleListing>>;
     async fn update_listing(&self, listing: &VehicleListing) -> anyhow::Result<()>;
     async fn delete_listing(&self, id: Uuid) -> anyhow::Result<bool>;
 
@@ -119,5 +128,26 @@ pub trait MarketplaceRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<MarketplaceBooking>>;
+    /// Every booking in a tenant, across all carriers, newest first. Admin
+    /// oversight only.
+    async fn list_bookings_by_tenant(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<MarketplaceBooking>>;
     async fn save_booking(&self, booking: &MarketplaceBooking) -> anyhow::Result<()>;
+
+    /// Compare-and-set: writes `booking` only if the stored row is still at
+    /// `expected_status` and `expected_payment`. Returns `false` (nothing
+    /// written) when it is not, i.e. someone else moved the booking since it
+    /// was read. Every transition out of `Pending` that moves money goes
+    /// through this, so two racing callers cannot both win. No row lock is held
+    /// across the provider call: the guard lives in the single UPDATE.
+    async fn transition_booking(
+        &self,
+        booking: &MarketplaceBooking,
+        expected_status: &BookingStatus,
+        expected_payment: BookingPaymentStatus,
+    ) -> anyhow::Result<bool>;
 }

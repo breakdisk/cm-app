@@ -44,14 +44,41 @@ impl PaymentsClient {
         currency:     &str,
         return_url:   &str,
     ) -> anyhow::Result<CreatedIntent> {
+        self.create_intent(tenant_id, "shipping_fee", "shipment", shipment_id, amount_cents, currency, return_url).await
+    }
+
+    /// A whole-home move's survey addendum, approved by the customer: its own
+    /// payment, so the shipment's captured-payment handling never sees it.
+    pub async fn create_home_addendum_intent(
+        &self,
+        tenant_id:    Uuid,
+        addendum_id:  Uuid,
+        amount_cents: i64,
+        currency:     &str,
+        return_url:   &str,
+    ) -> anyhow::Result<CreatedIntent> {
+        self.create_intent(tenant_id, "home_addendum", "home_addendum", addendum_id, amount_cents, currency, return_url).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_intent(
+        &self,
+        tenant_id:      Uuid,
+        purpose:        &str,
+        reference_type: &str,
+        reference_id:   Uuid,
+        amount_cents:   i64,
+        currency:       &str,
+        return_url:     &str,
+    ) -> anyhow::Result<CreatedIntent> {
         let url = format!("{}/v1/internal/payments/intents", self.base_url.trim_end_matches('/'));
         let resp = self.http
             .post(&url)
             .json(&CreateIntentRequest {
                 tenant_id,
-                purpose: "shipping_fee".into(),
-                reference_type: "shipment".into(),
-                reference_id: shipment_id,
+                purpose: purpose.into(),
+                reference_type: reference_type.into(),
+                reference_id,
                 amount_cents,
                 currency: currency.into(),
                 return_url: return_url.into(),

@@ -56,6 +56,33 @@ impl PgPushTokenRepository {
         Ok(rows.into_iter().map(|(t,)| t).collect())
     }
 
+    /// Tokens of the users in one tenant whose login email or phone matches.
+    /// For campaign pushes: a campaign addresses a CDP profile, whose id is
+    /// not a user id, but whose email and phone are the customer's login.
+    pub async fn list_by_contact(
+        &self,
+        tenant_id: uuid::Uuid,
+        app: &str,
+        email: Option<&str>,
+        phones: &[String],
+    ) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT DISTINCT pt.token
+                 FROM identity.push_tokens pt
+                 JOIN identity.users u ON u.id = pt.user_id
+                WHERE u.tenant_id = $1 AND pt.app = $2 AND u.is_active
+                  AND ((($3::text IS NOT NULL) AND lower(u.email) = lower($3))
+                       OR u.phone_number = ANY($4))"#
+        )
+        .bind(tenant_id)
+        .bind(app)
+        .bind(email)
+        .bind(phones)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(t,)| t).collect())
+    }
+
     /// Delete a push token (on logout / uninstall).
     pub async fn delete(&self, tenant_id: uuid::Uuid, token: &str) -> anyhow::Result<()> {
         sqlx::query(

@@ -4,6 +4,7 @@ pub mod consolidation;
 pub mod eta;
 pub mod order;
 pub mod telemetry;
+pub mod venue;
 pub mod vendor;
 pub mod vendor_ledger;
 
@@ -17,10 +18,16 @@ pub use catalog::{
     ModifierError, ModifierGroup, ModifierOption, SelectedModifier,
 };
 pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
-pub use order::{
-    FundingSource, LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus,
+pub use order::{Fulfilment,
+    AcceptanceState, FundingSource, LegStatus, Order, OrderStatus, PaymentMethod, PaymentStatus,
     PaymentTransitionError, Settlement, VendorLeg,
 };
 pub use telemetry::TelemetryEvent;
-pub use vendor::{Vendor, VendorStatus, Vertical};
+pub use venue::{
+    new_table_token, orderable_now, NotOrderable, OpeningWindow, Table, TableSession,
+    TableStatus, Venue, VenueInvalid, VenueKind, VenueStatus,
+};
+pub use vendor::{
+    check_custom_domain, check_slug, HandleInvalid, Vendor, VendorStatus, Vertical,
+};
 pub use vendor_ledger::{current_period,EntryKind, LedgerEntry, LedgerStatus, VendorLedger};

@@ -37,6 +37,41 @@ struct FakeVendors {
 // real cross-tenant write until it was corrected.
 #[async_trait]
 impl VendorRepository for FakeVendors {
+    // Deliberately NOT tenant-filtered, because the real one cannot be: a
+    // public handle is resolved before any tenant is known. `public_enabled`
+    // is honoured for the same reason the Pg version puts it in the WHERE --
+    // an unpublished storefront must read as absent, not as hidden.
+    async fn find_public_storefront(&self, handle: &str) -> anyhow::Result<Option<Vendor>> {
+        let h = handle.trim().to_ascii_lowercase();
+        Ok(self
+            .by_user
+            .iter()
+            .map(|(_, v)| v)
+            .find(|v| {
+                v.public_enabled
+                    && (v.slug.as_deref() == Some(h.as_str())
+                        || v.custom_domain.as_deref() == Some(h.as_str()))
+            })
+            .cloned())
+    }
+
+    async fn set_public_handle(
+        &self,
+        tenant_id:       Uuid,
+        vendor_id:       Uuid,
+        _slug:           Option<&str>,
+        _custom_domain:  Option<&str>,
+        _tagline:        Option<&str>,
+        _public_enabled: bool,
+    ) -> anyhow::Result<bool> {
+        // Reports the same "is this yours" answer the real UPDATE's row count
+        // does; the fake holds no mutable state, so nothing is written.
+        Ok(self
+            .by_user
+            .iter()
+            .any(|(_, v)| v.id == vendor_id && v.tenant_id == tenant_id))
+    }
+
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Vendor>> {
         Ok(self.by_user.iter()
             .find(|(_, v)| v.id == id && v.tenant_id == tenant_id)

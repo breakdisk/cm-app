@@ -190,20 +190,40 @@ pub struct InMemoryShipmentRepository {
     /// that no lifecycle event was published for a shipment that never
     /// persisted.
     fail_save: bool,
+    /// (tenant, shipment, carrier) partner links, as `shipment_partner_links`.
+    links: Mutex<Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid)>>,
 }
 
 impl InMemoryShipmentRepository {
     pub fn new() -> Self {
-        Self { shipments: Mutex::new(Vec::new()), fail_save: false }
+        Self { shipments: Mutex::new(Vec::new()), fail_save: false, links: Mutex::new(Vec::new()) }
     }
 
     /// A repo whose `save` always fails.
     pub fn failing_save() -> Self {
-        Self { shipments: Mutex::new(Vec::new()), fail_save: true }
+        Self { shipments: Mutex::new(Vec::new()), fail_save: true, links: Mutex::new(Vec::new()) }
+    }
+
+    /// Record that `carrier` handles `shipment`.
+    pub fn link(&self, tenant: uuid::Uuid, shipment: uuid::Uuid, carrier: uuid::Uuid) {
+        self.links.lock().unwrap().push((tenant, shipment, carrier));
+    }
+
+    fn linked(&self, tenant: uuid::Uuid, shipment: uuid::Uuid, carrier: uuid::Uuid) -> bool {
+        self.links.lock().unwrap().contains(&(tenant, shipment, carrier))
     }
 }
 
 impl ShipmentRepository for InMemoryShipmentRepository {
+    fn is_linked<'a>(
+        &'a self,
+        tenant_id: uuid::Uuid,
+        shipment_id: uuid::Uuid,
+        carrier_id: uuid::Uuid,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move { Ok(self.linked(tenant_id, shipment_id, carrier_id)) })
+    }
+
     fn find_by_id<'a>(
         &'a self,
         id: &'a ShipmentId,
@@ -308,6 +328,11 @@ impl ShipmentRepository for InMemoryShipmentRepository {
                 .filter(|s| {
                     filter.status.as_ref().is_none_or(|st| {
                         format!("{:?}", s.status).to_lowercase() == st.to_lowercase()
+                    })
+                })
+                .filter(|s| {
+                    filter.partner_id.is_none_or(|carrier| {
+                        self.linked(filter.tenant_id, s.id.inner(), carrier)
                     })
                 })
                 .cloned()
@@ -474,6 +499,9 @@ fn build_test_server_with_publisher_and_payments(
             quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
             shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
         }),
+        None,
+        Default::default(),
+        Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -515,6 +543,9 @@ fn build_test_server_with_payment_disabled(
         normalizer,
         awb_gen,
         None,
+        None,
+        Default::default(),
+        Default::default(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -688,6 +719,13 @@ fn make_shipment(
         idempotency_key:         None,
         created_at:           now,
         updated_at:           now,
+        scheduled_pickup_at:         None,
+        sla_due_at:                  None,
+        cancellation_policy_version: None,
+        booking_amount_cents:        None,
+        booking_currency:            None,
+        dest_geocoding:              Default::default(),
+        dest_parts:                Default::default(),
     }
 }
 
@@ -2129,6 +2167,13 @@ mod payment_aware_create {
             amount_cents,
             currency: "AED".to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
+            pricing_mode: Some("parcel_tariff".to_string()),
+            billable_grams: None,
+            accessorial_paid_cents: None,
+            discount_cents: None,
+            promo_code: None,
+            account_id: None,
+            discounts: None,
         };
         quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
     }
@@ -2562,6 +2607,14 @@ mod payment_consumer_tests {
         repo: Arc<InMemoryShipmentRepository>,
         publisher: Arc<dyn EventPublisher>,
     ) -> Arc<ShipmentService> {
+        build_service_with_policy(repo, publisher, CancellationPolicy::default())
+    }
+
+    fn build_service_with_policy(
+        repo: Arc<InMemoryShipmentRepository>,
+        publisher: Arc<dyn EventPublisher>,
+        policy: CancellationPolicy,
+    ) -> Arc<ShipmentService> {
         Arc::new(ShipmentService::new(
             Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
             publisher,
@@ -2572,6 +2625,9 @@ mod payment_consumer_tests {
                 quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
                 shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
             }),
+            None,
+            Default::default(),
+            policy,
         ))
     }
 
@@ -2858,6 +2914,209 @@ mod payment_consumer_tests {
     }
 
     // ========================================================================
+    // By-id authority. `find_by_id` is `WHERE id = $1` and nothing sets the
+    // RLS tenant, so the service itself is what stops a caller acting on a
+    // shipment that is not theirs. These drive the real `cancel()`, not the
+    // pure rule, to prove the check is wired.
+    // ========================================================================
+
+    use logisticos_errors::AppError;
+    use logisticos_order_intake::application::commands::CancelShipmentCommand;
+    use logisticos_order_intake::domain::value_objects::cancel_authority::{ActingAs, Actor};
+
+    fn cancel_as(shipment_id: uuid::Uuid, acting_as: ActingAs) -> CancelShipmentCommand {
+        CancelShipmentCommand { shipment_id, reason: "test".into(), acting_as }
+    }
+
+    /// The live bug: an operator in one tenant cancelling another tenant's
+    /// shipment by uuid, which payments then refunded in full.
+    #[tokio::test]
+    async fn a_cancel_from_another_tenant_is_not_found_and_changes_nothing() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let owner = uuid::Uuid::new_v4();
+        let shipment = make_shipment(uuid::Uuid::new_v4(), owner, ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let intruder = Actor { tenant_id: uuid::Uuid::new_v4(), user_id: owner, tenant_wide: true };
+        let err = svc.cancel(cancel_as(shipment_id, ActingAs::User(intruder))).await
+            .expect_err("another tenant must not cancel this shipment");
+
+        assert!(matches!(err, AppError::NotFound { .. }), "must be 404, not 403, so ids cannot be probed: {err:?}");
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Confirmed);
+        assert!(recorder.published.lock().unwrap().is_empty(), "nothing may reach payments");
+    }
+
+    #[tokio::test]
+    async fn a_customer_cannot_cancel_another_customers_shipment() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let shipment = make_shipment(tenant_id, uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let other_customer = Actor { tenant_id, user_id: uuid::Uuid::new_v4(), tenant_wide: false };
+        let err = svc.cancel(cancel_as(shipment_id, ActingAs::User(other_customer))).await
+            .expect_err("a customer may cancel only their own shipment");
+
+        assert!(matches!(err, AppError::NotFound { .. }), "{err:?}");
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Confirmed);
+    }
+
+    /// The owner can cancel, and the event now names the shipment's tenant.
+    /// It carried `Uuid::nil()` before.
+    #[tokio::test]
+    async fn an_owner_cancel_publishes_the_shipments_real_tenant() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let (tenant_id, owner) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let shipment = make_shipment(tenant_id, owner, ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let me = Actor { tenant_id, user_id: owner, tenant_wide: false };
+        svc.cancel(cancel_as(shipment_id, ActingAs::User(me))).await.expect("the owner may cancel");
+
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Cancelled);
+        let records = recorder.records.lock().unwrap();
+        let (_, _, payload) = records.iter()
+            .find(|(topic, _, _)| topic == topics::SHIPMENT_CANCELLED)
+            .expect("shipment.cancelled must be published");
+        let envelope: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(envelope["tenant_id"], serde_json::json!(tenant_id), "the event must carry the real tenant");
+    }
+
+    /// A command nobody stamped with an actor is refused, not trusted.
+    #[tokio::test]
+    async fn a_cancel_with_no_actor_is_refused() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let shipment = make_shipment(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let err = svc.cancel(cancel_as(shipment_id, ActingAs::default())).await
+            .expect_err("an unset actor must be refused");
+
+        assert!(matches!(err, AppError::Internal(_)), "{err:?}");
+        assert_eq!(find(&repo, shipment_id).status, ShipmentStatus::Confirmed);
+    }
+
+    // ========================================================================
+    // Cancellation policy. order-intake states the rate on shipment.cancelled;
+    // payments applies it to what it captured. Scheduled jobs only.
+    // ========================================================================
+
+    use logisticos_order_intake::domain::value_objects::cancellation_policy::CancellationPolicy;
+
+    /// Placeholder rates, only to exercise the tiers. The shipped default is 0%.
+    fn live_policy() -> CancellationPolicy {
+        CancellationPolicy {
+            version: "2026-09".into(),
+            free_until_hours: 48,
+            late_from_hours: 24,
+            late_bps: 1_500,
+            same_day_bps: 10_000,
+        }
+    }
+
+    fn cancelled_data(recorder: &RecordingEventPublisher) -> serde_json::Value {
+        let records = recorder.records.lock().unwrap();
+        let (_, _, payload) = records.iter()
+            .find(|(topic, _, _)| topic == topics::SHIPMENT_CANCELLED)
+            .expect("shipment.cancelled must be published");
+        serde_json::from_str::<serde_json::Value>(payload).unwrap()["data"].clone()
+    }
+
+    /// Returns the published event data after the owner cancels.
+    async fn cancel_as_owner(
+        policy: CancellationPolicy,
+        status: ShipmentStatus,
+        scheduled_in: Option<chrono::Duration>,
+    ) -> (Result<(), AppError>, Arc<RecordingEventPublisher>) {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service_with_policy(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            policy,
+        );
+        let (tenant_id, owner) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let shipment = Shipment {
+            scheduled_pickup_at: scheduled_in.map(|d| chrono::Utc::now() + d),
+            ..make_shipment(tenant_id, owner, status)
+        };
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+        let me = Actor { tenant_id, user_id: owner, tenant_wide: false };
+        (svc.cancel(cancel_as(shipment_id, ActingAs::User(me))).await, recorder)
+    }
+
+    /// Every parcel booked today has no scheduled time. Its cancellation must
+    /// carry no retention, so payments refunds in full, as it always has.
+    #[tokio::test]
+    async fn an_unscheduled_cancellation_carries_no_retention() {
+        let (result, recorder) = cancel_as_owner(live_policy(), ShipmentStatus::Confirmed, None).await;
+        result.expect("cancel must succeed");
+        let data = cancelled_data(&recorder);
+        assert!(data.get("retention_bps").is_none(), "unscheduled must not be priced: {data}");
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_cancellation_19_hours_out_states_the_late_rate() {
+        let (result, recorder) =
+            cancel_as_owner(live_policy(), ShipmentStatus::Confirmed, Some(chrono::Duration::hours(19))).await;
+        result.expect("cancel must succeed");
+        let data = cancelled_data(&recorder);
+        assert_eq!(data["retention_bps"], 1_500);
+        assert_eq!(data["cancellation_tier"], "late");
+    }
+
+    /// The shipped default: rates are 0 until finance confirms them, so a
+    /// scheduled cancellation states a zero rate and payments refunds in full.
+    #[tokio::test]
+    async fn the_default_policy_states_a_zero_rate() {
+        let (result, recorder) = cancel_as_owner(
+            CancellationPolicy::default(),
+            ShipmentStatus::Confirmed,
+            Some(chrono::Duration::hours(19)),
+        ).await;
+        result.expect("cancel must succeed");
+        assert_eq!(cancelled_data(&recorder)["retention_bps"], 0);
+    }
+
+    /// A scheduled job can be cancelled after its crew is assigned, because the
+    /// policy prices that case.
+    #[tokio::test]
+    async fn a_scheduled_job_can_be_cancelled_after_crew_assignment() {
+        let (result, _) = cancel_as_owner(
+            live_policy(),
+            ShipmentStatus::PickupAssigned,
+            Some(chrono::Duration::hours(3)),
+        ).await;
+        result.expect("a scheduled job past assignment is cancellable");
+    }
+
+    /// Decided 2026-09-14: an unscheduled shipment keeps the old rule.
+    #[tokio::test]
+    async fn an_unscheduled_shipment_still_cannot_be_cancelled_after_assignment() {
+        let (result, recorder) = cancel_as_owner(live_policy(), ShipmentStatus::PickupAssigned, None).await;
+        let err = result.expect_err("the old rule refuses this");
+        assert!(matches!(err, AppError::BusinessRule(_)), "{err:?}");
+        assert!(recorder.published.lock().unwrap().is_empty());
+    }
+
+    // ========================================================================
     // Task 20: `ShipmentService::sweep_expired_payments` — the periodic
     // backstop spawned in `bootstrap.rs` for shipments left `awaiting_payment`
     // past the TTL. Exercises `InMemoryShipmentRepository::find_awaiting_
@@ -2988,5 +3247,808 @@ mod payment_consumer_tests {
             recorder.published.lock().unwrap().len(), 0,
             "nothing should have been published for a paid shipment"
         );
+    }
+}
+
+// ===========================================================================
+// Promo codes at booking: a quote discounted by a code spends it on create.
+// ===========================================================================
+
+mod promo_booking {
+    use super::*;
+    use logisticos_order_intake::domain::value_objects::quote_token::{self, QuoteTokenPayload, TokenDiscount};
+    use logisticos_order_intake::infrastructure::http::PromotionsClient;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// One local server standing in for both payments and promotions — both
+    /// clients are concrete reqwest structs, so a real listener is the seam.
+    struct Mesh {
+        url: String,
+        redeems: Arc<AtomicUsize>,
+        releases: Arc<AtomicUsize>,
+        intents: Arc<AtomicUsize>,
+        /// The last redeem body promotions received.
+        redeemed: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+    }
+
+    async fn spawn_mesh(redeem_status: u16, payments_fail: bool) -> Mesh {
+        spawn_mesh_replying(redeem_status, "", payments_fail).await
+    }
+
+    async fn spawn_mesh_replying(redeem_status: u16, redeem_body: &'static str, payments_fail: bool) -> Mesh {
+        use axum::{routing::post, Json, Router};
+        let redeems = Arc::new(AtomicUsize::new(0));
+        let releases = Arc::new(AtomicUsize::new(0));
+        let intents = Arc::new(AtomicUsize::new(0));
+        let redeemed = Arc::new(std::sync::Mutex::new(None));
+        let fail = Arc::new(AtomicBool::new(payments_fail));
+        let (r, l, i, b) = (Arc::clone(&redeems), Arc::clone(&releases), Arc::clone(&intents), Arc::clone(&redeemed));
+
+        let app = Router::new()
+            .route("/v1/internal/promotions/redeem", post(move |Json(body): Json<serde_json::Value>| {
+                let r = Arc::clone(&r);
+                let b = Arc::clone(&b);
+                async move {
+                    r.fetch_add(1, Ordering::SeqCst);
+                    *b.lock().unwrap() = Some(body);
+                    (axum::http::StatusCode::from_u16(redeem_status).unwrap(), redeem_body)
+                }
+            }))
+            .route("/v1/internal/promotions/release", post(move || {
+                let l = Arc::clone(&l);
+                async move {
+                    l.fetch_add(1, Ordering::SeqCst);
+                    axum::http::StatusCode::NO_CONTENT
+                }
+            }))
+            .route("/v1/internal/payments/intents", post(move || {
+                let i = Arc::clone(&i);
+                let fail = Arc::clone(&fail);
+                async move {
+                    i.fetch_add(1, Ordering::SeqCst);
+                    if fail.load(Ordering::SeqCst) {
+                        return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                    Ok(Json(serde_json::json!({
+                        "intent_id": uuid::Uuid::new_v4(),
+                        "checkout_url": "https://checkout.test/pay/promo",
+                    })))
+                }
+            }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock mesh");
+        let addr = listener.local_addr().expect("mock mesh addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Mesh { url: format!("http://{addr}"), redeems, releases, intents, redeemed }
+    }
+
+    fn server(repo: Arc<InMemoryShipmentRepository>, mesh_url: &str) -> (TestClient, JwtService) {
+        let svc = Arc::new(
+            ShipmentService::new(
+                Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
+                Arc::new(NoOpEventPublisher),
+                Arc::new(PassthroughNormalizer),
+                Arc::new(MockAwbGenerator::default()),
+                Some(PaymentCapability {
+                    client: Arc::new(PaymentsClient::new(mesh_url)),
+                    quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
+                    shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
+                }),
+                None,
+                Default::default(),
+                Default::default(),
+            )
+            .with_promotions(Some(Arc::new(PromotionsClient::new(mesh_url)))),
+        );
+        let state = AppState {
+            query: Arc::new(ShipmentQueryService::new(Arc::clone(&repo) as Arc<dyn ShipmentRepository>)),
+            svc,
+            jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+                .expect("lazy pool construction is infallible"),
+        };
+        (TestClient::new(router(state)), JwtService::new(TEST_JWT_SECRET, 3600, 86400))
+    }
+
+    /// A quote discounted by MOVE20, priced for `account`.
+    fn promo_token(tenant_id: uuid::Uuid, account: uuid::Uuid) -> String {
+        let payload = QuoteTokenPayload {
+            tenant_id,
+            service_type: "standard".to_string(),
+            weight_grams: 1_500,
+            amount_cents: 1_700,
+            currency: "AED".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
+            pricing_mode: Some("parcel_tariff".to_string()),
+            billable_grams: None,
+            accessorial_paid_cents: None,
+            discount_cents: Some(500),
+            promo_code: Some("MOVE20".to_string()),
+            account_id: Some(account),
+            discounts: None,
+        };
+        quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+    }
+
+    /// A quote discounted by the Gold tier and 300 of account credit — no code.
+    fn stacked_token(tenant_id: uuid::Uuid, account: uuid::Uuid) -> String {
+        let payload = QuoteTokenPayload {
+            tenant_id,
+            service_type: "standard".to_string(),
+            weight_grams: 1_500,
+            amount_cents: 1_500,
+            currency: "AED".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
+            pricing_mode: Some("parcel_tariff".to_string()),
+            billable_grams: None,
+            accessorial_paid_cents: None,
+            discount_cents: Some(700),
+            promo_code: None,
+            account_id: Some(account),
+            discounts: Some(vec![
+                TokenDiscount { kind: "tier".into(), label: "Gold".into(), amount_cents: 400 },
+                TokenDiscount { kind: "credit".into(), label: "Account credit".into(), amount_cents: 300 },
+            ]),
+        };
+        quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+    }
+
+    async fn book(server: &TestClient, jwt: &JwtService, tenant_id: uuid::Uuid, user_id: uuid::Uuid, quote: String) -> u16 {
+        book_full(server, jwt, tenant_id, user_id, quote).await.0
+    }
+
+    async fn book_full(server: &TestClient, jwt: &JwtService, tenant_id: uuid::Uuid, user_id: uuid::Uuid, quote: String) -> (u16, String) {
+        let token = mint_merchant_token_with_currency(jwt, tenant_id, user_id, Some("AED"));
+        let mut body = valid_shipment_body();
+        body["weight_grams"] = json!(1_500u32);
+        body["quote_token"] = json!(quote);
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+        (resp.status_code().as_u16(), String::from_utf8_lossy(&resp.bytes).into_owned())
+    }
+
+    #[tokio::test]
+    async fn a_discounted_quote_spends_its_code_once_and_books() {
+        let mesh = spawn_mesh(204, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, me)).await, 201);
+        assert_eq!(mesh.redeems.load(Ordering::SeqCst), 1);
+        assert_eq!(mesh.releases.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 1);
+        // A token from before discount lines still spends its code as one.
+        let sent = mesh.redeemed.lock().unwrap().clone().expect("redeem body");
+        assert_eq!(sent["code"], "MOVE20");
+        assert_eq!(sent["lines"], json!([{ "kind": "code", "label": "MOVE20", "amount_cents": 500 }]));
+    }
+
+    /// No code at all: the tier and the credit were still taken off, so both
+    /// are spent — the tier against its budget, the credit off the balance.
+    #[tokio::test]
+    async fn a_quote_discounted_without_a_code_spends_every_line() {
+        let mesh = spawn_mesh(204, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, stacked_token(tenant, me)).await, 201);
+        let sent = mesh.redeemed.lock().unwrap().clone().expect("redeem body");
+        assert_eq!(sent["account_id"], json!(me));
+        assert_eq!(sent["currency"], "AED");
+        assert!(sent["code"].is_null());
+        let kinds: Vec<&str> = sent["lines"].as_array().unwrap().iter().map(|l| l["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["tier", "credit"]);
+    }
+
+    /// The credit was spent on another booking since the quote: the booking
+    /// stops before any payment, and says why.
+    #[tokio::test]
+    async fn credit_spent_since_the_quote_stops_the_booking() {
+        let mesh = spawn_mesh_replying(409, r#"{"error":{"code":"CONFLICT","message":"CREDIT_CHANGED"}}"#, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        let (status, body) = book_full(&server, &jwt, tenant, me, stacked_token(tenant, me)).await;
+        assert_eq!(status, 409);
+        assert!(body.contains("CREDIT_CHANGED"), "the app must be told it was the credit: {body}");
+        assert_eq!(mesh.intents.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+
+    /// Another booking spent this month's code since the quote. Nothing may
+    /// move: no payment opened, no shipment stored.
+    #[tokio::test]
+    async fn a_code_spent_since_the_quote_stops_the_booking_before_any_money() {
+        let mesh = spawn_mesh(409, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, me)).await, 409);
+        assert_eq!(mesh.intents.load(Ordering::SeqCst), 0, "no payment for a discount that no longer holds");
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+
+    /// The code was spent, then the payment could not be opened: the booking
+    /// never exists, so the code goes back.
+    #[tokio::test]
+    async fn a_booking_that_fails_after_spending_the_code_gives_it_back() {
+        let mesh = spawn_mesh(204, true).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, me)).await, 500);
+        assert_eq!(mesh.redeems.load(Ordering::SeqCst), 1);
+        assert_eq!(mesh.releases.load(Ordering::SeqCst), 1);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+
+    /// A code is one account's month. A token priced for someone else in the
+    /// tenant does not book, and spends nothing.
+    #[tokio::test]
+    async fn a_discount_priced_for_another_account_is_refused() {
+        let mesh = spawn_mesh(204, false).await;
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = server(Arc::clone(&repo), &mesh.url);
+        let (tenant, me, someone) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        assert_eq!(book(&server, &jwt, tenant, me, promo_token(tenant, someone)).await, 422);
+        assert_eq!(mesh.redeems.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+}
+
+/// Whole-home moving over HTTP: off until a trip rate is set, and a calendar
+/// that holds its own rule. Pricing is covered by the domain's tests; the
+/// quote needs the catalogue table, which these tests do not have.
+mod home_moves {
+    use super::*;
+    use logisticos_order_intake::domain::value_objects::home_move::HomeRates;
+
+    fn server(rates: HomeRates) -> (TestClient, JwtService) {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let svc = Arc::new(
+            ShipmentService::new(
+                Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
+                Arc::new(NoOpEventPublisher),
+                Arc::new(PassthroughNormalizer),
+                Arc::new(MockAwbGenerator::default()),
+                None,
+                None,
+                Default::default(),
+                Default::default(),
+            )
+            .with_home_rates(rates),
+        );
+        let state = AppState {
+            query: Arc::new(ShipmentQueryService::new(Arc::clone(&repo) as Arc<dyn ShipmentRepository>)),
+            svc,
+            jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+                .expect("lazy pool construction is infallible"),
+        };
+        (TestClient::new(router(state)), JwtService::new(TEST_JWT_SECRET, 3600, 86400))
+    }
+
+    async fn get_slots(server: &TestClient, jwt: &JwtService) -> TestResponse {
+        let token = mint_merchant_token_with_currency(jwt, uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), Some("PHP"));
+        server
+            .get("/v1/shipments/home/slots")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await
+    }
+
+    /// The ordinary create endpoint cannot book a home move: it would skip the
+    /// home pricing, the calendar and the 70 kg cap all at once.
+    #[tokio::test]
+    async fn a_home_move_cannot_be_booked_through_the_parcel_endpoint() {
+        let (server, jwt) = server(HomeRates { trip_cents: 22_000, ..HomeRates::default() });
+        let token = mint_merchant_token_with_currency(&jwt, uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), Some("PHP"));
+        let mut body = valid_shipment_body();
+        body["service_type"] = json!("home_move");
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+        assert_eq!(resp.status_code().as_u16(), 422);
+        assert!(String::from_utf8_lossy(&resp.bytes).contains("/v1/shipments/home"));
+    }
+
+    #[tokio::test]
+    async fn home_moves_are_refused_until_a_trip_rate_is_set() {
+        let (server, jwt) = server(HomeRates::default());
+        assert_eq!(get_slots(&server, &jwt).await.status_code().as_u16(), 503);
+    }
+
+    #[tokio::test]
+    async fn the_calendar_offers_surveys_before_moves_and_states_the_gap() {
+        let (server, jwt) = server(HomeRates { trip_cents: 22_000, ..HomeRates::default() });
+        let resp = get_slots(&server, &jwt).await;
+        assert_eq!(resp.status_code().as_u16(), 200);
+        let body: serde_json::Value = resp.json();
+        let data = &body["data"];
+        assert_eq!(data["survey_lead_days"], 2);
+        let first_survey = data["survey"][0]["starts_at"].as_str().unwrap().to_owned();
+        let first_move = data["move"][0]["starts_at"].as_str().unwrap().to_owned();
+        assert!(first_survey < first_move, "the first survey window comes before the first move");
+        assert!(data["move"].as_array().unwrap().len() > 10);
+    }
+}
+
+// ============================================================================
+// Partner-scoped shipment reads
+//
+// A partner token used to read every shipment in the tenant: the list filtered
+// only on tenant, and a by-id read checked only tenant and owner. These drive
+// the real query service with an in-memory repository that knows the links.
+// ============================================================================
+
+mod partner_scope {
+    use super::*;
+    use logisticos_auth::partner::PartnerAccess;
+    use logisticos_errors::AppError;
+    use logisticos_order_intake::application::queries::ListShipmentsQuery;
+    use logisticos_order_intake::domain::value_objects::cancel_authority::{ActingAs, Actor};
+    use uuid::Uuid;
+
+    struct World {
+        repo:   Arc<InMemoryShipmentRepository>,
+        query:  ShipmentQueryService,
+        tenant: Uuid,
+        mine:   Uuid, // carrier C
+        other:  Uuid, // carrier D
+        /// Shipments: s1, s2 linked to C; s3 linked to D; s4 linked to nobody.
+        s: [Uuid; 4],
+        merchants: [Uuid; 2],
+    }
+
+    fn world() -> World {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchants = [Uuid::new_v4(), Uuid::new_v4()];
+        let mut s = [Uuid::nil(); 4];
+        for (i, slot) in s.iter_mut().enumerate() {
+            let shipment = make_shipment(tenant, merchants[i % 2], ShipmentStatus::Confirmed);
+            *slot = shipment.id.inner();
+            repo.shipments.lock().unwrap().push(shipment);
+        }
+        repo.link(tenant, s[0], mine);
+        repo.link(tenant, s[1], mine);
+        repo.link(tenant, s[2], other);
+        let query = ShipmentQueryService::new(Arc::clone(&repo) as Arc<dyn ShipmentRepository>);
+        World { repo, query, tenant, mine, other, s, merchants }
+    }
+
+    /// A partner, store rider or operator: all reach the tenant by permission
+    /// (they create nothing), which is exactly why the link check has to exist.
+    fn tenant_wide(w: &World) -> Actor {
+        Actor { tenant_id: w.tenant, user_id: Uuid::new_v4(), tenant_wide: true }
+    }
+
+    fn all() -> ListShipmentsQuery {
+        ListShipmentsQuery { status: None, merchant_id: None, page: None, per_page: None }
+    }
+
+    fn ids(shipments: &[Shipment]) -> Vec<Uuid> {
+        let mut v: Vec<Uuid> = shipments.iter().map(|s| s.id.inner()).collect();
+        v.sort();
+        v
+    }
+
+    #[tokio::test]
+    async fn partner_lists_only_linked_shipments() {
+        let w = world();
+        let (rows, total) = w.query.list(&tenant_wide(&w), PartnerAccess::Scoped(w.mine), all()).await.unwrap();
+        let mut want = vec![w.s[0], w.s[1]];
+        want.sort();
+        assert_eq!(ids(&rows), want);
+        assert_eq!(total, 2);
+    }
+
+    /// The store rider holds the plain `driver` role, which reaches the tenant.
+    /// With a pid and no links it must see nothing, not everything.
+    #[tokio::test]
+    async fn store_rider_with_pid_cannot_list_the_tenant() {
+        let w = world();
+        let stranger_store = Uuid::new_v4();
+        let (rows, total) = w.query.list(&tenant_wide(&w), PartnerAccess::Scoped(stranger_store), all()).await.unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn partner_cannot_widen_with_merchant_id() {
+        let w = world();
+        // s[2] belongs to merchants[0], is linked to the OTHER carrier, and so
+        // must stay invisible however the caller filters.
+        let q = ListShipmentsQuery { merchant_id: Some(w.merchants[0]), ..all() };
+        let (rows, _) = w.query.list(&tenant_wide(&w), PartnerAccess::Scoped(w.mine), q).await.unwrap();
+        assert!(!ids(&rows).contains(&w.s[2]), "an unlinked shipment appeared");
+        assert!(!ids(&rows).contains(&w.s[3]), "a shipment linked to nobody appeared");
+        // merchants[0] owns s[0] and s[2]; only s[0] is also linked to us.
+        assert_eq!(ids(&rows), vec![w.s[0]]);
+    }
+
+    #[tokio::test]
+    async fn operator_view_is_unchanged() {
+        let w = world();
+        let (rows, total) = w.query.list(&tenant_wide(&w), PartnerAccess::Unscoped, all()).await.unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(total, 4);
+    }
+
+    #[tokio::test]
+    async fn partner_gets_404_for_an_unlinked_shipment_by_id() {
+        let w = world();
+        let acting = ActingAs::User(tenant_wide(&w));
+        for unlinked in [w.s[2], w.s[3]] {
+            let err = w.query.get_for(unlinked, &acting, PartnerAccess::Scoped(w.mine)).await
+                .expect_err("an unlinked shipment must not be readable");
+            assert!(matches!(err, AppError::NotFound { .. }), "must be 404 so ids cannot be probed: {err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn partner_reads_a_linked_shipment_by_id() {
+        let w = world();
+        let acting = ActingAs::User(tenant_wide(&w));
+        let got = w.query.get_for(w.s[0], &acting, PartnerAccess::Scoped(w.mine)).await.unwrap();
+        assert_eq!(got.id.inner(), w.s[0]);
+    }
+
+    #[tokio::test]
+    async fn operator_reads_any_shipment_by_id() {
+        let w = world();
+        let acting = ActingAs::User(tenant_wide(&w));
+        for sid in w.s {
+            assert!(w.query.get_for(sid, &acting, PartnerAccess::Unscoped).await.is_ok());
+        }
+    }
+
+    /// The real SQL, not the in-memory stand-in: the EXISTS clause and its
+    /// parameter numbering are only exercised here. Skipped locally without a
+    /// database; fatal in CI.
+    #[tokio::test]
+    async fn pg_list_filters_by_partner_link() {
+        use logisticos_order_intake::infrastructure::db::PgShipmentRepository;
+
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(u) => u,
+            Err(_) => {
+                assert!(std::env::var("CI").is_err(), "DATABASE_URL unset while CI is set");
+                eprintln!("skipping: DATABASE_URL not set (fatal when CI is set)");
+                return;
+            }
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+        let repo = PgShipmentRepository { pool: pool.clone() };
+
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchants = [Uuid::new_v4(), Uuid::new_v4()];
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let mut s = make_shipment(tenant, merchants[i % 2], ShipmentStatus::Confirmed);
+            // make_shipment always uses sequence 1, and tracking numbers are
+            // unique, so give each seed its own (random, to survive reruns).
+            let seq = (Uuid::new_v4().as_u128() % 9_000_000) as u32 + 1;
+            s.awb = Awb::generate(&TenantCode::new("TST").unwrap(), AwbServiceCode::Standard, seq);
+            ids.push(s.id.inner());
+            repo.save(&s).await.expect("seed a shipment");
+        }
+        for (shipment, carrier) in [(ids[0], mine), (ids[1], mine), (ids[2], other)] {
+            sqlx::query("INSERT INTO order_intake.shipment_partner_links (tenant_id, shipment_id, carrier_id, source) VALUES ($1, $2, $3, 'test')")
+                .bind(tenant).bind(shipment).bind(carrier).execute(&pool).await.unwrap();
+        }
+
+        let filter = |partner: Option<Uuid>, merchant: Option<Uuid>| ShipmentListFilter {
+            tenant_id: tenant, merchant_id: merchant, status: None,
+            updated_from: None, updated_to: None, partner_id: partner, limit: 50, offset: 0,
+        };
+        let sorted = |rows: &[Shipment]| { let mut v: Vec<Uuid> = rows.iter().map(|s| s.id.inner()).collect(); v.sort(); v };
+        let mut want_mine = vec![ids[0], ids[1]]; want_mine.sort();
+
+        let (rows, total) = repo.list(&filter(Some(mine), None)).await.unwrap();
+        assert_eq!((sorted(&rows), total), (want_mine, 2), "only the shipments linked to my carrier");
+
+        let (rows, total) = repo.list(&filter(None, None)).await.unwrap();
+        assert_eq!((rows.len(), total), (3, 3), "an operator sees the tenant");
+
+        // Narrowing by merchant on top of the link can only remove rows.
+        let (rows, _) = repo.list(&filter(Some(mine), Some(merchants[1]))).await.unwrap();
+        assert_eq!(sorted(&rows), vec![ids[1]], "merchant narrows within the linked set");
+
+        let (rows, total) = repo.list(&filter(Some(Uuid::new_v4()), None)).await.unwrap();
+        assert!((rows.len(), total) == (0, 0), "a partner with no links sees nothing");
+    }
+
+    /// A link is not a key to another tenant: the tenant check still runs first.
+    #[tokio::test]
+    async fn a_link_does_not_cross_tenants() {
+        let w = world();
+        let elsewhere = Actor { tenant_id: Uuid::new_v4(), user_id: Uuid::new_v4(), tenant_wide: true };
+        let err = w.query.get_for(w.s[0], &ActingAs::User(elsewhere), PartnerAccess::Scoped(w.mine)).await
+            .expect_err("another tenant must not read it");
+        assert!(matches!(err, AppError::NotFound { .. }));
+        let _ = (&w.repo, w.other);
+    }
+}
+
+// ============================================================================
+// GET /v1/shipments/:id/events
+//
+// The timeline checked the tenant and nothing else, so any merchant, customer or
+// partner with `shipments:read` could read any shipment's events in the tenant
+// by id. These tests use a lazy database pool, so a request that gets past the
+// ownership check fails with a 500 on the query: a 404 proves the check ran
+// first.
+// ============================================================================
+
+mod shipment_events_scope {
+    use super::*;
+
+    #[tokio::test]
+    async fn another_merchant_gets_404_for_a_shipments_timeline() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let tenant_id = uuid::Uuid::new_v4();
+        let owner = uuid::Uuid::new_v4();
+        let shipment = make_shipment(tenant_id, owner, ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+        let intruder = mint_merchant_token(&jwt, tenant_id, uuid::Uuid::new_v4());
+        let resp = server
+            .get(&format!("/v1/shipments/{shipment_id}/events"))
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {intruder}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status_code(), 404, "another merchant must not read this timeline");
+    }
+
+    #[tokio::test]
+    async fn another_tenant_gets_404_for_a_shipments_timeline() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let shipment = make_shipment(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+        let other_tenant = mint_admin_token(&jwt, uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let resp = server
+            .get(&format!("/v1/shipments/{shipment_id}/events"))
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {other_tenant}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status_code(), 404);
+    }
+}
+
+// ============================================================================
+// Partner and owner scope through the real HTTP router
+//
+// The query-service tests above call the service directly; these go through
+// the real axum handlers with real signed JWTs against the real Pg repository,
+// so the claim extraction (`pid`, roles, permissions), `partner_access`, the
+// handler wiring and the SQL are exercised together. Skipped locally without
+// DATABASE_URL (migrated order_intake schema); fatal in CI.
+// ============================================================================
+
+mod scope_over_http {
+    use super::*;
+    use logisticos_order_intake::infrastructure::db::PgShipmentRepository;
+    use uuid::Uuid;
+
+    struct Pg {
+        server:    TestServer,
+        jwt:       JwtService,
+        pool:      sqlx::PgPool,
+        repo:      PgShipmentRepository,
+    }
+
+    async fn pg() -> Option<Pg> {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(u) => u,
+            Err(_) => {
+                assert!(std::env::var("CI").is_err(), "DATABASE_URL unset while CI is set");
+                eprintln!("skipping: DATABASE_URL not set (fatal when CI is set)");
+                return None;
+            }
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(4).connect(&url).await.unwrap();
+        let repo_arc: Arc<dyn ShipmentRepository> = Arc::new(PgShipmentRepository { pool: pool.clone() });
+        let svc = Arc::new(ShipmentService::new(
+            Arc::clone(&repo_arc),
+            Arc::new(NoOpEventPublisher),
+            Arc::new(PassthroughNormalizer),
+            Arc::new(MockAwbGenerator::default()),
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+        ));
+        let query = Arc::new(ShipmentQueryService::new(repo_arc));
+        let state = AppState {
+            svc,
+            query,
+            jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+            pool: pool.clone(),
+        };
+        Some(Pg {
+            server: TestClient::new(router(state)),
+            jwt: JwtService::new(TEST_JWT_SECRET, 3600, 86400),
+            repo: PgShipmentRepository { pool: pool.clone() },
+            pool,
+        })
+    }
+
+    /// Seed a shipment (unique AWB so reruns never collide) and return its id.
+    async fn seed(pg: &Pg, tenant: Uuid, merchant: Uuid) -> Uuid {
+        let mut s = make_shipment(tenant, merchant, ShipmentStatus::Confirmed);
+        let seq = (Uuid::new_v4().as_u128() % 9_000_000) as u32 + 1;
+        s.awb = Awb::generate(&TenantCode::new("TST").unwrap(), AwbServiceCode::Standard, seq);
+        pg.repo.save(&s).await.expect("seed a shipment");
+        s.id.inner()
+    }
+
+    async fn link(pg: &Pg, tenant: Uuid, shipment: Uuid, carrier: Uuid) {
+        sqlx::query("INSERT INTO order_intake.shipment_partner_links (tenant_id, shipment_id, carrier_id, source) VALUES ($1, $2, $3, 'test')")
+            .bind(tenant).bind(shipment).bind(carrier).execute(&pg.pool).await.unwrap();
+    }
+
+    /// A signed token for `roles`, with that role's default permissions and an
+    /// optional partner binding, exactly as identity issues them.
+    fn token(pg: &Pg, tenant: Uuid, user: Uuid, role: &str, pid: Option<Uuid>) -> String {
+        let permissions: Vec<String> = default_permissions_for_role(role).iter().map(|p| p.to_string()).collect();
+        let claims = Claims::new(
+            user, tenant, "test-tenant".into(), "starter".into(), "u@test.local".into(),
+            vec![role.to_string()], permissions, 3600,
+        )
+        .with_partner(pid);
+        pg.jwt.issue_access_token(claims).expect("token")
+    }
+
+    async fn get(pg: &Pg, uri: &str, token: &str) -> TestResponse {
+        pg.server
+            .get(uri)
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .await
+    }
+
+    fn listed_ids(resp: &TestResponse) -> Vec<Uuid> {
+        let body: Value = resp.json();
+        let mut v: Vec<Uuid> = body["shipments"]
+            .as_array()
+            .expect("shipments array")
+            .iter()
+            .map(|s| s["id"].as_str().expect("id").parse().expect("uuid"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[tokio::test]
+    async fn merchant_cannot_list_another_merchants_shipments_by_filter() {
+        let Some(pg) = pg().await else { return };
+        let tenant = Uuid::new_v4();
+        let (me, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let mine = seed(&pg, tenant, me).await;
+        let theirs = seed(&pg, tenant, other).await;
+        let token = token(&pg, tenant, me, "merchant", None);
+
+        // Asking for the other merchant's rows by filter must not widen the view.
+        let resp = get(&pg, &format!("/v1/shipments?merchant_id={other}"), &token).await;
+        resp.assert_status(StatusCode::OK);
+        let ids = listed_ids(&resp);
+        assert!(!ids.contains(&theirs), "another merchant's shipment leaked: {ids:?}");
+        assert_eq!(ids, vec![mine]);
+
+        let resp = get(&pg, "/v1/shipments", &token).await;
+        assert_eq!(listed_ids(&resp), vec![mine]);
+    }
+
+    #[tokio::test]
+    async fn partner_token_lists_only_its_linked_shipments() {
+        let Some(pg) = pg().await else { return };
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchant = Uuid::new_v4();
+        let (s1, s2, s3, s4) = (
+            seed(&pg, tenant, merchant).await,
+            seed(&pg, tenant, merchant).await,
+            seed(&pg, tenant, merchant).await,
+            seed(&pg, tenant, merchant).await,
+        );
+        link(&pg, tenant, s1, mine).await;
+        link(&pg, tenant, s2, mine).await;
+        link(&pg, tenant, s3, other).await;
+        let _ = s4; // linked to nobody
+
+        for role in ["partner", "driver"] {
+            let token = token(&pg, tenant, Uuid::new_v4(), role, Some(mine));
+            let resp = get(&pg, "/v1/shipments", &token).await;
+            resp.assert_status(StatusCode::OK);
+            let mut want = vec![s1, s2];
+            want.sort();
+            assert_eq!(listed_ids(&resp), want, "role {role}");
+
+            // merchant_id cannot widen a partner's view either.
+            let resp = get(&pg, &format!("/v1/shipments?merchant_id={merchant}"), &token).await;
+            assert_eq!(listed_ids(&resp), want, "role {role} with merchant_id");
+        }
+    }
+
+    #[tokio::test]
+    async fn partner_token_gets_404_for_an_unlinked_shipment_and_200_for_a_linked_one() {
+        let Some(pg) = pg().await else { return };
+        let tenant = Uuid::new_v4();
+        let (mine, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let merchant = Uuid::new_v4();
+        let linked = seed(&pg, tenant, merchant).await;
+        let theirs = seed(&pg, tenant, merchant).await;
+        let nobodys = seed(&pg, tenant, merchant).await;
+        link(&pg, tenant, linked, mine).await;
+        link(&pg, tenant, theirs, other).await;
+
+        let token = token(&pg, tenant, Uuid::new_v4(), "partner", Some(mine));
+        get(&pg, &format!("/v1/shipments/{linked}"), &token).await.assert_status(StatusCode::OK);
+        for id in [theirs, nobodys] {
+            get(&pg, &format!("/v1/shipments/{id}"), &token).await.assert_status(StatusCode::NOT_FOUND);
+        }
+    }
+}
+
+// ============================================================================
+// GET /v1/internal/shipments/:id/billing carries the owning tenant, so a
+// caller (pod) can tell "exists" from "belongs to my tenant".
+// ============================================================================
+
+mod billing_names_the_tenant {
+    use super::*;
+
+    #[tokio::test]
+    async fn billing_response_carries_the_shipments_tenant_id() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let tenant_id = uuid::Uuid::new_v4();
+        let shipment = make_shipment(tenant_id, uuid::Uuid::new_v4(), ShipmentStatus::Confirmed);
+        let id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let (server, _jwt) = build_test_server(Arc::clone(&repo));
+        let resp = server.get(&format!("/v1/internal/shipments/{id}/billing")).await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["tenant_id"], json!(tenant_id));
+        // Existing consumers' fields are untouched.
+        assert!(body["service_code"].is_string() && body["customer_phone"].is_string());
     }
 }

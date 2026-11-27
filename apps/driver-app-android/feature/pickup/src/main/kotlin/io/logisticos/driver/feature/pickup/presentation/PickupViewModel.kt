@@ -54,15 +54,21 @@ data class PickupUiState(
     val photoPath: String? = null,
     val isConfirming: Boolean = false,
     val isCompleted: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * A whole-home move's survey addition still waiting on the customer: the
+     * hard stop. Pickup can't be confirmed until they approve or decline it.
+     */
+    val addendumHold: io.logisticos.driver.core.network.service.AddendumDto? = null,
 ) {
-    val canConfirm: Boolean get() = awbScanned && !awbMismatch
+    val canConfirm: Boolean get() = awbScanned && !awbMismatch && addendumHold == null
 }
 
 @HiltViewModel
 class PickupViewModel @Inject constructor(
     private val repo: PickupRepository,
     private val locationRepo: LocationRepository,
+    private val homeApi: io.logisticos.driver.core.network.service.HomeMoveApiService,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PickupUiState())
@@ -80,6 +86,20 @@ class PickupViewModel @Inject constructor(
             val awbIsReal = task.awb.isNotBlank() && !isUuidFormat(task.awb)
             _uiState.update { it.copy(task = task, awbScanned = !awbIsReal, awbMismatch = false) }
             repo.transitionToInProgress(taskId)
+            checkAddendum()
+        }
+    }
+
+    /**
+     * Whether a whole-home move's survey addition is still waiting on the
+     * customer. Any other shipment has no home move (404), and an unreachable
+     * server doesn't block a pickup: the lead's survey screen shows the stop too.
+     */
+    fun checkAddendum() {
+        val shipmentId = _uiState.value.task?.shipmentId ?: return
+        viewModelScope.launch {
+            val a = runCatching { homeApi.addendum(shipmentId).data }.getOrNull()
+            _uiState.update { it.copy(addendumHold = a?.takeIf { x -> x.status == "pending" }) }
         }
     }
 

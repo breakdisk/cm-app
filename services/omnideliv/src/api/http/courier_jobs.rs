@@ -51,7 +51,20 @@ pub struct ManifestStop {
     /// keep-upright for a florist. field-ops cannot know this, which is the
     /// whole reason the manifest comes from here.
     pub vertical:          String,
+    /// The store's standing default. Kept because the driver app reads it, but
+    /// it is a guess: a per-store constant nothing reconciles against reality.
     pub prep_time_minutes: i32,
+    /// Where this stop actually stands, from the store's own hand.
+    ///
+    /// This is the difference between a courier arriving to wait at a counter
+    /// and a courier pacing the trip. `prep_time_minutes` above is what we
+    /// assumed; these three are what the kitchen said.
+    pub leg_status:        String,
+    /// The store's promise at accept time. `None` until it accepts.
+    pub ready_in_minutes:  Option<i32>,
+    /// Set when the store marked the food ready. `None` means still cooking —
+    /// or still not answered, which `leg_status` distinguishes.
+    pub ready_at:          Option<chrono::DateTime<chrono::Utc>>,
     pub picked_up:         bool,
     pub lines:             Vec<ManifestLine>,
 }
@@ -258,6 +271,11 @@ async fn manifest(
     let stops: Vec<ManifestStop> = order
         .legs
         .iter()
+        // A stall that refused the order, or whose leg failed, has nothing to
+        // hand over. Before vendors could refuse, every leg was collectable and
+        // this filter would have been dead code; now it is the difference
+        // between a courier's route and a wasted trip to a closed counter.
+        .filter(|leg| !leg.status.declined())
         .enumerate()
         .filter_map(|(i, leg)| {
             let v = vendors.iter().find(|v| v.id == leg.vendor_id)?;
@@ -297,6 +315,9 @@ async fn manifest(
                 lng:               v.lng,
                 vertical:          v.vertical.as_str().to_string(),
                 prep_time_minutes: v.prep_time_minutes,
+                leg_status:        leg.status.as_str().to_string(),
+                ready_in_minutes:  leg.ready_in_minutes,
+                ready_at:          leg.ready_at,
                 picked_up:         leg.status == LegStatus::PickedUp,
                 lines,
             })

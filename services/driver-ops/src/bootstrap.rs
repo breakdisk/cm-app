@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, watch};
 use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
-use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer, start_offer_consumer};
+use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer, start_offer_consumer, start_shipment_cancelled_consumer};
 use crate::infrastructure::external::FcmClient;
 use crate::api::http::{router, AppState, RosterEvent};
 use logisticos_auth::jwt::JwtService;
@@ -21,6 +21,7 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: otlp.as_deref(),
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
 
     tracing::info!(env = %cfg.app.env, "driver-ops service starting");
 
@@ -66,6 +67,7 @@ pub async fn run() -> anyhow::Result<()> {
     let fcm_for_state = fcm_client.clone();
     let fcm_for_rejections = fcm_client.clone();
     let fcm_for_offers = fcm_client.clone();
+    let fcm_for_cancels = fcm_client.clone();
 
     // Spawn TASK_ASSIGNED consumer — creates driver_ops.tasks rows on dispatch.
     let pool_for_tasks    = pool.clone();
@@ -99,6 +101,23 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn SHIPMENT_CANCELLED consumer — the driver's task goes with it.
+    let pool_for_cancels    = pool.clone();
+    let brokers_for_cancels = cfg.kafka.brokers.clone();
+    let group_for_cancels   = cfg.kafka.group_id.clone();
+    let shutdown_rx_cancels = shutdown_rx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_shipment_cancelled_consumer(
+            &brokers_for_cancels,
+            &group_for_cancels,
+            pool_for_cancels,
+            fcm_for_cancels,
+            shutdown_rx_cancels,
+        ).await {
+            tracing::error!("Shipment-cancelled consumer crashed: {e}");
+        }
+    });
+
     // Spawn ASSIGNMENT_REJECTED consumer — decline counter + automatic ban.
     let pool_for_rejections    = pool.clone();
     let brokers_for_rejections = cfg.kafka.brokers.clone();
@@ -124,25 +143,42 @@ pub async fn run() -> anyhow::Result<()> {
     let driver_repo   = Arc::new(PgDriverRepository::new(pool.clone()));
     let task_repo     = Arc::new(PgTaskRepository::new(pool.clone()));
     let location_repo = Arc::new(PgLocationRepository::new(pool.clone()));
+    let duty_repo     = Arc::new(crate::infrastructure::db::PgDutySessionRepository::new(pool.clone()));
 
     // Application services
     let driver_service = Arc::new(DriverService::new(
         Arc::clone(&driver_repo) as _,
+        Arc::clone(&duty_repo) as _,
     ));
     let task_service = Arc::new(TaskService::new(
         Arc::clone(&task_repo) as _,
         Arc::clone(&driver_repo) as _,
+        Arc::new(crate::infrastructure::db::PgJobDropRepository::new(pool.clone())) as _,
+        Arc::clone(&location_repo) as _,
         Arc::clone(&kafka),
+        crate::domain::value_objects::leave_policy::PenaltyPolicy {
+            grace_minutes:              cfg.penalty.grace_minutes,
+            drop_fee_pct:               cfg.penalty.drop_fee_pct,
+            waiting_fee_cents_per_hour: cfg.penalty.waiting_fee_cents_per_hour,
+            drop_counts_as_declines:    cfg.penalty.drop_counts_as_declines,
+        },
     ));
     let location_service = Arc::new(LocationService::new(
         Arc::clone(&driver_repo) as _,
         Arc::clone(&location_repo) as _,
         Arc::clone(&kafka),
+        Arc::clone(&duty_repo) as _,
+        crate::domain::entities::HosPolicy {
+            max_on_duty_minutes: cfg.hos.max_on_duty_minutes,
+            window_hours:        cfg.hos.window_hours,
+        },
     ));
 
     // Broadcast channel for WebSocket roster streaming — location + status (capacity 512)
     let (roster_tx, _) = broadcast::channel::<RosterEvent>(512);
 
+    let credits: Arc<dyn crate::infrastructure::db::CreditStore> =
+        Arc::new(crate::infrastructure::db::PgCreditStore::new(pool.clone()));
     let state = Arc::new(AppState {
         driver_service,
         task_service,
@@ -150,6 +186,9 @@ pub async fn run() -> anyhow::Result<()> {
         jwt: Arc::clone(&jwt),
         roster_tx,
         fcm: fcm_for_state,
+        providers: Arc::new(crate::infrastructure::db::PgProviderStore::new(pool.clone())),
+        credits,
+        idle: Arc::new(crate::infrastructure::db::PgIdleDriverStore::new(pool.clone())),
     });
 
     use tower_http::cors::CorsLayer;
@@ -157,10 +196,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
-            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+            HeaderValue::from_static("http://localhost:3001"),
+            HeaderValue::from_static("http://localhost:3002"),
+            HeaderValue::from_static("http://localhost:3003"),
+            HeaderValue::from_static("http://localhost:8083"),
         ])
         .allow_methods([
             Method::GET, Method::POST, Method::PUT,

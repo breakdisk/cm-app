@@ -73,22 +73,22 @@ pub async fn run() -> anyhow::Result<()> {
     let meta_ready    = meta_token.as_deref().is_some_and(is_real_cred)
         && meta_phone_id.as_deref().is_some_and(is_real_cred);
 
-    let whatsapp: Arc<dyn ChannelAdapter> = if meta_ready {
+    let whatsapp: Arc<dyn ChannelAdapter> = if let (true, Some(meta_token), Some(meta_phone_id)) = (meta_ready, meta_token, meta_phone_id) {
         tracing::info!("engagement: WhatsApp using Meta Cloud API adapter");
         Arc::new(MetaWhatsAppAdapter::new(
-            meta_token.unwrap(),
-            meta_phone_id.unwrap(),
+            meta_token,
+            meta_phone_id,
         ))
     } else {
         tracing::warn!("engagement: WhatsApp using LogChannelAdapter (META_WHATSAPP_* not set) — messages printed to stdout");
         Arc::new(LogChannelAdapter::new("whatsapp"))
     };
 
-    let sms: Arc<dyn ChannelAdapter> = if twilio_ready {
+    let sms: Arc<dyn ChannelAdapter> = if let (true, Some(twilio_sid), Some(twilio_token)) = (twilio_ready, twilio_sid, twilio_token) {
         tracing::info!("engagement: SMS using Twilio adapter");
         Arc::new(TwilioSmsAdapter::new(
-            twilio_sid.unwrap(),
-            twilio_token.unwrap(),
+            twilio_sid,
+            twilio_token,
             std::env::var("TWILIO_SMS_FROM").unwrap_or_else(|_| "+15005550006".into()),
         ))
     } else {
@@ -183,19 +183,42 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
+    // Job chat asks the service that owns each answer whether the caller is
+    // on the job — order-intake for the customer, driver-ops for the driver —
+    // with the caller's own token, so this service holds no second rule set.
+    let job_participants = Arc::new(crate::infrastructure::job_participants::JobParticipants::new(
+        std::env::var("SERVICES__ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8004".into()),
+        std::env::var("SERVICES__DRIVER_OPS_URL").unwrap_or_else(|_| "http://driver-ops:8006".into()),
+    ));
+
+    // Masked calling. Logged either way: a deployment without a voice number
+    // answers every call request with "not configured", and that is worth
+    // seeing at startup rather than discovering from a driver.
+    let masked_calls = Arc::new(crate::infrastructure::masked_calls::MaskedCalls::from_env());
+    if masked_calls.configured() {
+        tracing::info!("engagement: masked calling ENABLED");
+    } else {
+        tracing::warn!(
+            "engagement: masked calling DISABLED — set TWILIO_VOICE_NUMBER (with \
+             TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN); the apps fall back to a normal dial"
+        );
+    }
+
     let http_state = crate::api::http::AppState {
         notification_svc: notification_svc.clone(),
         db: pool,
+        job_participants,
+        masked_calls,
     };
 
     use tower_http::cors::CorsLayer;
     use axum::{http::{HeaderName, HeaderValue, Method}, Router};
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+            HeaderValue::from_static("http://localhost:3000"),
+            HeaderValue::from_static("http://localhost:3001"),
+            HeaderValue::from_static("http://localhost:3002"),
+            HeaderValue::from_static("http://localhost:3003"),
         ])
         .allow_methods([
             Method::GET, Method::POST, Method::PUT,
@@ -292,6 +315,8 @@ async fn run_kafka_consumer(
         topics::TENANT_FINALIZED,   // welcome email to new merchants
         topics::OTP_REQUESTED,      // email OTP delivery for passwordless login
         topics::AGENT_ESCALATION_RESOLVED, // human answered an escalated AI chat
+        topics::TIER_CHANGED,       // a customer moved up a loyalty tier
+        topics::HOME_NOTICE,        // a home move's waitlist window, survey addendum
     ]).expect("Engagement consumer subscription failed");
 
     loop {

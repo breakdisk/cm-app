@@ -33,9 +33,16 @@ pub trait OrderPayments: Send + Sync {
         return_url: &str,
     ) -> anyhow::Result<AuthorizedIntent>;
 
-    /// Captures funds previously ring-fenced by `authorize` — called the
-    /// moment a courier actually accepts the job (`CourierEvent::Assigned`).
-    async fn capture(&self, intent_id: Uuid) -> anyhow::Result<()>;
+    /// Captures funds previously ring-fenced by `authorize`.
+    ///
+    /// `amount_cents` of `None` takes the whole authorization — the delivery
+    /// path, where a courier accepting the job commits the whole basket.
+    ///
+    /// `Some(n)` takes part of it: ADR-0017's acceptance barrier, where a
+    /// foodcourt table authorized every stall and only some accepted. Taking
+    /// the full amount would charge for food nobody is making; taking nothing
+    /// would refuse the whole table because one stall was shut.
+    async fn capture(&self, intent_id: Uuid, amount_cents: Option<i64>) -> anyhow::Result<()>;
 
     /// Releases an authorization hold that was never captured — called when
     /// no courier accepted the job within the no-courier timeout, so the

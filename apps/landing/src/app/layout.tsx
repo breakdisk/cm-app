@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
+import { Noto_Sans_Arabic } from "next/font/google";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 import "./globals.css";
+
+const arabic  = Noto_Sans_Arabic({ subsets: ["arabic"], variable: "--font-arabic" });
+
 
 export const metadata: Metadata = {
   title: "CargoMarket — AI Logistics Platform",
@@ -13,9 +19,11 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const locale = await getLocale();
+  const messages = await getMessages();
   return (
-    <html lang="en" className="dark">
+    <html lang={locale} dir={locale === "ar" ? "rtl" : "ltr"} className={`dark ${arabic.variable}`}>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
@@ -24,8 +32,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-        {children}
+      <body>
+        <NextIntlClientProvider locale={locale} messages={messages}>
+          {children}
+        </NextIntlClientProvider>
       </body>
     </html>
   );

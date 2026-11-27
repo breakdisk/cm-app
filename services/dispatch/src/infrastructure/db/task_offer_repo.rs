@@ -93,6 +93,26 @@ impl PgTaskOfferRepository {
         offer: &TaskOfferRow,
         candidates: &[OfferCandidateRow],
     ) -> anyhow::Result<()> {
+        self.create_offer_parking(offer, candidates, true).await
+    }
+
+    /// An offer for a side slot on a home move (a joint move's second truck,
+    /// an addendum's extra one): the move's queue row belongs to its primary
+    /// lead, so it is not parked.
+    pub async fn create_side_offer(
+        &self,
+        offer: &TaskOfferRow,
+        candidates: &[OfferCandidateRow],
+    ) -> anyhow::Result<()> {
+        self.create_offer_parking(offer, candidates, false).await
+    }
+
+    async fn create_offer_parking(
+        &self,
+        offer: &TaskOfferRow,
+        candidates: &[OfferCandidateRow],
+        park_queue: bool,
+    ) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"INSERT INTO dispatch.task_offers
@@ -143,14 +163,16 @@ impl PgTaskOfferRepository {
         // shipment that gig drivers are mid-grab on (double assignment). On
         // unclaimed expiry the sweeper resets it to 'pending' for 1:1 fallback;
         // on a winning claim it stays 'dispatched'.
-        sqlx::query(
-            "UPDATE dispatch.dispatch_queue
-             SET status = 'dispatched', dispatched_at = NOW()
-             WHERE shipment_id = $1 AND status = 'pending'",
-        )
-        .bind(offer.shipment_id)
-        .execute(&mut *tx)
-        .await?;
+        if park_queue {
+            sqlx::query(
+                "UPDATE dispatch.dispatch_queue
+                 SET status = 'dispatched', dispatched_at = NOW()
+                 WHERE shipment_id = $1 AND status = 'pending'",
+            )
+            .bind(offer.shipment_id)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
         Ok(())
@@ -232,13 +254,20 @@ impl PgTaskOfferRepository {
         // this offer stays open for everyone else).
         let assignment_insert = sqlx::query(
             r#"INSERT INTO dispatch.driver_assignments
-                   (id, tenant_id, driver_id, route_id, status, assigned_at, accepted_at)
-               VALUES ($1,$2,$3,$4,'accepted',NOW(),NOW())"#,
+                   (id, tenant_id, driver_id, route_id, status, assigned_at, accepted_at, expected_tasks)
+               VALUES ($1,$2,$3,$4,'accepted',NOW(),NOW(),
+                       -- Same legs `emit_assignment_events` publishes: delivery, plus
+                       -- pickup when the queue row carries origin data. Recorded in this
+                       -- INSERT so the assignment never exists without its leg count.
+                       (SELECT CASE WHEN q.origin_address_line1 <> '' OR q.origin_lat IS NOT NULL
+                                    THEN 2 ELSE 1 END
+                          FROM dispatch.dispatch_queue q WHERE q.shipment_id = $5))"#,
         )
         .bind(assignment_id)
         .bind(tenant_id)
         .bind(driver_id)
         .bind(route_id)
+        .bind(shipment_id)
         .execute(&mut *tx)
         .await;
 

@@ -237,6 +237,55 @@ Each step is independently shippable; the demo doesn't break during the transiti
 
 ---
 
+## Amendment — 2026-11-25: where the marketplace actually is, and rental + On-Demand
+
+**Status:** Proposed. The deciders must re-confirm it.
+
+**Provenance.** A revision of this ADR was agreed on 2026-09-19, adding rental and On-Demand services. Pointer amendments to ADR-0009 and ADR-0015 were planned at the same time. **None of that text was ever committed;** it is absent from every branch and from the history. This amendment reconstructs the decisions from the recorded decision notes. Read it as a restatement for confirmation, not as new direction.
+
+### State of play (read from code, 2026-11-25)
+
+- **The marketplace backend lives in `services/carrier`, not `services/marketplace`.**
+  - Its tables are `carrier.vehicle_listings` and `carrier.marketplace_bookings` (migrations 0004 and 0007).
+  - It covers both the partner side and the merchant buy side: `GET /v1/marketplace/available`, `POST /v1/marketplace/bookings`, `GET /v1/marketplace/my-bookings`.
+  - Payments use authorize → capture on accept → void on reject or expiry, with a carrier response window and an expiry sweep. The gateway routes `/v1/marketplace` to carrier.
+- **Migration steps 3–4 are being completed against carrier.** Branch `feat/portals/marketplace-real-backend` moves the merchant portal onto these endpoints, derives every portal's receipts from real bookings, and deletes all three `marketplace-bus.ts` files. A merchant cancel route (`POST /v1/marketplace/bookings/:id/cancel`, pending only) is on `feat/carrier/marketplace-merchant-cancel`.
+- **The Dead-Man's Switch was never built.** Booking checks only listing status, window and weight.
+- **Listings key on `vehicle_plate` (free text), not a `fleet.vehicles` id.** `size_class` is free text in carrier. `fleet.vehicles.vehicle_type` is free text, with no class registry.
+- **No overlap protection exists.** A vehicle can be listed and booked for overlapping windows (this ADR's open question 1).
+
+### Decisions
+
+1. **Extract before extending.**
+   - `services/marketplace` (port 8018) is still the target home, and it is extracted from carrier **before** rental is added.
+   - Rental roughly doubles the marketplace surface, so extracting after it means moving twice as much code.
+   - Booking volume is near zero today, because no portal could create a real booking until the branch above. The data move is therefore trivial now and gets harder with every week of real traffic.
+2. **Rental is a listing type, not a service.**
+   - A rental and a freight spot booking compete for the same physical vehicle, so they must share **one vehicle calendar**.
+   - A separate rental service would need a distributed lock to prevent double-booking a truck.
+   - `listing_type` is data validated by the application (`freight_spot` and `rental` at launch), not a `CHECK` enumeration. This follows ADR-0015's rule: "product identity is data, not schema".
+3. **One reservation pattern, two owners. No platform calendar service.**
+   - **Vehicle time** lives in `marketplace.vehicle_reservations (vehicle_id, during tstzrange, source, ref_id, released_at)` with `EXCLUDE USING gist (vehicle_id WITH =, during WITH &&) WHERE (released_at IS NULL)`.
+   - **Worker time** lives in field-ops, with the same shape keyed on courier.
+   - Both need the `btree_gist` extension.
+   - Overlap is refused by the database, not by application checks. This answers open question 1.
+   - A shared "calendar service" would be a platform dependency every product calls on its hot path. ADR-0009's boundary rules keep shared platform services to cross-product concerns with one owner each, and these two calendars have different owners.
+4. **On-Demand Services is its own product,** `services/on-demand`. It consolidates ADR-0009's separate Carwash and Maintenance products into one, with service type as data. Workers come from field-ops (ADR-0015): shifts, skills, worker reservations, and the atomic claim. On-Demand does not keep its own worker table.
+5. **Listings reference `fleet.vehicles.id`,** and the size class comes from a fleet **vehicle-class registry**, a tenant-extensible table, not a closed `CHECK`. The plate stays as a display field.
+
+### Prerequisites
+
+| # | Prerequisite | Owner | Blocks |
+|---|---|---|---|
+| P1 | The field-ops claim-reclaim sweep is scheduled and live. The domain supports reclaim (`assignment.rs`); confirm it runs in production. | EM — Logistics Domain | On-Demand |
+| P2 | A fleet vehicle-class registry, plus a `vehicle_class_id` on `fleet.vehicles` | Senior Rust Engineer — Fleet | rental, the vehicle calendar |
+| P3 | **NI authorization-hold validity.** How long an `AUTH` hold stays capturable, and whether `void` works (the code marks it unverified). A rental booked further ahead than the hold lives cannot be secured by a hold placed at booking. | PM — Payments & Billing | rental payments |
+| P4 | `CREATE EXTENSION IF NOT EXISTS btree_gist` is available on the managed Postgres in every region | Database Reliability Engineer | the vehicle calendar, worker reservations |
+
+Implementation plan: [2026-11-25-marketplace-rental-on-demand.md](../superpowers/plans/2026-11-25-marketplace-rental-on-demand.md)
+
+---
+
 ## References
 
 - ADR-0006 Kafka event streaming topology — governs downstream dispatch integration.

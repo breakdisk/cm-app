@@ -17,14 +17,14 @@ import type { AppDispatch } from "../../store";
 import { verifyOTP, verifyPhone, getStoredProviderSlug, DEFAULT_PROVIDER_SLUG } from "../../services/api/auth";
 import { registerForPushNotifications } from "../../services/notifications";
 import { useBranding } from "../../hooks/useBranding";
+import { A } from "./authTheme";
 
-const CANVAS = "#050810";
-const CYAN   = "#00E5FF";
-const GREEN  = "#00FF88";
-const PURPLE = "#A855F7";
-const AMBER  = "#FFAB00";
-const GLASS  = "rgba(255,255,255,0.04)";
-const BORDER = "rgba(255,255,255,0.08)";
+const CANVAS = A.canvas;
+const CYAN   = A.accent;
+const GREEN  = A.success;
+const AMBER  = A.amber;
+const GLASS  = A.glass;
+const BORDER = A.border;
 
 const COUNTRY_CODES = [
   { code: "+971", flag: "🇦🇪", label: "UAE" },
@@ -190,7 +190,7 @@ export function PhoneScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled">
-        <LinearGradient colors={["rgba(0,229,255,0.10)", "transparent"]} style={s.hero}>
+        <LinearGradient colors={A.wash.phone} style={s.hero}>
           <FadeInView fromY={-16}>
             <View style={s.logoRow}>
               <View style={[s.logoDot, { backgroundColor: branding.primary, shadowColor: branding.primary }]} />
@@ -219,7 +219,7 @@ export function PhoneScreen() {
                 value={providerSlug}
                 onChangeText={(t) => { setProviderSlug(t); setError(""); }}
                 placeholder="e.g. cargomarket-ph"
-                placeholderTextColor="rgba(255,255,255,0.2)"
+                placeholderTextColor={A.placeholder}
                 autoCapitalize="none"
                 autoCorrect={false}
                 style={s.providerInput}
@@ -232,7 +232,7 @@ export function PhoneScreen() {
                 <Pressable onPress={() => setShowPicker((v) => !v)} style={s.countryTrigger}>
                   <Text style={s.countryFlag}>{countryCode.flag}</Text>
                   <Text style={s.countryCode}>{countryCode.code}</Text>
-                  <Ionicons name={showPicker ? "chevron-up" : "chevron-down"} size={12} color="rgba(255,255,255,0.3)" />
+                  <Ionicons name={showPicker ? "chevron-up" : "chevron-down"} size={12} color={A.faint} />
                 </Pressable>
                 {autoDetected && (
                   <View style={s.detectedBadge}>
@@ -268,7 +268,7 @@ export function PhoneScreen() {
                   value={phone}
                   onChangeText={(t) => { setPhone(t.replace(/\D/g, "")); setError(""); }}
                   placeholder="9XX XXX XXXX"
-                  placeholderTextColor="rgba(255,255,255,0.2)"
+                  placeholderTextColor={A.placeholder}
                   keyboardType="phone-pad"
                   style={s.phoneInput}
                   maxLength={12}
@@ -290,7 +290,7 @@ export function PhoneScreen() {
                 disabled={sending || phone.trim().length < 7 || !providerSlug.trim()}
                 style={({ pressed }) => [{ opacity: pressed || sending || phone.trim().length < 7 || !providerSlug.trim() ? 0.5 : 1 }]}
               >
-                <LinearGradient colors={[CYAN, PURPLE]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btn}>
+                <LinearGradient colors={A.primaryGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btn}>
                   <Text style={s.btnText}>{sending ? "Sending…" : "Send OTP"}</Text>
                 </LinearGradient>
               </Pressable>
@@ -325,13 +325,13 @@ export function PhoneScreen() {
                 disabled={otp.join("").length < 6}
                 style={({ pressed }) => [{ opacity: pressed || otp.join("").length < 6 ? 0.5 : 1 }]}
               >
-                <LinearGradient colors={[GREEN, CYAN]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btn}>
+                <LinearGradient colors={A.confirmGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btn}>
                   <Text style={s.btnText}>Verify & Continue</Text>
                 </LinearGradient>
               </Pressable>
 
               <Pressable onPress={() => { setStage("phone"); setOtp(["","","","","",""]); }} style={s.backLink}>
-                <Ionicons name="arrow-back" size={14} color="rgba(255,255,255,0.4)" />
+                <Ionicons name="arrow-back" size={14} color={A.muted} />
                 <Text style={s.backLinkText}>Change number</Text>
               </Pressable>
             </>
@@ -346,43 +346,43 @@ const s = StyleSheet.create({
   hero:           { paddingHorizontal: 24, paddingTop: 72, paddingBottom: 24 },
   logoRow:        { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 24 },
   logoDot:        { width: 10, height: 10, borderRadius: 5, backgroundColor: CYAN, shadowColor: CYAN, shadowOpacity: 0.8, shadowRadius: 6 },
-  logoText:       { fontSize: 13, fontFamily: "JetBrainsMono-Regular", color: "rgba(255,255,255,0.4)", letterSpacing: 2, textTransform: "uppercase" },
-  heroTitle:      { fontSize: 30, fontFamily: "SpaceGrotesk-Bold", color: "#FFF", marginBottom: 8 },
-  heroSub:        { fontSize: 14, color: "rgba(255,255,255,0.4)", lineHeight: 22 },
+  logoText:       { fontSize: 13, ...A.mono, color: A.muted, letterSpacing: 2, textTransform: "uppercase" },
+  heroTitle:      { fontSize: 30, ...A.heading, color: A.ink, marginBottom: 8 },
+  heroSub:        { fontSize: 14, color: A.muted, lineHeight: 22 },
 
   card:           { marginHorizontal: 16, backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderRadius: 20, padding: 24, gap: 14 },
-  label:          { fontSize: 11, fontFamily: "JetBrainsMono-Regular", color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1 },
+  label:          { fontSize: 11, ...A.mono, color: A.muted, textTransform: "uppercase", letterSpacing: 1 },
 
   countryTrigger: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: BORDER, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 },
   countryFlag:    { fontSize: 16 },
-  countryCode:    { fontSize: 13, fontFamily: "JetBrainsMono-Regular", color: "#FFF" },
-  countryLabel:   { flex: 1, fontSize: 13, fontFamily: "JetBrainsMono-Regular", color: "rgba(255,255,255,0.5)" },
+  countryCode:    { fontSize: 13, ...A.mono, color: A.ink },
+  countryLabel:   { flex: 1, fontSize: 13, ...A.mono, color: "rgba(255,255,255,0.5)" },
   countryList:    { backgroundColor: "rgba(5,8,16,0.98)", borderWidth: 1, borderColor: BORDER, borderRadius: 12, overflow: "hidden", marginTop: -6 },
   countryRow:     { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: BORDER },
   countryRowActive: { backgroundColor: "rgba(0,229,255,0.07)" },
 
-  providerInput:  { backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: "#FFF", fontFamily: "JetBrainsMono-Regular", letterSpacing: 1 },
+  providerInput:  { backgroundColor: A.inputBg, borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: A.ink, ...A.mono, letterSpacing: 1 },
 
   phoneRow:       { flexDirection: "row", gap: 10, alignItems: "center" },
   prefixBadge:    { backgroundColor: "rgba(0,229,255,0.08)", borderWidth: 1, borderColor: "rgba(0,229,255,0.2)", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12 },
-  prefixText:     { fontSize: 13, fontFamily: "JetBrainsMono-Regular", color: CYAN },
-  phoneInput:     { flex: 1, backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: "#FFF", fontFamily: "JetBrainsMono-Regular", letterSpacing: 2 },
+  prefixText:     { fontSize: 13, ...A.mono, color: CYAN },
+  phoneInput:     { flex: 1, backgroundColor: A.inputBg, borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: A.ink, ...A.mono, letterSpacing: 2 },
 
   otpRow:         { flexDirection: "row", gap: 8, justifyContent: "center" },
-  otpBox:         { width: 46, height: 54, backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: BORDER, borderRadius: 12, textAlign: "center", fontSize: 22, color: "#FFF", fontFamily: "SpaceGrotesk-Bold" },
+  otpBox:         { width: 46, height: 54, backgroundColor: A.inputBg, borderWidth: 1, borderColor: BORDER, borderRadius: 12, textAlign: "center", fontSize: 22, color: A.ink, ...A.heading },
   otpBoxFilled:   { borderColor: CYAN, backgroundColor: "rgba(0,229,255,0.06)" },
 
-  btn:            { borderRadius: 14, paddingVertical: 15, alignItems: "center" },
-  btnText:        { fontSize: 15, fontFamily: "SpaceGrotesk-SemiBold", color: CANVAS },
+  btn:            A.button,
+  btnText:        { fontSize: 15, ...A.buttonText },
 
-  error:          { fontSize: 12, color: "#FF3B5C", fontFamily: "JetBrainsMono-Regular", textAlign: "center" },
-  termsText:      { fontSize: 11, color: "rgba(255,255,255,0.2)", textAlign: "center", lineHeight: 18 },
+  error:          { fontSize: 12, color: A.danger, ...A.mono, textAlign: "center" },
+  termsText:      { fontSize: 11, color: A.faint, textAlign: "center", lineHeight: 18 },
   backLink:       { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
-  backLinkText:   { fontSize: 13, color: "rgba(255,255,255,0.4)" },
+  backLinkText:   { fontSize: 13, color: A.muted },
 
   detectedBadge:  { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(0,255,136,0.08)", borderWidth: 1, borderColor: "rgba(0,255,136,0.2)", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 4 },
-  detectedText:   { fontSize: 10, fontFamily: "JetBrainsMono-Regular", color: GREEN },
+  detectedText:   { fontSize: 10, ...A.mono, color: GREEN },
 
   demoBox:        { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(255,171,0,0.07)", borderWidth: 1, borderColor: "rgba(255,171,0,0.25)", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9 },
-  demoText:       { flex: 1, fontSize: 11, color: "rgba(255,171,0,0.8)", fontFamily: "JetBrainsMono-Regular", lineHeight: 17 },
+  demoText:       { flex: 1, fontSize: 11, color: "rgba(255,171,0,0.8)", ...A.mono, lineHeight: 17 },
 });

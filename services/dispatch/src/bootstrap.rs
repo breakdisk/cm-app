@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
-use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_job_dropped_consumer, start_shipment_cancelled_consumer, start_shipment_consumer, start_task_outcome_consumer, start_user_consumer};
 use crate::application::commands::QuickDispatchCommand;
 use crate::api::http::{router, AppState};
 use logisticos_types::TenantId;
@@ -27,6 +27,8 @@ pub async fn run() -> anyhow::Result<()> {
         otlp_endpoint: otlp.as_deref(),
         log_level: None,
     })?;
+    logisticos_auth::partner::log_partner_scope_mode();
+    tracing::info!(close_assignments = cfg.dispatch.close_assignments, "assignment close mode (DISPATCH__CLOSE_ASSIGNMENTS)");
 
     tracing::info!(env = %cfg.app.env, "dispatch service starting");
 
@@ -115,13 +117,53 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Gig offer broadcast ("grab") service + its expiry sweeper.
     let offer_repo = Arc::new(crate::infrastructure::db::PgTaskOfferRepository::new(pool.clone()));
-    let offer_service = Arc::new(crate::application::services::OfferService::new(
-        Arc::clone(&offer_repo),
-        Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
-        Arc::clone(&driver_avail) as _,
-        Arc::clone(&kafka),
-        Some(Arc::clone(&compliance_cache)),
-    ));
+    let home_repo = Arc::new(crate::infrastructure::db::HomeRepo::new(pool.clone()));
+    let offer_service = Arc::new(
+        crate::application::services::OfferService::new(
+            Arc::clone(&offer_repo),
+            Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
+            Arc::clone(&driver_avail) as _,
+            Arc::clone(&kafka),
+            Some(Arc::clone(&compliance_cache)),
+        )
+        .with_home(Arc::clone(&home_repo)),
+    );
+
+    // Home-move activation: a lead's reservation becomes the real assignment
+    // twelve hours before the move. Until then the lead keeps working, since
+    // an assignment is active and one per driver. A lead still busy then is
+    // retried every five minutes.
+    {
+        let home = Arc::clone(&home_repo);
+        let dispatch = Arc::clone(&dispatch_service);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                tick.tick().await;
+                let due = match home.due(chrono::Utc::now() + chrono::Duration::hours(12)).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!(err = %e, "home-activation: listing due reservations failed");
+                        continue;
+                    }
+                };
+                for (tenant_id, shipment_id, driver_id, payout_cents) in due {
+                    let cmd = QuickDispatchCommand { shipment_id, preferred_driver_id: Some(driver_id) };
+                    // The pay the lead accepted on the offer rides on the task.
+                    match dispatch.quick_dispatch_paying(TenantId::from_uuid(tenant_id), cmd, payout_cents).await {
+                        Ok(_) => {
+                            if let Err(e) = home.mark_activated(shipment_id).await {
+                                tracing::error!(%shipment_id, err = %e, "home-activation: assigned but not marked — it will not be assigned twice (queue is dispatched)");
+                            } else {
+                                tracing::info!(%shipment_id, %driver_id, "home move activated for its lead");
+                            }
+                        }
+                        Err(e) => tracing::warn!(%shipment_id, %driver_id, err = %e, "home-activation: not yet — retrying"),
+                    }
+                }
+            }
+        });
+    }
     // Sweeper: every 10 s, escalate expired waves (wider radius, fresh TTL)
     // or expire wave-3 offers onto the ops console. 10 s granularity against
     // a 30 s TTL keeps worst-case wave lag at ~33% of the TTL.
@@ -207,6 +249,64 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn job-dropped consumer — a driver left an accepted job: take it off
+    // them, requeue it, and offer it to the gig pool again.
+    let pool_for_drops     = pool.clone();
+    let brokers_drops      = cfg.kafka.brokers.clone();
+    let group_drops        = cfg.kafka.group_id.clone();
+    let offer_svc_drops    = Arc::clone(&offer_service);
+    let shutdown_rx_drops  = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_job_dropped_consumer(
+            &brokers_drops,
+            &group_drops,
+            pool_for_drops,
+            offer_svc_drops,
+            shutdown_rx_drops,
+        ).await {
+            tracing::error!("Job-dropped consumer crashed: {e}");
+        }
+    });
+
+    // Spawn task-outcome consumer — a finished task may end the rider's work;
+    // closes the assignment and route. Writes nothing unless
+    // DISPATCH__CLOSE_ASSIGNMENTS is on.
+    let close_assignments   = cfg.dispatch.close_assignments;
+    let assignment_repo_out = Arc::clone(&assignment_repo);
+    let brokers_outcome     = cfg.kafka.brokers.clone();
+    let group_outcome       = cfg.kafka.group_id.clone();
+    let shutdown_rx_outcome = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_task_outcome_consumer(
+            &brokers_outcome,
+            &group_outcome,
+            assignment_repo_out,
+            close_assignments,
+            shutdown_rx_outcome,
+        ).await {
+            tracing::error!("Task-outcome consumer crashed: {e}");
+        }
+    });
+
+    // Spawn shipment-cancelled consumer — a cancelled shipment leaves the
+    // queue, its offers, a home reservation and any route carrying it.
+    let pool_for_cancels    = pool.clone();
+    let brokers_cancels     = cfg.kafka.brokers.clone();
+    let group_cancels       = cfg.kafka.group_id.clone();
+    let offer_svc_cancels   = Arc::clone(&offer_service);
+    let shutdown_rx_cancels = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_shipment_cancelled_consumer(
+            &brokers_cancels,
+            &group_cancels,
+            pool_for_cancels,
+            offer_svc_cancels,
+            shutdown_rx_cancels,
+        ).await {
+            tracing::error!("Shipment-cancelled consumer crashed: {e}");
+        }
+    });
+
     // Orphan-assignment cleanup tick. Drivers reinstall the app, lose their
     // session, leave a `pending` row in dispatch.driver_assignments behind.
     // The unique index `uq_driver_active_assignment` then blocks every new
@@ -262,11 +362,21 @@ pub async fn run() -> anyhow::Result<()> {
     // before any mutation, so dispatched rows are skipped without side effects.
     let pool_for_sweep        = pool.clone();
     let dispatch_svc_sweep    = Arc::clone(&dispatch_service);
+    let assignment_repo_sweep = Arc::clone(&assignment_repo);
+    let close_assignments_sweep = cfg.dispatch.close_assignments;
     tokio::spawn(async move {
         let sweep_repo = PgDispatchQueueRepository::new(pool_for_sweep);
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(90));
         loop {
             tick.tick().await;
+            // Repair pass: free riders whose outcome event was missed.
+            match crate::infrastructure::db::assignment_repo::repair_pass(
+                close_assignments_sweep, assignment_repo_sweep.as_ref(), 100,
+            ).await {
+                Ok(n) if n > 0 => tracing::info!(closed = n, "dispatch-sweep: closed finished assignments"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(err = %e, "dispatch-sweep: close_finished_assignments failed"),
+            }
             let pending = match sweep_repo.list_all_pending().await {
                 Ok(rows) => rows,
                 Err(e) => {
@@ -306,16 +416,17 @@ pub async fn run() -> anyhow::Result<()> {
         jwt:          Arc::clone(&jwt),
         queue_repo:   queue_repo as Arc<dyn DispatchQueueRepository>,
         drivers_repo: drivers_repo as Arc<dyn DriverProfilesRepository>,
+        home:         Some(home_repo),
     });
     use tower_http::cors::CorsLayer;
     use axum::http::{HeaderName, HeaderValue, Method};
 
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
-            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+            HeaderValue::from_static("http://localhost:3001"),
+            HeaderValue::from_static("http://localhost:3002"),
+            HeaderValue::from_static("http://localhost:3003"),
+            HeaderValue::from_static("http://localhost:8083"),
         ])
         .allow_methods([
             Method::GET, Method::POST, Method::PUT,

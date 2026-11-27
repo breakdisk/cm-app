@@ -33,24 +33,32 @@ consts=$(grep -oE 'pub const [A-Z_0-9]+: *&str = "[a-z0-9._]+"' "$TOPICS_RS" \
 
 # Constants named in a topic list a service subscribes to.
 #
-# Two spellings, and for a while this only knew the first:
+# This has now been wrong twice, each time by assuming a spelling:
 #
-#   consumer.subscribe(&[topics::X])                      -- rdkafka, directly
-#   KafkaConsumer::new(brokers, group, &[topics::X])      -- the libs/events wrapper
+#   consumer.subscribe(&[topics::X])                 -- rdkafka, directly
+#   KafkaConsumer::new(brokers, group, &[topics::X]) -- the libs/events wrapper
+#   KafkaConsumer::new(brokers, group, &[X])         -- the same, imported bare
 #
-# The wrapper is what omnideliv, order-intake and carrier use for the
-# `payment.intent.*` topics, so this check reported "all subscribed topics are
-# created" while three of them were absent from the creation script and the
-# whole online-payment path was one cold start away from being inert. The
-# second pattern below is that hole closed.
+# The second cost the whole online-payment path (2026-08-29). The third hid
+# `pod.pickup.captured` -- subscribed by payments, order-intake and
+# delivery-experience, published by pod, and created by nobody -- while this
+# script printed "all subscribed topics are created" (2026-08-31).
 #
-# `-U` and `[^]]*` across lines: the wrapper's topic array is routinely written
-# on its own lines, and a single-line-only match would miss it exactly the way
-# the original did.
+# There was a second, quieter hole in the same line: the `subscribe(...)` arm
+# was matched WITHOUT `-z`, so it could only ever see a single-line call. Every
+# real `.subscribe(&[` in this repo is written across lines, so that arm matched
+# almost nothing and the coverage came from the wrapper arm alone.
+#
+# So stop pattern-matching the spelling. Pull every all-caps identifier out of
+# the argument lists and keep the ones topics.rs actually defines. A fourth
+# spelling is then already covered, because the constant name is the thing that
+# cannot change. `-z` on both arms so `[^]]*` may cross newlines.
+known_names=$(echo "$consts" | awk '{print $1}' | sort -u)
 subscribed=$( { \
-    grep -rhoE 'subscribe\(&\[[^]]*\]' services/*/src --include='*.rs' 2>/dev/null; \
-    grep -rhozoE 'KafkaConsumer::new\([^)]*\)' services/*/src --include='*.rs' 2>/dev/null | tr '\0' '\n'; \
-  } | grep -oE 'topics::[A-Z_0-9]+' | sed 's/topics:://' | sort -u)
+    grep -rhzoE 'subscribe\(&\[[^]]*\]' services/*/src --include='*.rs' 2>/dev/null | tr '\0' '\n'; \
+    grep -rhzoE 'KafkaConsumer::new\([^)]*\)' services/*/src --include='*.rs' 2>/dev/null | tr '\0' '\n'; \
+  } | grep -oE '[A-Z][A-Z_0-9]{2,}' | sort -u \
+    | grep -Fx "$known_names" | sort -u)
 
 missing=0
 while read -r name; do

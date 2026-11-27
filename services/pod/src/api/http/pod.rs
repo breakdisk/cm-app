@@ -2,17 +2,52 @@ use axum::{extract::{Path, Query, State}, Json};
 use std::sync::Arc;
 use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::partner::{partner_access, PartnerAccess};
 use logisticos_errors::AppError;
 use logisticos_types::{DriverId, TenantId};
 use logisticos_types::awb::TenantCode;
 use crate::{
     api::http::AppState,
     application::commands::*,
+    domain::value_objects::delivery_pin::IssuedPin,
 };
 
 #[derive(serde::Deserialize)]
 pub struct PopStatusQuery {
+    /// The tenant that owns the shipments. Required: the mesh caller already holds it.
+    pub tenant_id:    Uuid,
     pub shipment_ids: Vec<Uuid>,
+}
+
+impl PopStatusQuery {
+    /// Parses `tenant_id=<uuid>&shipment_ids=<uuid>&shipment_ids=<uuid>...`.
+    /// `axum::extract::Query` cannot read a repeated key into a `Vec`, so the
+    /// repeated form every caller uses was a 400 on every request. UUIDs need no
+    /// percent-decoding. A missing or malformed `tenant_id` is an error.
+    pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+        let mut tenant_id = None;
+        let mut shipment_ids = Vec::new();
+        for pair in raw.unwrap_or_default().split('&').filter(|p| !p.is_empty()) {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            match k {
+                "tenant_id" => {
+                    tenant_id = Some(v.parse::<Uuid>().map_err(|_| "tenant_id must be a UUID".to_string())?);
+                }
+                "shipment_ids" => {
+                    shipment_ids.push(v.parse::<Uuid>().map_err(|_| "shipment_ids must be UUIDs".to_string())?);
+                }
+                _ => {}
+            }
+        }
+        let tenant_id = tenant_id.ok_or_else(|| "tenant_id query parameter is required".to_string())?;
+        Ok(Self { tenant_id, shipment_ids })
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct EvidenceQuery {
+    /// The tenant that owns the shipment. Required.
+    pub tenant_id: Uuid,
 }
 
 #[derive(serde::Deserialize)]
@@ -55,7 +90,7 @@ pub async fn initiate(
 }
 
 pub async fn attach_signature(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
@@ -64,7 +99,9 @@ pub async fn attach_signature(
         .ok_or_else(|| AppError::Validation("signature_data required".into()))?
         .to_string();
 
-    state.pod_service.attach_signature(AttachSignatureCommand { pod_id, signature_data }).await?;
+    state.pod_service
+        .attach_signature(&TenantId::from_uuid(claims.tenant_id), AttachSignatureCommand { pod_id, signature_data })
+        .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -81,14 +118,47 @@ pub async fn get_upload_url(
     Ok(Json(serde_json::json!({ "data": result })))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct SurveyPhotoUploadRequest {
+    pub shipment_id: Uuid,
+    pub content_type: String,
+}
+
+/// `POST /v1/pod/survey-photos/upload-url` — a lead's whole-home survey photo.
+/// The key names the tenant and shipment; order-intake records it against the
+/// move only for a lead on that move.
+pub async fn survey_photo_upload_url(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SurveyPhotoUploadRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let result = state.pod_service.survey_upload_url(&tenant_id, body.shipment_id, &body.content_type).await?;
+    Ok(Json(serde_json::json!({ "data": result })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct MediaUrlsRequest {
+    pub keys: Vec<String>,
+}
+
+/// Internal: `POST /v1/internal/media/urls` — viewable URLs for survey photos.
+pub async fn internal_media_urls(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MediaUrlsRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let urls = state.pod_service.survey_media_urls(&body.keys).await?;
+    Ok(Json(serde_json::json!({ "data": urls })))
+}
+
 pub async fn attach_photo(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<AttachPhotoCommand>,
 ) -> Result<axum::http::StatusCode, AppError> {
     let cmd = AttachPhotoCommand { pod_id, ..cmd };
-    state.pod_service.attach_photo(cmd).await?;
+    state.pod_service.attach_photo(&TenantId::from_uuid(claims.tenant_id), cmd).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -123,43 +193,116 @@ pub async fn submit(
     Ok(Json(serde_json::json!({ "data": { "pod_id": pod_id, "status": "submitted" } })))
 }
 
+/// May this caller read evidence that `recorded_driver` captured?
+///
+/// The Phase 0 gate says a partner token cannot read another partner's shipment
+/// data, and POD/POP evidence is exactly that: recipient photos, signature and
+/// GPS. Neither record carries a partner id, so a pid-bound caller is limited
+/// to what it captured itself (`driver_id` is set from `claims.user_id` at
+/// capture). Everyone else keeps the ordinary tenant-level rule.
+fn evidence_visible_to(access: PartnerAccess, caller: Uuid, recorded_driver: Uuid) -> bool {
+    match access {
+        PartnerAccess::Unscoped => true,
+        PartnerAccess::Scoped(_) => caller == recorded_driver,
+    }
+}
+
 /// GET /v1/pods?shipment_id=<uuid> — fetch POD for the admin portal panel.
 /// Returns the most recent POD for the shipment with presigned photo/signature URLs.
 pub async fn list_pods(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Query(q): Query<PodQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let shipment_id = q.shipment_id
         .ok_or_else(|| AppError::Validation("shipment_id query param required".into()))?;
 
-    match state.pod_service.get_by_shipment(shipment_id).await? {
-        Some(pod) => {
+    let access = partner_access(&claims)?;
+    match state.pod_service.get_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
+        Some(pod) if evidence_visible_to(access, claims.user_id, pod.driver_id) => {
             let view = state.pod_service.pod_to_view(&pod).await;
             Ok(Json(serde_json::json!({ "data": [view] })))
         }
-        None => Ok(Json(serde_json::json!({ "data": [] }))),
+        _ => Ok(Json(serde_json::json!({ "data": [] }))),
     }
 }
 
 pub async fn get_pod(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let pod = state.pod_service.get_by_id(pod_id).await?;
+    let access = partner_access(&claims)?;
+    let pod = state.pod_service.get_by_id(&TenantId::from_uuid(claims.tenant_id), pod_id).await?;
+    if !evidence_visible_to(access, claims.user_id, pod.driver_id) {
+        // Indistinguishable from a missing id, so ids cannot be probed.
+        return Err(AppError::NotFound { resource: "POD", id: pod_id.to_string() });
+    }
     let view = state.pod_service.pod_to_view(&pod).await;
     Ok(Json(serde_json::json!({ "data": view })))
 }
 
+/// Whether the caller may see the OTP code in the response body.
+///
+/// A driver must not: the PIN exists precisely so that closing the job requires
+/// the recipient. A driver may still call the endpoint to trigger a resend — they
+/// just get `{ otp_id, sent }` with no code.
+///
+/// The driver check is evaluated first and wins outright. If it were merely one
+/// entry in a deny-list weighed against the allow-list, granting a driver any
+/// other role would hand them the code.
+fn code_is_visible_to(roles: &[String]) -> bool {
+    let driverish = roles.iter().any(|r| r == "driver" || r == "courier");
+    if driverish {
+        return false;
+    }
+    roles
+        .iter()
+        .any(|r| matches!(r.as_str(), "admin" | "tenant_admin" | "customer" | "support"))
+}
+
+/// `POST /v1/otps/generate` — issue (or re-issue) the recipient's delivery PIN.
+///
+/// Two things used to be wrong here, and together they made the PIN decorative:
+/// the handler ran no permission or ownership check, and it took
+/// `recipient_phone` from the request body then returned the code in the
+/// response. A driver holding a tenant JWT could point the SMS at their own
+/// handset, read the code out of the 200, and verify it — closing the job with
+/// no recipient involved, which is exactly what the PIN is supposed to prevent.
+///
+/// The phone now comes from the shipment record and the body's value is ignored.
+///
+/// A live PIN is kept unless the body says `reissue: true`, and the response then
+/// carries `active: true` with no code: the PIN is already with the recipient.
 pub async fn generate_otp(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<GenerateOtpCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let (otp_id, code) = state.pod_service.generate_and_send_otp(&tenant_id, cmd).await?;
-    Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "code": code } })))
+
+    let recipient_phone = state
+        .pod_service
+        .recipient_phone_for_shipment(&tenant_id, cmd.shipment_id)
+        .await?;
+
+    let reveal_to_caller = code_is_visible_to(&claims.roles);
+    let issued = state
+        .pod_service
+        .generate_and_send_otp(
+            &tenant_id,
+            GenerateOtpCommand { shipment_id: cmd.shipment_id, recipient_phone, reissue: cmd.reissue, reveal_to_caller },
+        )
+        .await?;
+
+    let data = match issued {
+        IssuedPin::KeptLive { otp_id } => serde_json::json!({ "otp_id": otp_id, "active": true, "sent": false }),
+        IssuedPin::New { otp_id, code, .. } if reveal_to_caller => {
+            serde_json::json!({ "otp_id": otp_id, "code": code })
+        }
+        IssuedPin::New { otp_id, via, .. } => serde_json::json!({ "otp_id": otp_id, "sent": via.is_some() }),
+    };
+    Ok(Json(serde_json::json!({ "data": data })))
 }
 
 pub async fn verify_otp(
@@ -252,11 +395,15 @@ pub async fn get_pop_upload_url(
 /// GET /v1/pops/:id — fetch a single POP record (ops / admin portal).
 /// Returns a presigned `photo_url` (1-hour TTL) instead of the raw S3 key.
 pub async fn get_pop(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Path(pop_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let pop = state.pod_service.get_pop_by_id(pop_id).await?;
+    let access = partner_access(&claims)?;
+    let pop = state.pod_service.get_pop_by_id(&TenantId::from_uuid(claims.tenant_id), pop_id).await?;
+    if !evidence_visible_to(access, claims.user_id, pop.driver_id) {
+        return Err(AppError::NotFound { resource: "POP", id: pop_id.to_string() });
+    }
     let view = state.pod_service.pop_to_view(&pop).await;
     Ok(Json(serde_json::json!({ "data": view })))
 }
@@ -264,23 +411,24 @@ pub async fn get_pop(
 /// GET /v1/pops?shipment_id=<uuid> — fetch POP for the admin portal panel.
 /// Returns the most recent submitted POP for the shipment with a presigned photo URL.
 pub async fn list_pops(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     Query(q): Query<PopQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let shipment_id = q.shipment_id
         .ok_or_else(|| AppError::Validation("shipment_id query parameter is required".into()))?;
 
-    match state.pod_service.get_pop_by_shipment(shipment_id).await? {
-        Some(pop) => {
+    let access = partner_access(&claims)?;
+    match state.pod_service.get_pop_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
+        Some(pop) if evidence_visible_to(access, claims.user_id, pop.driver_id) => {
             let view = state.pod_service.pop_to_view(&pop).await;
             Ok(Json(serde_json::json!({ "data": view })))
         }
-        None => Ok(Json(serde_json::json!({ "data": [] }))),
+        _ => Ok(Json(serde_json::json!({ "data": [] }))),
     }
 }
 
-/// `GET /v1/internal/pop-evidence/:shipment_id`
+/// `GET /v1/internal/pop-evidence/:shipment_id?tenant_id=<uuid>` (tenant_id required)
 ///
 /// Internal service-to-service endpoint (no JWT — protected by Istio mTLS).
 /// Called by the delivery-experience service to enrich tracking responses with
@@ -295,16 +443,18 @@ pub async fn list_pops(
 /// ```
 pub async fn get_evidence_internal(
     Path(shipment_id): Path<Uuid>,
+    Query(q): Query<EvidenceQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let tenant_id = TenantId::from_uuid(q.tenant_id);
     // Fetch the submitted POP for this shipment (if any).
-    let pop_view = match state.pod_service.get_completed_pop_by_shipment(shipment_id).await? {
+    let pop_view = match state.pod_service.get_completed_pop_by_shipment(&tenant_id, shipment_id).await? {
         Some(ref pop) => Some(state.pod_service.pop_to_view(pop).await),
         None          => None,
     };
 
     // Fetch the POD for this shipment (if any). Use all-photos evidence view.
-    let pod_view = match state.pod_service.get_by_shipment(shipment_id).await? {
+    let pod_view = match state.pod_service.get_by_shipment(&tenant_id, shipment_id).await? {
         Some(ref pod) => Some(state.pod_service.pod_evidence_to_view(pod).await),
         None          => None,
     };
@@ -315,7 +465,7 @@ pub async fn get_evidence_internal(
     })))
 }
 
-/// `GET /v1/internal/pop-status?shipment_ids=<uuid>&shipment_ids=<uuid>...`
+/// `GET /v1/internal/pop-status?tenant_id=<uuid>&shipment_ids=<uuid>&shipment_ids=<uuid>...` (tenant_id required)
 ///
 /// Internal service-to-service endpoint (no JWT — protected by Istio mTLS).
 /// Called by hub-ops before loading a pallet or loose piece into a container.
@@ -323,14 +473,25 @@ pub async fn get_evidence_internal(
 /// Returns per-shipment POP completion status. A POP is "completed" when its
 /// status is `Submitted`.
 pub async fn pop_status_internal(
-    Query(q): Query<PopStatusQuery>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let q = match PopStatusQuery::parse(raw.as_deref()) {
+        Ok(q) => q,
+        Err(m) => {
+            return (axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": m }))).into_response();
+        }
+    };
+    let tenant_id = TenantId::from_uuid(q.tenant_id);
     let mut statuses = Vec::with_capacity(q.shipment_ids.len());
     let mut all_completed = true;
 
     for shipment_id in &q.shipment_ids {
-        let pop = state.pod_service.get_completed_pop_by_shipment(*shipment_id).await?;
+        let pop = match state.pod_service.get_completed_pop_by_shipment(&tenant_id, *shipment_id).await {
+            Ok(p) => p,
+            Err(e) => return e.into_response(),
+        };
         let has_completed_pop = pop.is_some();
         if !has_completed_pop {
             all_completed = false;
@@ -341,8 +502,72 @@ pub async fn pop_status_internal(
         }));
     }
 
-    Ok(Json(serde_json::json!({
+    Json(serde_json::json!({
         "statuses":      statuses,
         "all_completed": all_completed,
-    })))
+    }))
+    .into_response()
+}
+
+#[cfg(test)]
+mod pop_status_query_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_shipment_ids_and_a_tenant_parse() {
+        let (t, a, b) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let q = PopStatusQuery::parse(Some(&format!("tenant_id={t}&shipment_ids={a}&shipment_ids={b}"))).unwrap();
+        assert_eq!((q.tenant_id, q.shipment_ids), (t, vec![a, b]));
+    }
+
+    #[test]
+    fn tenant_is_required() {
+        let a = Uuid::new_v4();
+        assert!(PopStatusQuery::parse(Some(&format!("shipment_ids={a}"))).is_err());
+        assert!(PopStatusQuery::parse(None).is_err());
+        assert!(PopStatusQuery::parse(Some("tenant_id=nope")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod otp_authority_tests {
+    use super::*;
+
+    /// The whole point of the PIN is that the driver does not hold it. A driver
+    /// asking for one must not receive the code in the response -- they may
+    /// trigger a resend to the recipient, nothing more.
+    #[test]
+    fn a_driver_may_trigger_a_resend_but_never_read_the_code() {
+        assert!(!code_is_visible_to(&["driver".to_string()]));
+        assert!(!code_is_visible_to(&["courier".to_string()]));
+    }
+
+    /// A driver who also holds another role is still a driver standing at the
+    /// door. The driverish check has to win over any grant, or the bypass is
+    /// simply one role assignment away.
+    #[test]
+    fn a_driver_with_an_extra_role_still_cannot_read_the_code() {
+        assert!(!code_is_visible_to(&["driver".to_string(), "admin".to_string()]));
+    }
+
+    /// Ops needs it for the phone-support case where the recipient never got
+    /// the SMS.
+    #[test]
+    fn ops_may_read_the_code() {
+        assert!(code_is_visible_to(&["admin".to_string()]));
+        assert!(code_is_visible_to(&["tenant_admin".to_string()]));
+    }
+
+    /// The recipient's own app shows it on the tracking screen.
+    #[test]
+    fn the_customer_may_read_their_own_code() {
+        assert!(code_is_visible_to(&["customer".to_string()]));
+    }
+
+    /// An unrecognised role is not trusted with it.
+    #[test]
+    fn an_unknown_role_cannot_read_the_code() {
+        assert!(!code_is_visible_to(&["hub_scanner".to_string()]));
+        assert!(!code_is_visible_to(&[]));
+    }
 }

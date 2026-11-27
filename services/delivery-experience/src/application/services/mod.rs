@@ -4,7 +4,11 @@ use uuid::Uuid;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
-use crate::domain::{entities::TrackingRecord, repositories::TrackingRepository};
+use crate::domain::{
+    entities::TrackingRecord,
+    repositories::TrackingRepository,
+    value_objects::{may_read, Reader},
+};
 
 /// Abstraction over the Kafka producer so the service layer can emit events
 /// without depending on rdkafka directly. Production binding lives in
@@ -46,24 +50,31 @@ impl TrackingService {
             })
     }
 
-    /// Authenticated merchant lookup by shipment id.
-    pub async fn get_by_shipment_id(&self, shipment_id: Uuid) -> AppResult<TrackingRecord> {
-        self.repo
+    /// Authenticated lookup by shipment id, for a caller who may read it.
+    ///
+    /// A record the caller may not read is a 404, not a 403, so nobody can
+    /// probe which shipment ids exist outside what they can see.
+    pub async fn get_for(&self, shipment_id: Uuid, reader: &Reader) -> AppResult<TrackingRecord> {
+        let not_found = || AppError::NotFound { resource: "shipment", id: shipment_id.to_string() };
+        let record = self
+            .repo
             .find_by_shipment_id(shipment_id)
             .await
             .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound {
-                resource: "shipment",
-                id: shipment_id.to_string(),
-            })
+            .ok_or_else(not_found)?;
+        if may_read(reader, record.tenant_id.inner(), record.owner_id) {
+            Ok(record)
+        } else {
+            Err(not_found())
+        }
     }
 
-    /// List shipments for a tenant (authenticated, paginated).
-    pub async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> AppResult<Vec<TrackingRecord>> {
+    /// The caller's tenant, or only what they booked (authenticated, paginated).
+    pub async fn list_for(&self, reader: &Reader, limit: i64, offset: i64) -> AppResult<Vec<TrackingRecord>> {
         let limit  = limit.clamp(1, 200);
         let offset = offset.max(0);
         self.repo
-            .list_by_tenant(tenant_id, limit, offset)
+            .list_by_tenant(&TenantId::from_uuid(reader.tenant_id), reader.owner_filter(), limit, offset)
             .await
             .map_err(AppError::Internal)
     }

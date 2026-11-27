@@ -1,6 +1,7 @@
 pub mod basket_service;
 pub mod checkout_service;
 pub mod order_payments;
+pub mod leg_recovery;
 pub mod recovery_service;
 pub mod catalog_service;
 pub mod telemetry;
@@ -11,6 +12,7 @@ pub use checkout_service::{
     FIRST_OFFER_RADIUS_KM,
 };
 pub use order_payments::{AuthorizedIntent, OrderPayments};
+pub use leg_recovery::{LegRecovery, LegRecoveryService};
 pub use recovery_service::{Recovery, RecoveryService};
 pub use catalog_service::{
     CatalogService, IngestReport, ItemDraft, ItemPatch, ScoredItem,

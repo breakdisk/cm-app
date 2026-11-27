@@ -105,3 +105,10 @@
     @apply absolute inset-x-0 h-px bg-cyan-neon/30 animate-scan-line pointer-events-none;
   }
 }
+
+/* Arabic: Inter / Space Grotesk have no Arabic glyphs, so lead with an Arabic-capable face. */
+html[lang="ar"] body,
+html[lang="ar"] .font-sans,
+html[lang="ar"] .font-heading {
+  font-family: var(--font-arabic), var(--font-sans), sans-serif;
+}

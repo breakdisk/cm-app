@@ -80,7 +80,9 @@ data class SubmitPodData(
 @Serializable
 data class GenerateOtpRequest(
     @SerialName("shipment_id")      val shipmentId: String,
-    @SerialName("recipient_phone")  val recipientPhone: String
+    @SerialName("recipient_phone")  val recipientPhone: String,
+    /** Replace the recipient's live PIN. Without it pod keeps the live one. */
+    @SerialName("reissue")          val reissue: Boolean = false,
 )
 
 @Serializable
@@ -91,10 +93,10 @@ data class GenerateOtpResponse(
 @Serializable
 data class GenerateOtpData(
     @SerialName("otp_id") val otpId: String,
-    /** Present when no SMS adapter is configured (dev/staging dummy mode).
-     *  The app uses this to auto-verify without requiring the driver to
-     *  type a code the recipient never received via SMS. */
+    /** Withheld from drivers by pod. Never used to verify on the driver's behalf. */
     @SerialName("code") val code: String? = null,
+    /** True when pod kept the recipient's live PIN instead of issuing one. */
+    @SerialName("active") val active: Boolean = false,
 )
 
 @Serializable
@@ -199,6 +201,13 @@ data class GetPodData(
 
 // ─── API interface ────────────────────────────────────────────────────────────
 
+/** A whole-home survey photo's upload: pod keys it under the tenant and move. */
+@Serializable
+data class SurveyPhotoUploadRequest(
+    @SerialName("shipment_id")  val shipmentId: String,
+    @SerialName("content_type") val contentType: String,
+)
+
 interface PodApiService {
 
     /** POST /v1/pods — initiate a POD record, returns pod_id */
@@ -217,6 +226,10 @@ interface PodApiService {
      * The app uploads the photo bytes directly to the returned [GetUploadUrlData.uploadUrl],
      * then calls [attachPhoto] with the [GetUploadUrlData.s3Key].
      */
+    /** POST /v1/pod/survey-photos/upload-url — a presigned PUT for a survey photo. */
+    @POST("v1/pod/survey-photos/upload-url")
+    suspend fun getSurveyPhotoUploadUrl(@Body body: SurveyPhotoUploadRequest): GetUploadUrlResponse
+
     @POST("v1/pods/{id}/upload-url")
     suspend fun getUploadUrl(
         @Path("id") podId: String,

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use logisticos_types::{DriverId, TenantId};
 use serde::Serialize;
 use uuid::Uuid;
-use crate::domain::entities::{Driver, DriverTask, DriverLocation};
+use crate::domain::entities::{Driver, DriverTask, DriverLocation, DutySession};
 
 /// Tenant-wide task counts for the admin summary KPI strip.
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +68,11 @@ pub trait DriverRepository: Send + Sync {
 #[async_trait]
 pub trait TaskRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverTask>>;
+    /// The phone of the driver who holds an open task on this shipment, for
+    /// the masked-call bridge. None when nobody does.
+    async fn driver_phone_on_shipment(&self, _shipment_id: Uuid) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
     async fn list_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Vec<DriverTask>>;
     async fn list_by_route(&self, route_id: Uuid) -> anyhow::Result<Vec<DriverTask>>;
     async fn save(&self, task: &DriverTask) -> anyhow::Result<()>;
@@ -153,4 +158,65 @@ pub trait LocationRepository: Send + Sync {
         from: chrono::DateTime<chrono::Utc>,
         to: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<DriverLocation>>;
+}
+
+/// Duty sessions behind the hours-of-service clock. At most one open session per
+/// driver, enforced by a partial unique index, so a repeated go-online cannot
+/// stack sessions and double-count the clock.
+#[async_trait]
+pub trait DutySessionRepository: Send + Sync {
+    /// Opens a session at `at` unless one is already open. True when it opened one.
+    async fn open(&self, tenant_id: Uuid, driver_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool>;
+    /// Closes the open session, if any, at `at`. True when it closed one.
+    async fn close_open(&self, tenant_id: Uuid, driver_id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool>;
+    /// Sessions still open or ended after `since`, oldest first.
+    async fn list_overlapping(&self, tenant_id: Uuid, driver_id: Uuid, since: DateTime<Utc>) -> anyhow::Result<Vec<DutySession>>;
+}
+
+/// One shipment a driver dropped. See `domain::value_objects::leave_policy`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JobDrop {
+    pub tenant_id:       Uuid,
+    /// drivers.id, equal to the identity user id since migration 0014.
+    pub driver_id:       Uuid,
+    pub route_id:        Uuid,
+    pub shipment_id:     Uuid,
+    pub tracking_number: Option<String>,
+    pub reason_code:     String,
+    pub note:            Option<String>,
+    pub lat:             Option<f64>,
+    pub lng:             Option<f64>,
+    pub payout_cents:    i64,
+    pub fee_cents:       i64,
+    pub dropped_at:      DateTime<Utc>,
+}
+
+/// An earnings line that is not a delivery payout: waiting pay (positive) or a
+/// drop fee (negative).
+#[derive(Debug, Clone, Serialize)]
+pub struct EarningAdjustment {
+    /// "waiting_fee" | "drop_fee", or a credit's kind ("survey_fee", …)
+    pub kind:            String,
+    pub reference_id:    Uuid,
+    pub tracking_number: Option<String>,
+    pub amount_cents:    i64,
+    pub at:              DateTime<Utc>,
+}
+
+/// Drops, and the penalty side of earnings and acceptance.
+#[async_trait]
+pub trait JobDropRepository: Send + Sync {
+    /// Cancels the job's open tasks and records the drop in one transaction.
+    /// False, with nothing changed, when any of the tasks is no longer open —
+    /// the driver finished or failed it in the meantime.
+    async fn drop_job(&self, drop: &JobDrop, task_ids: &[Uuid]) -> anyhow::Result<bool>;
+    /// The drop already recorded for this assignment of this shipment.
+    async fn find(&self, driver_id: Uuid, shipment_id: Uuid, route_id: Uuid) -> anyhow::Result<Option<JobDrop>>;
+    /// Drops of jobs the driver claimed from a broadcast offer: the acceptance
+    /// rate is over offers, so only those move it.
+    async fn offer_drop_count(&self, driver_id: Uuid) -> anyhow::Result<i64>;
+    /// Whether the driver claimed this shipment from a broadcast offer.
+    async fn claimed_from_offer(&self, driver_id: Uuid, shipment_id: Uuid) -> anyhow::Result<bool>;
+    /// Waiting pay and drop fees in `[from, to)`, newest first.
+    async fn list_adjustments(&self, driver_id: Uuid, from: DateTime<Utc>, to: DateTime<Utc>) -> anyhow::Result<Vec<EarningAdjustment>>;
 }

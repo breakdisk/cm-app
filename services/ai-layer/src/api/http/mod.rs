@@ -25,6 +25,7 @@ use crate::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v1/agents/classify",                  post(classify_prompt))
         .route("/v1/agents/chat",                      post(chat))
         .route("/v1/agents/chat/:id",                  get(get_chat))
         .route("/v1/agents/run",                       post(run_agent))
@@ -54,6 +55,48 @@ async fn aggregate_stats(
         .await
         .map_err(AppError::internal)?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "data": stats }))))
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/agents/classify — route the Move app's prompt box
+//
+// Stateless: no session, no tools, one structured answer. The app keeps its
+// own regex as the offline fallback, and uses it too when this refuses (a
+// plan without AI) or fails.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct ClassifyRequest {
+    text: String,
+    /// The app knows whether a job is running; without one, a question is a
+    /// booking, so the answer can never route to support for nothing.
+    #[serde(default)]
+    has_active_job: bool,
+}
+
+async fn classify_prompt(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(req): Json<ClassifyRequest>,
+) -> impl IntoResponse {
+    if !claims.can_use_ai() {
+        return Err(AppError::Forbidden { resource: "ai_features".into() });
+    }
+    let text = req.text.trim();
+    if text.is_empty() || text.chars().count() > MAX_CHAT_MESSAGE_CHARS {
+        return Err(AppError::Validation(format!("text is 1–{MAX_CHAT_MESSAGE_CHARS} characters")));
+    }
+    let answer = crate::application::classify::classify(state.classifier.as_ref(), text, req.has_active_job)
+        .await
+        .map_err(|e| {
+            tracing::warn!(tenant_id = %claims.tenant_id, err = %e, "prompt classification failed — the app falls back to its own parse");
+            AppError::ServiceUnavailable("Couldn't read that right now".into())
+        })?;
+    tracing::info!(
+        tenant_id = %claims.tenant_id, intent = ?answer.intent, confidence = answer.confidence,
+        items = answer.extracted.items.len(), "prompt classified"
+    );
+    Ok((StatusCode::OK, Json(serde_json::json!({ "data": answer }))))
 }
 
 // ---------------------------------------------------------------------------

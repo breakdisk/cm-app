@@ -24,6 +24,7 @@ pub enum AssignmentStatus {
     Accepted,  // Driver accepted; route transitions to InProgress
     Rejected,  // Driver rejected; needs reassignment
     Cancelled, // Dispatcher cancelled before driver responded
+    Completed, // The work ended; the driver is free (not an active state)
 }
 
 impl DriverAssignment {
@@ -72,5 +73,21 @@ impl DriverAssignment {
 
     pub fn is_active(&self) -> bool {
         self.status == AssignmentStatus::Pending || self.status == AssignmentStatus::Accepted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_is_not_active() {
+        let mut a = DriverAssignment::new(
+            TenantId::from_uuid(Uuid::nil()),
+            DriverId::from_uuid(Uuid::nil()),
+            RouteId::from_uuid(Uuid::nil()),
+        );
+        a.status = AssignmentStatus::Completed;
+        assert!(!a.is_active());
     }
 }

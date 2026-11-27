@@ -1,6 +1,7 @@
 pub mod addresses;
 pub mod auth;
 pub mod branding;
+pub mod partner_memberships;
 pub mod pricing_features;
 pub mod tenants;
 pub mod users;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub address_repo: Arc<dyn crate::domain::repositories::PickupAddressRepository>,
     pub branding_repo: Arc<dyn crate::domain::repositories::BrandingRepository>,
     pub pricing_feature_repo: Arc<dyn crate::domain::repositories::PricingFeatureRepository>,
+    pub partner_membership_repo: Arc<dyn crate::domain::repositories::PartnerMembershipRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -78,6 +80,8 @@ fn internal_router(secret: InternalSecret) -> Router<Arc<AppState>> {
         // Not the tenant-facing `PUT /v1/tenants/:id/tier`, which requires a
         // permission no role holds -- see `tenants::set_tier_internal`.
         .route("/v1/internal/tenants/:id/tier", put(tenants::set_tier_internal))
+        // Created by carrier when it approves a store, and by the backfill.
+        .route("/v1/internal/partner-memberships", post(partner_memberships::upsert_internal))
         .layer(guard)
 }
 
@@ -89,6 +93,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/users/me",                  get(users::get_me).put(users::update_me))
         .route("/users",                     get(users::list_users).post(users::invite_user))
+        .route("/users/lookup",              get(users::lookup_user))
         .route("/users/:id",                 get(users::get_user))
         .route("/users/:id/invite-link",     post(users::generate_invite_link))
         .route("/users/:id/roles",           patch(users::patch_user_roles))
@@ -105,6 +110,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tenants/:id",         put(tenants::update_tenant))
         .route("/tenants/:id/tier",    put(tenants::upgrade_tier))
         .route("/audit-log",           get(audit_log::list))
+        .route("/partner-memberships/me", get(partner_memberships::get_my))
         // Pricing feature matrix — read by any authenticated user, write by admin only
         .route("/pricing/features",            get(pricing_features::list_features))
         .route("/pricing/features/active",     get(pricing_features::list_active_features))

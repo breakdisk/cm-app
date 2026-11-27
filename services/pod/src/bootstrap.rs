@@ -166,14 +166,26 @@ pub async fn run() -> anyhow::Result<()> {
                 ))
             }
             _ => {
-                tracing::warn!(
-                    "SERVICES__ORDER_INTAKE_URL not set — POP will trust the driver device \
-                     for service_code and declared_value_cents. Track A (Balikbayan) driver \
-                     ledger debits will not fire reliably. Set it in production."
+                tracing::error!(
+                    "SERVICES__ORDER_INTAKE_URL not set — shipment ownership cannot be verified, so \
+                     POD/POP initiate and delivery PINs are REFUSED (503) until it is set. \
+                     Set it in production."
                 );
                 None
             }
         };
+
+    // A bad PIN policy stops the deploy here rather than every delivery.
+    cfg.delivery_pin.validate().map_err(anyhow::Error::msg).context("DELIVERY_PIN__* is invalid")?;
+    tracing::info!(
+        required     = cfg.delivery_pin.required,
+        ttl_hours    = cfg.delivery_pin.ttl_hours,
+        max_attempts = cfg.delivery_pin.max_attempts,
+        "Delivery PIN policy"
+    );
+    if !cfg.delivery_pin.required {
+        tracing::warn!("DELIVERY_PIN__REQUIRED=false — a driver can submit a POD without the recipient's PIN");
+    }
 
     let pod_service = Arc::new(PodService::new(
         Arc::clone(&pod_repo)     as _,
@@ -185,6 +197,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&sms)          as _,
         Arc::clone(&kafka),
         shipment_ctx,
+        cfg.delivery_pin.clone(),
     ));
 
     let state = Arc::new(AppState { pod_service, jwt: Arc::clone(&jwt) });

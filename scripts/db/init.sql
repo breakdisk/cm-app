@@ -78,6 +78,8 @@ GRANT SELECT ON identity.tenants TO order_svc, dispatch_svc, driver_svc, payment
 -- why that works here and would not in a migration.
 CREATE DATABASE svc_omnideliv;
 CREATE DATABASE svc_field_ops;
+CREATE DATABASE svc_promotions;
 
 ALTER DATABASE svc_omnideliv SET search_path TO omnideliv, public;
 ALTER DATABASE svc_field_ops SET search_path TO field_ops, public;
+ALTER DATABASE svc_promotions SET search_path TO promotions, public;

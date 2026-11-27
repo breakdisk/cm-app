@@ -30,18 +30,19 @@ import { fetch as expoFetch } from "expo/fetch";
 import { useDispatch, useSelector } from "react-redux";
 import { authActions } from "../../store";
 import type { RootState, AppDispatch, IdType } from "../../store";
+import { A } from "./authTheme";
 import { complianceApi } from "../../services/api/compliance";
 import { getStoredToken, logout } from "../../services/api/auth";
 import DocumentScanner from "react-native-document-scanner-plugin";
 
-const RED    = "#FF3B5C";
-const CANVAS = "#050810";
-const CYAN   = "#00E5FF";
-const GREEN  = "#00FF88";
-const AMBER  = "#FFAB00";
-const PURPLE = "#A855F7";
-const GLASS  = "rgba(255,255,255,0.04)";
-const BORDER = "rgba(255,255,255,0.08)";
+const RED    = A.danger;
+const CANVAS = A.canvas;
+const CYAN   = A.accent;
+const GREEN  = A.success;
+const AMBER  = A.amber;
+const PURPLE = A.secondary;
+const GLASS  = A.glass;
+const BORDER = A.border;
 
 const ID_OPTIONS: Array<{
   type:     IdType;
@@ -313,11 +314,11 @@ export function KYCScreen() {
 
       <ScrollView style={{ flex: 1, backgroundColor: CANVAS }} contentContainerStyle={{ paddingBottom: 48 }}>
 
-        <LinearGradient colors={["rgba(0,255,136,0.08)", "transparent"]} style={s.hero}>
+        <LinearGradient colors={A.wash.kyc} style={s.hero}>
           <FadeInView fromY={-16}>
             <View style={s.progressRow}>
               {[1, 2, 3].map((n) => (
-                <View key={n} style={[s.progressDot, { backgroundColor: n <= 3 ? GREEN : "rgba(255,255,255,0.08)" }]} />
+                <View key={n} style={[s.progressDot, { backgroundColor: n <= 3 ? A.progress.kyc : BORDER }]} />
               ))}
             </View>
             <Text style={s.heroTitle}>Verify Your Identity</Text>
@@ -385,19 +386,19 @@ export function KYCScreen() {
               value={docNumber}
               onChangeText={setDocNumber}
               placeholder={selectedId === "passport" ? "e.g. P1234567A" : "784-XXXX-XXXXXXX-X"}
-              placeholderTextColor="rgba(255,255,255,0.2)"
+              placeholderTextColor={A.placeholder}
               autoCapitalize="characters"
               autoCorrect={false}
               maxLength={100}
               style={{
-                backgroundColor: "rgba(255,255,255,0.03)",
+                backgroundColor: A.inputBg,
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.08)",
+                borderColor: BORDER,
                 borderRadius: 12,
                 paddingHorizontal: 14,
                 paddingVertical: 12,
-                color: "#FFF",
-                fontFamily: "JetBrainsMono-Regular",
+                color: A.ink,
+                ...A.mono,
                 fontSize: 14,
                 marginHorizontal: 20,
               }}
@@ -420,7 +421,7 @@ export function KYCScreen() {
                 "Must not be expired",
               ].map((req, i) => (
                 <View key={i} style={s.reqRow}>
-                  <Ionicons name="checkmark-circle-outline" size={13} color="rgba(0,255,136,0.6)" />
+                  <Ionicons name="checkmark-circle-outline" size={13} color={GREEN} />
                   <Text style={s.reqText}>{req}</Text>
                 </View>
               ))}
@@ -450,7 +451,7 @@ export function KYCScreen() {
               </FadeInView>
             ) : (
               <View style={s.uploadZone}>
-                <Ionicons name="scan-outline" size={32} color="rgba(255,255,255,0.2)" />
+                <Ionicons name="scan-outline" size={32} color={A.faint} />
                 <Text style={s.uploadTitle}>Scan or Upload ID Document</Text>
                 <Text style={s.uploadSub}>Auto-crop · Grayscale · WebP · Max 10 MB</Text>
                 <View style={s.uploadBtns}>
@@ -494,7 +495,7 @@ export function KYCScreen() {
             disabled={!canSubmit || submitting}
             style={[s.submitBtnWrap, { flex: 1, opacity: canSubmit && !submitting ? 1 : 0.4 }]}
           >
-            <LinearGradient colors={[GREEN, CYAN]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.submitBtn}>
+            <LinearGradient colors={A.confirmGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.submitBtn}>
               <Text style={s.submitBtnText}>
                 {submitting ? "Submitting…" : isProcessing ? "Processing…" : "Submit for Verification"}
               </Text>
@@ -511,18 +512,18 @@ const s = StyleSheet.create({
   hero:            { paddingHorizontal: 24, paddingTop: 56, paddingBottom: 24 },
   progressRow:     { flexDirection: "row", gap: 6, marginBottom: 20 },
   progressDot:     { flex: 1, height: 3, borderRadius: 2 },
-  heroTitle:       { fontSize: 26, fontFamily: "SpaceGrotesk-Bold", color: "#FFF", marginBottom: 6 },
-  heroSub:         { fontSize: 14, color: "rgba(255,255,255,0.4)", lineHeight: 22 },
+  heroTitle:       { fontSize: 26, ...A.heading, color: A.ink, marginBottom: 6 },
+  heroSub:         { fontSize: 14, color: A.muted, lineHeight: 22 },
 
   section:         { paddingHorizontal: 16, paddingTop: 16, gap: 12 },
-  sectionLabel:    { fontSize: 11, fontFamily: "JetBrainsMono-Regular", color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 },
+  sectionLabel:    { fontSize: 11, ...A.mono, color: A.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 },
 
   idOptions:       { flexDirection: "row", gap: 10 },
   idOption:        { flex: 1, backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderRadius: 16, padding: 14, alignItems: "center", gap: 6, position: "relative" },
   idIconWrap:      { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", marginBottom: 2 },
-  idLabel:         { fontSize: 14, fontFamily: "SpaceGrotesk-SemiBold", color: "#FFF" },
-  idSublabel:      { fontSize: 10, fontFamily: "JetBrainsMono-Regular", color: "rgba(255,255,255,0.35)", textAlign: "center" },
-  idNote:          { fontSize: 9, fontFamily: "JetBrainsMono-Regular", textAlign: "center", lineHeight: 14 },
+  idLabel:         { fontSize: 14, ...A.headingSemi, color: A.ink },
+  idSublabel:      { fontSize: 10, ...A.mono, color: "rgba(255,255,255,0.35)", textAlign: "center" },
+  idNote:          { fontSize: 9, ...A.mono, textAlign: "center", lineHeight: 14 },
   selectedCheck:   { position: "absolute", top: 10, right: 10, width: 18, height: 18, borderRadius: 9, alignItems: "center", justifyContent: "center" },
 
   requirementsBox: { backgroundColor: "rgba(0,255,136,0.04)", borderWidth: 1, borderColor: "rgba(0,255,136,0.12)", borderRadius: 12, padding: 12, gap: 8 },
@@ -530,33 +531,33 @@ const s = StyleSheet.create({
   reqText:         { flex: 1, fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 18 },
 
   uploadZone:      { backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderRadius: 16, borderStyle: "dashed", paddingVertical: 32, alignItems: "center", gap: 8 },
-  uploadTitle:     { fontSize: 14, fontFamily: "SpaceGrotesk-SemiBold", color: "rgba(255,255,255,0.6)" },
-  uploadSub:       { fontSize: 11, fontFamily: "JetBrainsMono-Regular", color: "rgba(255,255,255,0.25)" },
+  uploadTitle:     { fontSize: 14, ...A.headingSemi, color: "rgba(255,255,255,0.6)" },
+  uploadSub:       { fontSize: 11, ...A.mono, color: "rgba(255,255,255,0.25)" },
   uploadBtns:      { flexDirection: "row", gap: 12, marginTop: 8 },
   uploadBtn:       { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 9 },
-  uploadBtnText:   { fontSize: 13, fontFamily: "SpaceGrotesk-SemiBold", color: CYAN },
+  uploadBtnText:   { fontSize: 13, ...A.headingSemi, color: CYAN },
 
   previewWrap:      { borderRadius: 16, overflow: "hidden", position: "relative" },
   previewImage:     { width: "100%", height: 180, borderRadius: 16 },
   processingOverlay:{ position: "absolute", inset: 0, backgroundColor: "rgba(5,8,16,0.72)", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 16 },
-  processingText:   { fontSize: 12, fontFamily: "JetBrainsMono-Regular", color: CYAN },
+  processingText:   { fontSize: 12, ...A.mono, color: CYAN },
   removeBtn:        { position: "absolute", top: 8, right: 8 },
   previewCheck:     { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8, justifyContent: "center" },
-  previewCheckText: { fontSize: 12, color: GREEN, fontFamily: "JetBrainsMono-Regular" },
+  previewCheckText: { fontSize: 12, color: GREEN, ...A.mono },
 
   noteBox:         { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: "rgba(255,171,0,0.07)", borderWidth: 1, borderColor: "rgba(255,171,0,0.2)", borderRadius: 12, padding: 12 },
   noteText:        { flex: 1, fontSize: 12, color: "rgba(255,171,0,0.7)", lineHeight: 18 },
 
   demoBanner:      { flexDirection: "row", alignItems: "flex-start", gap: 10, marginHorizontal: 16, marginTop: 12, backgroundColor: "rgba(255,59,92,0.10)", borderWidth: 1, borderColor: "rgba(255,59,92,0.35)", borderRadius: 14, padding: 14 },
-  demoBannerTitle: { fontSize: 13, fontFamily: "SpaceGrotesk-SemiBold", color: RED, marginBottom: 3 },
+  demoBannerTitle: { fontSize: 13, ...A.headingSemi, color: RED, marginBottom: 3 },
   demoBannerBody:  { fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 17 },
   demoBannerBtn:   { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: "rgba(255,59,92,0.5)", alignSelf: "flex-start", marginTop: 8 },
-  demoBannerBtnText: { fontSize: 12, fontFamily: "SpaceGrotesk-SemiBold", color: RED },
+  demoBannerBtnText: { fontSize: 12, ...A.headingSemi, color: RED },
 
   footerBtns:      { flexDirection: "row", gap: 10, marginHorizontal: 16, marginTop: 24 },
   skipBtn:         { paddingHorizontal: 18, paddingVertical: 15, borderRadius: 14, borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center" },
-  skipText:        { fontSize: 13, color: "rgba(255,255,255,0.4)" },
+  skipText:        { fontSize: 13, color: A.muted },
   submitBtnWrap:   { borderRadius: 14, overflow: "hidden" },
-  submitBtn:       { paddingVertical: 15, alignItems: "center" },
-  submitBtnText:   { fontSize: 14, fontFamily: "SpaceGrotesk-SemiBold", color: CANVAS },
+  submitBtn:       A.button,
+  submitBtnText:   { fontSize: 14, ...A.buttonText },
 });

@@ -170,6 +170,31 @@ impl DriverAssignmentRepository for MockAssignmentRepo {
             Ok(false)
         }
     }
+
+    async fn cancel_active_for_route(&self, _tenant_id: Uuid, _route_id: Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn find_route_for_outcome(
+        &self,
+        _tenant_id: Uuid,
+        _task_id: Option<Uuid>,
+        _shipment_id: Option<Uuid>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        Ok(None)
+    }
+
+    async fn close_if_finished(&self, _tenant_id: Uuid, _route_id: Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn close_finished_assignments(&self, _limit: i64) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
+    async fn save_with_expected_tasks(&self, assignment: &DriverAssignment, _expected: i32) -> anyhow::Result<()> {
+        self.save(assignment).await
+    }
 }
 
 /// In-memory driver availability repository.
@@ -218,10 +243,16 @@ impl DriverAvailabilityRepository for MockDriverAvailRepo {
 #[derive(Default, Clone)]
 struct MockDispatchQueueRepo {
     store: Arc<Mutex<HashMap<Uuid, DispatchQueueRow>>>,
+    /// shipment_id → drivers who dropped it.
+    dropped: Arc<Mutex<HashMap<Uuid, Vec<Uuid>>>>,
 }
 
 #[async_trait]
 impl DispatchQueueRepository for MockDispatchQueueRepo {
+    async fn dropped_drivers(&self, shipment_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(self.dropped.lock().unwrap().get(&shipment_id).cloned().unwrap_or_default())
+    }
+
     async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()> {
         let mut guard = self.store.lock().unwrap();
         guard.insert(row.shipment_id, row.clone());
@@ -391,7 +422,7 @@ fn build_test_app_with_queue(
 
     let dispatch_service = Arc::new(DriverAssignmentService::new(
         Arc::new(route_repo) as _,
-        Arc::new(assignment_repo) as _,
+        Arc::new(assignment_repo.clone()) as _,
         Arc::clone(&avail_arc),
         Arc::clone(&kafka),
         None,               // compliance_cache: None = always assignable in tests
@@ -412,6 +443,7 @@ fn build_test_app_with_queue(
     ));
 
     let state = Arc::new(AppState {
+        home: None,
         dispatch_service,
         offer_service,
         jwt,
@@ -1415,6 +1447,57 @@ mod quick_dispatch {
         assert_eq!(status, Some("dispatched".into()));
     }
 
+    /// A driver who dropped a shipment is free again and usually still the
+    /// nearest. The sweep must not hand it straight back to them.
+    #[tokio::test]
+    async fn a_driver_who_dropped_the_shipment_is_passed_over() {
+        let shipment_id = Uuid::new_v4();
+        let dropper     = Uuid::new_v4();
+        let next        = Uuid::new_v4();
+        let token = mint_jwt_token(
+            Uuid::new_v4(),
+            vec![permissions::DISPATCH_ASSIGN.to_owned()],
+        );
+
+        let queue_repo = MockDispatchQueueRepo::default();
+        queue_repo.store.lock().unwrap().insert(
+            shipment_id,
+            make_queue_item(TEST_TENANT_ID, shipment_id),
+        );
+        queue_repo.dropped.lock().unwrap().insert(shipment_id, vec![dropper]);
+
+        let driver = |id: Uuid, distance_km: f64| AvailableDriver {
+            driver_id:         DriverId::from_uuid(id),
+            name:              String::new(),
+            location:          Coordinates { lat: 14.60, lng: 120.98 },
+            active_stop_count: 0,
+            vehicle_type:      None,
+            distance_km,
+        };
+
+        let app = build_test_app_with_queue(
+            MockRouteRepo::default(),
+            MockAssignmentRepo::default(),
+            MockDriverAvailRepo::with_drivers(vec![driver(dropper, 0.2), driver(next, 5.0)]),
+            queue_repo,
+        );
+
+        let resp = send(
+            app,
+            json_request(
+                Method::POST,
+                &format!("/v1/queue/{shipment_id}/dispatch"),
+                serde_json::json!({}),
+                &token,
+            ),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["data"]["driver_id"].as_str().unwrap(), next.to_string());
+    }
+
     #[tokio::test]
     async fn dispatches_shipment_without_origin_succeeds_delivery_only() {
         let shipment_id = Uuid::new_v4();
@@ -1525,5 +1608,75 @@ mod quick_dispatch {
 
         // "No available drivers nearby" is a BusinessRule → 422
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: the queue and roster are tenant operations, not a partner's view
+//
+// A store's rider holds the plain `driver` role, and `driver` holds
+// `dispatch:view`. Without a pid check that is enough to read every pending
+// parcel and its recipient, and every driver, in the tenant.
+// ---------------------------------------------------------------------------
+
+mod partner_scope {
+    use super::*;
+
+    /// A driver-role token, optionally bound to a partner (a store's rider).
+    fn rider_token(pid: Option<Uuid>) -> String {
+        let jwt = JwtService::new(TEST_JWT_SECRET, 3600, 86400);
+        let claims = Claims::new(
+            Uuid::new_v4(),
+            TEST_TENANT_ID,
+            "test-tenant".to_owned(),
+            "business".to_owned(),
+            "rider@logisticos.io".to_owned(),
+            vec!["driver".to_owned()],
+            vec![permissions::DISPATCH_VIEW.to_owned()],
+            3600,
+        )
+        .with_partner(pid);
+        jwt.issue_access_token(claims).expect("mintable")
+    }
+
+    #[tokio::test]
+    async fn rider_with_pid_gets_403_on_queue() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(Some(Uuid::new_v4()));
+        let resp = send(app, auth_request(Method::GET, "/v1/queue", &token)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rider_with_pid_gets_403_on_dispatch_drivers() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(Some(Uuid::new_v4()));
+        let resp = send(app, auth_request(Method::GET, "/v1/drivers", &token)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn platform_driver_keeps_queue_access() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(None);
+        let resp = send(app, auth_request(Method::GET, "/v1/queue", &token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn platform_driver_keeps_roster_access() {
+        let app = build_app_with_drivers(vec![]);
+        let token = rider_token(None);
+        let resp = send(app, auth_request(Method::GET, "/v1/drivers", &token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_keeps_queue_and_roster_access() {
+        let token = dispatcher_token(Uuid::new_v4());
+        for uri in ["/v1/queue", "/v1/drivers"] {
+            let resp = send(build_app_with_drivers(vec![]), auth_request(Method::GET, uri, &token)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        }
     }
 }

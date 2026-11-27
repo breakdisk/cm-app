@@ -5,6 +5,8 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_errors::AppError;
 use serde::Deserialize;
 use crate::api::http::AppState;
+use crate::api::http::upload::{parse_date, resolve_document_type_id, store_upload, UploadDocumentRequest};
+use crate::application::services::DocumentActor;
 use crate::domain::entities::ComplianceProfile;
 use crate::infrastructure::storage::PRESIGN_TTL_SECS;
 
@@ -94,40 +96,6 @@ async fn resolve_profile(
         None => Ok(state.compliance
             .ensure_profile(tenant_id, entity_kind, user_id, "PH")
             .await?),
-    }
-}
-
-async fn resolve_document_type_id(
-    state: &AppState,
-    type_id: Option<Uuid>,
-    type_code: Option<&str>,
-) -> Result<Uuid, AppError> {
-    match type_id {
-        Some(id) => Ok(id),
-        None => {
-            let code = type_code.ok_or_else(|| AppError::Validation(
-                "document_type_id or document_type_code is required".into(),
-            ))?;
-            Ok(state.compliance.doc_types
-                .find_by_code(code)
-                .await?
-                .ok_or_else(|| AppError::NotFound {
-                    resource: "DocumentType",
-                    id: code.to_string(),
-                })?
-                .id)
-        }
-    }
-}
-
-fn parse_date(s: Option<String>) -> Result<Option<chrono::NaiveDate>, AppError> {
-    match s {
-        None => Ok(None),
-        Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
-            .map(Some)
-            .map_err(|_| AppError::Validation(
-                format!("Invalid date format '{}'; expected YYYY-MM-DD", d),
-            )),
     }
 }
 
@@ -241,7 +209,7 @@ pub async fn submit_document(
         parse_date(req.issue_date)?,
         parse_date(req.expiry_date)?,
         file_url,
-        claims.user_id,
+        DocumentActor::Driver(claims.user_id),
     ).await?;
 
     Ok(Json(serde_json::json!({ "data": doc })))
@@ -269,61 +237,22 @@ pub async fn get_document(
 /// the resulting s3:// URI. Kept for backwards compatibility (driver app,
 /// admin bulk ingest). New customer-app KYC uploads use the presigned flow
 /// (`upload-url` + `confirm`).
-#[derive(Deserialize)]
-pub struct UploadDocumentRequest {
-    #[serde(default)]
-    pub document_type_id:   Option<Uuid>,
-    #[serde(default)]
-    pub document_type_code: Option<String>,
-    pub document_number:    String,
-    pub file_base64:        String,
-    pub content_type:       String,
-    pub issue_date:         Option<String>,
-    pub expiry_date:        Option<String>,
-}
-
 pub async fn upload_document(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
     Json(req): Json<UploadDocumentRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    use base64::Engine as _;
-
     let profile = resolve_profile(&state, claims.tenant_id, claims.user_id, entity_kind_for(&claims.roles)).await?;
-    let document_type_id = resolve_document_type_id(
-        &state,
-        req.document_type_id,
-        req.document_type_code.as_deref(),
-    ).await?;
-
-    let document_number = req.document_number.trim().to_owned();
-    if document_number.is_empty() {
-        return Err(AppError::Validation("document_number cannot be empty".into()));
-    }
-    if document_number.len() > 100 {
-        return Err(AppError::Validation("document_number must be 100 characters or fewer".into()));
-    }
-
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(req.file_base64.as_bytes())
-        .map_err(|e| AppError::Validation(format!("Invalid base64 payload: {e}")))?;
-
-    let file_url = state.storage
-        .upload(claims.tenant_id, bytes, &req.content_type)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = ?e, "compliance document S3 upload failed");
-            AppError::Validation("Document upload failed; please try again".into())
-        })?;
+    let upload = store_upload(&state, claims.tenant_id, req).await?;
 
     let doc = state.compliance.submit_document(
         profile.id,
-        document_type_id,
-        document_number,
-        parse_date(req.issue_date)?,
-        parse_date(req.expiry_date)?,
-        file_url,
-        claims.user_id,
+        upload.document_type_id,
+        upload.document_number,
+        upload.issue_date,
+        upload.expiry_date,
+        upload.file_url,
+        DocumentActor::Driver(claims.user_id),
     ).await?;
 
     Ok(Json(serde_json::json!({ "data": doc })))
@@ -443,7 +372,7 @@ pub async fn confirm_document(
         parse_date(req.issue_date)?,
         parse_date(req.expiry_date)?,
         file_url,
-        claims.user_id,
+        DocumentActor::Driver(claims.user_id),
     ).await?;
 
     Ok(Json(serde_json::json!({ "data": doc })))

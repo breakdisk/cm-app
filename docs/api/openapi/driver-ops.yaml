@@ -38,6 +38,12 @@ paths:
       operationId: listDrivers
       tags: [Drivers]
       summary: List drivers for tenant
+      description: |
+        Operators (`fleet:read`) list the tenant. A token carrying a partner id
+        (`pid`) lists only that partner's own riders, and may do so with
+        `carriers:manage-own` or `store_riders:manage` instead of `fleet:read`. A
+        partner or store token without `pid` is refused with 403
+        `PARTNER_CONTEXT_REQUIRED` once partner scoping is enforced.
       parameters:
         - name: status
           in: query
@@ -206,6 +212,37 @@ paths:
                     type: integer
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /tasks/manifest:
+    get:
+      operationId: getTaskManifest
+      tags: [Tasks]
+      summary: Daily manifest per driver and task type
+      description: |
+        Requires `fleet:read`, `carriers:manage` or `carriers:manage-own`; a
+        token bound to a partner (`pid`) may also hold `store_riders:manage`. A
+        rider's plain `driver` role is not enough, with or without a `pid`. A
+        scoped token always gets its own partner's manifest and the `carrier_id`
+        query parameter is ignored. Operators may pass `carrier_id`.
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: carrier_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Manifest entries
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /tasks/{id}/start:
     put:
