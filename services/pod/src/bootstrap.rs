@@ -120,9 +120,30 @@ pub async fn run() -> anyhow::Result<()> {
             .context("Failed to init POD S3 storage (logisticos-pod-photos)")?
     );
     let pop_storage = Arc::new(
-        S3StorageAdapter::new(s3_endpoint, pop_s3_bucket, s3_region, s3_force_path_style, s3_credentials).await
+        S3StorageAdapter::new(s3_endpoint, pop_s3_bucket.clone(), s3_region, s3_force_path_style, s3_credentials).await
             .context("Failed to init POP S3 storage (logisticos-pop-photos)")?
     );
+
+    // Presigning never validates bucket existence, so a POP bucket that was
+    // never created (or that the token can't write to) only fails at driver
+    // upload time — and the app treats that as non-fatal, so the POP submits
+    // WITHOUT its photo and the evidence silently never reaches R2. Probe the
+    // bucket at boot (creating it when permissions allow); if it's unusable,
+    // store pickup photos in the POD bucket instead. Keys keep their `pop/`
+    // prefix so nothing collides, and pop_to_view's cross-bucket read
+    // fallback already renders photos living in the POD bucket.
+    let pop_storage = if pop_storage.ensure_bucket().await {
+        pop_storage
+    } else {
+        tracing::warn!(
+            pop_bucket = %pop_s3_bucket,
+            "POP bucket unusable — falling back to the POD bucket for pickup \
+             photos so driver uploads keep working. Create/authorize the POP \
+             bucket (scripts/create-r2-buckets.sh or Terraform modules/s3) to \
+             restore the dedicated bucket."
+        );
+        Arc::clone(&pod_storage)
+    };
 
     // Twilio SMS for OTP delivery.
     // All three vars must be present to enable real SMS; if any are missing the
