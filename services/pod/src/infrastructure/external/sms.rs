@@ -75,7 +75,11 @@ impl SmsAdapter for TwilioSmsAdapter {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Twilio SMS failed (HTTP {}): {}", status, body);
+            // Never the raw body: Twilio echoes the To number back, and callers log this.
+            match twilio_error_code(&body) {
+                Some(code) => anyhow::bail!("Twilio SMS failed (HTTP {status}, Twilio code {code})"),
+                None => anyhow::bail!("Twilio SMS failed (HTTP {status})"),
+            }
         }
 
         tracing::info!(to = %mask_recipient(to), "OTP SMS sent via Twilio");
@@ -83,9 +87,22 @@ impl SmsAdapter for TwilioSmsAdapter {
     }
 }
 
+/// Twilio's numeric error `code` from an error body, if it parses out.
+fn twilio_error_code(body: &str) -> Option<i64> {
+    serde_json::from_str::<serde_json::Value>(body).ok()?.get("code")?.as_i64()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_twilios_numeric_code_survives_from_an_error_body() {
+        let body = r#"{"code":21211,"message":"The 'To' number +639171234567 is not a valid phone number.","status":400}"#;
+        assert_eq!(twilio_error_code(body), Some(21211));
+        assert_eq!(twilio_error_code("<html>+639171234567</html>"), None);
+        assert_eq!(twilio_error_code(r#"{"code":"x"}"#), None);
+    }
 
     #[tokio::test]
     async fn the_noop_adapter_reports_that_nothing_was_sent() {
