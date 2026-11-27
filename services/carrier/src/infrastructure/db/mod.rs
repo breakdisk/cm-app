@@ -520,6 +520,17 @@ impl MarketplaceRepository for PgMarketplaceRepository {
         rows.into_iter().map(VehicleListing::try_from).collect()
     }
 
+    async fn list_listings_by_tenant(
+        &self, tenant_id: Uuid, limit: i64, offset: i64,
+    ) -> anyhow::Result<Vec<VehicleListing>> {
+        let rows = sqlx::query_as::<_, VehicleListingRow>(
+            &format!(
+                "SELECT {LISTING_COLS} FROM carrier.vehicle_listings                  WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            ),
+        ).bind(tenant_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        rows.into_iter().map(VehicleListing::try_from).collect()
+    }
+
     async fn update_listing(&self, l: &VehicleListing) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE carrier.vehicle_listings SET \
@@ -591,6 +602,17 @@ impl MarketplaceRepository for PgMarketplaceRepository {
                  WHERE carrier_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
             ),
         ).bind(carrier_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        rows.into_iter().map(MarketplaceBooking::try_from).collect()
+    }
+
+    async fn list_bookings_by_tenant(
+        &self, tenant_id: Uuid, limit: i64, offset: i64,
+    ) -> anyhow::Result<Vec<MarketplaceBooking>> {
+        let rows = sqlx::query_as::<_, MarketplaceBookingRow>(
+            &format!(
+                "SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings                  WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            ),
+        ).bind(tenant_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
         rows.into_iter().map(MarketplaceBooking::try_from).collect()
     }
 

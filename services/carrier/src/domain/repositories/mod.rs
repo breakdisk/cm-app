@@ -68,6 +68,15 @@ pub trait MarketplaceRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<VehicleListing>>;
+    /// Every listing in a tenant, across all carriers, newest first. Only the
+    /// admin oversight route uses this; carrier-facing reads stay on
+    /// `list_listings_by_carrier`.
+    async fn list_listings_by_tenant(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<VehicleListing>>;
     async fn update_listing(&self, listing: &VehicleListing) -> anyhow::Result<()>;
     async fn delete_listing(&self, id: Uuid) -> anyhow::Result<bool>;
 
@@ -116,6 +125,14 @@ pub trait MarketplaceRepository: Send + Sync {
     async fn list_bookings_by_carrier(
         &self,
         carrier_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<MarketplaceBooking>>;
+    /// Every booking in a tenant, across all carriers, newest first. Admin
+    /// oversight only.
+    async fn list_bookings_by_tenant(
+        &self,
+        tenant_id: Uuid,
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<MarketplaceBooking>>;

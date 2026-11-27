@@ -24,6 +24,7 @@ use crate::application::services::{
 use crate::domain::entities::{Carrier, SlaRecord};
 use crate::AppState;
 
+pub mod admin_marketplace;
 pub mod internal_quote;
 
 // ── Carrier authorization helpers ─────────────────────────────────────────────
@@ -136,6 +137,10 @@ pub fn router() -> Router<AppState> {
         // Marketplace — vehicle listings
         .route("/v1/marketplace/listings",                     get(list_listings).post(create_listing))
         .route("/v1/marketplace/listings/:listing_id",         put(update_listing).delete(delete_listing))
+        // Marketplace — tenant-wide operator view (carriers:manage). Its own
+        // prefix, so none of these collide with `/listings/:listing_id` above.
+        .route("/v1/marketplace/admin/listings",               get(admin_marketplace::admin_list_listings).post(admin_marketplace::admin_create_listing))
+        .route("/v1/marketplace/admin/bookings",               get(admin_marketplace::admin_list_bookings))
         // Marketplace — bookings
         .route("/v1/marketplace/available",                    get(list_available_listings))
         // Two audiences on one path, and that is deliberate: GET is the
