@@ -60,6 +60,14 @@ pub enum CourierEvent {
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Delivered { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
+    /// Mirrors field-ops. A courier reported they cannot finish the job. It
+    /// is a claim, not a verdict (D2): the assignment stays `claimed` and
+    /// nothing here moves the order or any money. Declared so it parses —
+    /// without it every report lands in the "unparseable, skipping" error
+    /// log. Acting on it (ops flag, attempt fee, refund) is Phase 2/3.
+    ExceptionRaised { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
+                      exception_id: Uuid, reason: String,
+                      device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
 }
 
 impl CourierEvent {
@@ -68,7 +76,8 @@ impl CourierEvent {
             CourierEvent::Assigned { product, .. }
             | CourierEvent::Arrived { product, .. }
             | CourierEvent::Collected { product, .. }
-            | CourierEvent::Delivered { product, .. } => product,
+            | CourierEvent::Delivered { product, .. }
+            | CourierEvent::ExceptionRaised { product, .. } => product,
         }
     }
 
@@ -77,7 +86,8 @@ impl CourierEvent {
             CourierEvent::Assigned { tenant_id, .. }
             | CourierEvent::Arrived { tenant_id, .. }
             | CourierEvent::Collected { tenant_id, .. }
-            | CourierEvent::Delivered { tenant_id, .. } => *tenant_id,
+            | CourierEvent::Delivered { tenant_id, .. }
+            | CourierEvent::ExceptionRaised { tenant_id, .. } => *tenant_id,
         }
     }
 
@@ -87,7 +97,8 @@ impl CourierEvent {
             CourierEvent::Assigned { external_ref, .. }
             | CourierEvent::Arrived { external_ref, .. }
             | CourierEvent::Collected { external_ref, .. }
-            | CourierEvent::Delivered { external_ref, .. } => *external_ref,
+            | CourierEvent::Delivered { external_ref, .. }
+            | CourierEvent::ExceptionRaised { external_ref, .. } => *external_ref,
         }
     }
 }
@@ -127,6 +138,14 @@ impl CourierMilestoneHandler {
 
         let tenant_id = event.tenant_id();
         let order_id = event.order_id();
+
+        // Recorded and visible in field-ops' ops queue; nothing for this
+        // service to change until Phase 2 defines what resolution does.
+        if let CourierEvent::ExceptionRaised { exception_id, reason, .. } = &event {
+            tracing::info!(%order_id, %exception_id, %reason,
+                "courier raised a delivery exception; awaiting ops resolution");
+            return Ok(());
+        }
 
         let Some(mut order) = self.orders.find_by_id(tenant_id, order_id).await? else {
             // Not an error: field-ops may be replaying an old partition, or the
@@ -244,6 +263,8 @@ impl CourierMilestoneHandler {
                     tracing::error!(err = %e, %order_id, "order.delivered publish failed");
                 }
             }
+            // Returned early above, before the order is even loaded.
+            CourierEvent::ExceptionRaised { .. } => return Ok(()),
         }
 
         self.orders.save(&order).await?;
@@ -307,6 +328,18 @@ mod tests {
         });
         let e: CourierEvent = serde_json::from_value(raw).expect("must parse");
         assert!(matches!(e, CourierEvent::Collected { .. }));
+    }
+
+    #[test]
+    fn an_exception_report_parses_rather_than_hitting_the_skip_log() {
+        let raw = serde_json::json!({
+            "event": "exception_raised",
+            "tenant_id": Uuid::nil(), "product": "omnideliv", "external_ref": Uuid::nil(),
+            "courier_id": Uuid::nil(), "exception_id": Uuid::nil(),
+            "reason": "customer_unreachable", "device_timestamp": null
+        });
+        let e: CourierEvent = serde_json::from_value(raw).expect("must parse");
+        assert!(matches!(e, CourierEvent::ExceptionRaised { .. }));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! The unit tests assert that `raise_exception` records once per `client_ref`,
 //! but they do it against a fake that enforces uniqueness in Rust. The thing
 //! that actually has to hold in production is the unique index in migration
-//! 0010 — and a fake agreeing with itself proves nothing about that.
+//! 0011 — and a fake agreeing with itself proves nothing about that.
 
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;

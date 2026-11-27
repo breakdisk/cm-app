@@ -35,7 +35,7 @@ Until Plan B lands, the button in `ManifestRoute.kt:322` is still an empty lambd
 
 | File | Responsibility |
 |---|---|
-| `services/field-ops/migrations/0010_assignment_exceptions.sql` | *Create.* The table, its unique idempotency index, and the open-exception index. |
+| `services/field-ops/migrations/0011_assignment_exceptions.sql` | *Create.* The table, its unique idempotency index, and the open-exception index. |
 | `services/field-ops/src/domain/entities/exception.rs` | *Create.* `ExceptionReason` (closed set) and `AssignmentException` (the record). No I/O. |
 | `services/field-ops/src/domain/entities/mod.rs` | *Modify.* Re-export the two new types. |
 | `services/field-ops/src/infrastructure/db/exception_repo.rs` | *Create.* `ExceptionRepository` trait + `PgExceptionRepository`. |
@@ -51,7 +51,7 @@ Until Plan B lands, the button in `ManifestRoute.kt:322` is still an empty lambd
 ### Task 1: The table
 
 **Files:**
-- Create: `services/field-ops/migrations/0010_assignment_exceptions.sql`
+- Create: `services/field-ops/migrations/0011_assignment_exceptions.sql`
 
 - [ ] **Step 1: Write the migration**
 
@@ -129,7 +129,7 @@ CREATE INDEX IF NOT EXISTS assignment_exceptions_open_idx
 Run against a scratch database (skip if you have no Postgres; CI will run it):
 
 ```bash
-psql "$DATABASE_URL" -f services/field-ops/migrations/0010_assignment_exceptions.sql
+psql "$DATABASE_URL" -f services/field-ops/migrations/0011_assignment_exceptions.sql
 ```
 
 Expected: `CREATE TABLE`, `CREATE INDEX`, `CREATE INDEX`. Re-running prints the same with no error, because every statement is `IF NOT EXISTS`.
@@ -137,7 +137,7 @@ Expected: `CREATE TABLE`, `CREATE INDEX`, `CREATE INDEX`. Re-running prints the 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add services/field-ops/migrations/0010_assignment_exceptions.sql
+git add services/field-ops/migrations/0011_assignment_exceptions.sql
 git commit -m "feat(field-ops): table for courier delivery exceptions"
 ```
 

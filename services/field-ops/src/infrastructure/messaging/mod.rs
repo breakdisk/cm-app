@@ -68,7 +68,7 @@ pub enum CourierEvent {
     /// A courier reported that a delivery could not be completed.
     ///
     /// Unlike the other four this one is persisted as well as published - see
-    /// migration 0010. The event exists so the offering product can flag its
+    /// migration 0011. The event exists so the offering product can flag its
     /// own order: OmniDeliv needs to know an order needs a human, and D1 says
     /// the refund decision is made out of band rather than here.
     ///
