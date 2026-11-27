@@ -282,7 +282,13 @@ pub async fn suspend_profile(
     Json(req): Json<SuspendRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, permissions::COMPLIANCE_ADMIN);
-    state.compliance.suspend(profile_id, claims.user_id, req.reason).await?;
+    // NotFound for a foreign tenant, before anything is mutated or published.
+    let profile = profile_in_tenant(
+        state.compliance.profiles.find_by_id(profile_id).await?,
+        profile_id,
+        claims.tenant_id,
+    )?;
+    state.compliance.suspend(claims.tenant_id, profile.id, claims.user_id, req.reason).await?;
     Ok(Json(serde_json::json!({ "data": { "ok": true } })))
 }
 
@@ -292,15 +298,20 @@ pub async fn reinstate_profile(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, permissions::COMPLIANCE_ADMIN);
-    state.compliance.reinstate(profile_id, claims.user_id, None).await?;
+    let profile = profile_in_tenant(
+        state.compliance.profiles.find_by_id(profile_id).await?,
+        profile_id,
+        claims.tenant_id,
+    )?;
+    state.compliance.reinstate(claims.tenant_id, profile.id, claims.user_id, None).await?;
     Ok(Json(serde_json::json!({ "data": { "ok": true } })))
 }
 
-/// The profile an admin may upload onto: it exists and is in their tenant.
+/// The profile an admin may act on: it exists and is in their tenant.
 ///
 /// A foreign profile is `NotFound`, not `Forbidden`, so an id from another
 /// tenant cannot be probed for existence on a route that writes.
-fn profile_for_upload(
+fn profile_in_tenant(
     profile:    Option<ComplianceProfile>,
     profile_id: Uuid,
     tenant_id:  Uuid,
@@ -322,7 +333,7 @@ pub async fn upload_document_for_profile(
     Json(req): Json<UploadDocumentRequest>,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
     require_permission!(claims, permissions::COMPLIANCE_ADMIN);
-    let profile = profile_for_upload(
+    let profile = profile_in_tenant(
         state.compliance.profiles.find_by_id(profile_id).await?,
         profile_id,
         claims.tenant_id,
@@ -415,7 +426,7 @@ mod tests {
         assert_eq!(sniff_content_type(&[b'R', b'I', b'F', b'F', 0, 0]), "application/octet-stream");
     }
 
-    use super::profile_for_upload;
+    use super::profile_in_tenant;
     use crate::domain::entities::{ComplianceProfile, ComplianceStatus};
     use logisticos_auth::{claims::Claims, rbac::permissions};
     use logisticos_errors::AppError;
@@ -434,20 +445,20 @@ mod tests {
     fn a_profile_in_the_callers_tenant_is_allowed() {
         let t = Uuid::new_v4();
         let p = profile(t);
-        assert!(profile_for_upload(Some(p.clone()), p.id, t).is_ok());
+        assert!(profile_in_tenant(Some(p.clone()), p.id, t).is_ok());
     }
 
     #[test]
     fn a_profile_from_another_tenant_is_404() {
         let p = profile(Uuid::new_v4());
-        let err = profile_for_upload(Some(p.clone()), p.id, Uuid::new_v4()).unwrap_err();
+        let err = profile_in_tenant(Some(p.clone()), p.id, Uuid::new_v4()).unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
         assert_eq!(err.status_code(), axum::http::StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn a_missing_profile_is_404() {
-        let err = profile_for_upload(None, Uuid::new_v4(), Uuid::new_v4()).unwrap_err();
+        let err = profile_in_tenant(None, Uuid::new_v4(), Uuid::new_v4()).unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -473,5 +484,14 @@ mod tests {
     #[test]
     fn compliance_admin_passes_the_gate() {
         assert!(gate(&claims_with(&[permissions::COMPLIANCE_ADMIN])).is_ok());
+    }
+
+    /// `suspend_profile` and `reinstate_profile` run exactly this before any
+    /// mutation; a foreign id is a 404, never a suspension.
+    #[test]
+    fn suspend_and_reinstate_refuse_a_foreign_tenants_profile_with_404() {
+        let theirs = profile(Uuid::new_v4());
+        let err = profile_in_tenant(Some(theirs.clone()), theirs.id, Uuid::new_v4()).unwrap_err();
+        assert_eq!(err.status_code(), axum::http::StatusCode::NOT_FOUND);
     }
 }
