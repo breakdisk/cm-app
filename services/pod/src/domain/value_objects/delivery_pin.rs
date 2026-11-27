@@ -85,7 +85,7 @@ pub fn attempts_left(max_attempts: i32, attempts_used: i32) -> i32 {
 /// handler's decision — a driver never does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IssuedPin {
-    New { otp_id: uuid::Uuid, code: String },
+    New { otp_id: uuid::Uuid, code: String, via: Option<&'static str> },
     KeptLive { otp_id: uuid::Uuid },
 }
 
@@ -126,22 +126,28 @@ pub enum PinRequirement {
     Check,
     /// The recipient holds a PIN and none was supplied: refuse.
     RefuseMissing,
-    /// The recipient never got a PIN: accept photo evidence instead.
+    /// A PIN exists but never reached the recipient: accept photo evidence instead.
     Waive,
+    /// No live PIN exists at all and none was supplied: refuse. Whether a PIN is
+    /// ever issued must not be the driver's choice, so absence never waives.
+    RefuseNotIssued,
     /// Policy does not require a PIN.
     NotRequired,
 }
 
-/// Whether a submit needs a PIN. A PIN is demanded only if it reached the recipient.
+/// Whether a submit needs a PIN. A PIN is demanded if it reached the recipient;
+/// only an existing PIN whose SMS failed is waived. No PIN at all is refused.
 pub fn pin_requirement(policy_required: bool, supplied: bool, live_pin: Option<LivePinState>) -> PinRequirement {
     if supplied {
         PinRequirement::Check
     } else if !policy_required {
         PinRequirement::NotRequired
-    } else if live_pin.is_some_and(|p| p.delivered) {
-        PinRequirement::RefuseMissing
     } else {
-        PinRequirement::Waive
+        match live_pin {
+            None => PinRequirement::RefuseNotIssued,
+            Some(p) if p.delivered => PinRequirement::RefuseMissing,
+            Some(_) => PinRequirement::Waive,
+        }
     }
 }
 
@@ -207,7 +213,7 @@ mod tests {
     fn a_missing_pin_is_refused_only_if_the_recipient_received_one() {
         assert_eq!(pin_requirement(true, false, D), PinRequirement::RefuseMissing);
         assert_eq!(pin_requirement(true, false, U), PinRequirement::Waive);
-        assert_eq!(pin_requirement(true, false, None), PinRequirement::Waive);
+        assert_eq!(pin_requirement(true, false, None), PinRequirement::RefuseNotIssued);
     }
 
     #[test]
@@ -218,6 +224,7 @@ mod tests {
         }
         assert!(!live_pin_state(None).delivered);
         assert_eq!(pin_requirement(true, false, Some(live_pin_state(None))), PinRequirement::Waive);
+        assert_eq!(pin_requirement(true, false, None), PinRequirement::RefuseNotIssued);
     }
 
     #[test]

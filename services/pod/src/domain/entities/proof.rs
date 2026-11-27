@@ -142,12 +142,31 @@ impl ProofOfDelivery {
 
     /// Waives the PIN because the recipient never received one. The substitute
     /// evidence is a photo of the delivered parcel; without one this refuses.
+    ///
+    /// Only a photo under this POD's own upload prefix counts: `attach_photo`
+    /// takes the `s3_key` from the client, so any other key is an assertion, not
+    /// evidence.
     pub fn waive_undelivered_pin(&mut self) -> Result<(), &'static str> {
-        if self.photos.is_empty() {
+        if self.minted_photo_keys().is_empty() {
             return Err("A photo of the delivered parcel is required when the recipient never received a delivery PIN.");
         }
         self.pin_exception = Some(PIN_UNDELIVERED.to_string());
         Ok(())
+    }
+
+    /// The key prefix `get_upload_url` mints photo keys under for this POD.
+    pub fn upload_key_prefix(&self) -> String {
+        format!("pod/{}/{}/{}/", self.tenant_id, self.shipment_id, self.id)
+    }
+
+    /// Keys of attached photos that sit under this POD's upload prefix.
+    pub fn minted_photo_keys(&self) -> Vec<String> {
+        let prefix = self.upload_key_prefix();
+        self.photos.iter()
+            .map(|p| p.s3_key.as_str())
+            .filter(|k| k.starts_with(&prefix) && !k.contains(".."))
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn record_cod(&mut self, amount_cents: i64) {

@@ -297,10 +297,10 @@ pub async fn generate_otp(
 
     let data = match issued {
         IssuedPin::KeptLive { otp_id } => serde_json::json!({ "otp_id": otp_id, "active": true, "sent": false }),
-        IssuedPin::New { otp_id, code } if reveal_to_caller => {
+        IssuedPin::New { otp_id, code, .. } if reveal_to_caller => {
             serde_json::json!({ "otp_id": otp_id, "code": code })
         }
-        IssuedPin::New { otp_id, .. } => serde_json::json!({ "otp_id": otp_id, "sent": true }),
+        IssuedPin::New { otp_id, via, .. } => serde_json::json!({ "otp_id": otp_id, "sent": via.is_some() }),
     };
     Ok(Json(serde_json::json!({ "data": data })))
 }

@@ -544,10 +544,33 @@ mod pin_waiver {
         assert_eq!(pod.pin_exception, None);
     }
 
+    fn minted_photo(pod: &ProofOfDelivery) -> PodPhoto {
+        PodPhoto { s3_key: format!("{}{}.jpg", pod.upload_key_prefix(), Uuid::new_v4()), ..make_photo() }
+    }
+
+    #[test]
+    fn a_photo_under_a_foreign_prefix_or_a_bare_key_does_not_waive() {
+        let mut pod = make_pod(true);
+        for key in [
+            "x".to_string(),
+            "tenants/abc/shipments/xyz/pod/photo.jpg".to_string(),
+            format!("pod/{}/{}/{}/a.jpg", Uuid::new_v4(), pod.shipment_id, pod.id),
+            format!("pod/{}/{}/{}/a.jpg", pod.tenant_id, Uuid::new_v4(), pod.id),
+            format!("pod/{}/{}/{}/a.jpg", pod.tenant_id, pod.shipment_id, Uuid::new_v4()),
+            format!("{}../../other.jpg", pod.upload_key_prefix()),
+        ] {
+            pod.attach_photo(PodPhoto { s3_key: key, ..make_photo() });
+        }
+        assert!(pod.minted_photo_keys().is_empty());
+        assert!(pod.waive_undelivered_pin().is_err());
+        assert_eq!(pod.pin_exception, None);
+    }
+
     #[test]
     fn waive_with_a_photo_sets_the_pin_exception() {
         let mut pod = make_pod(true);
-        pod.attach_photo(make_photo());
+        let photo = minted_photo(&pod);
+        pod.attach_photo(photo);
         pod.waive_undelivered_pin().unwrap();
         assert_eq!(pod.pin_exception.as_deref(), Some("PIN_UNDELIVERED"));
     }

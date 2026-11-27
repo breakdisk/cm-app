@@ -191,10 +191,8 @@ impl PodService {
         }
 
         let s3_key = format!(
-            "pod/{}/{}/{}/{}.{}",
-            tenant_id.inner(),
-            pod.shipment_id,
-            pod_id,
+            "{}{}.{}",
+            pod.upload_key_prefix(),
             Uuid::new_v4(),
             if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" }
         );
@@ -308,8 +306,25 @@ impl PodService {
             (PinRequirement::Check, None) | (PinRequirement::RefuseMissing, _) => {
                 return Err(AppError::BusinessRule(PinRejection::Missing.message()));
             }
+            (PinRequirement::RefuseNotIssued, _) => {
+                return Err(AppError::BusinessRule(PinRejection::NotIssued.message()));
+            }
             (PinRequirement::Waive, _) => {
                 pod.waive_undelivered_pin().map_err(|e| AppError::BusinessRule(e.into()))?;
+                // attach_photo records a client-asserted key. The waiver rests on
+                // the photo, so the object must really be in the bucket.
+                let mut stored = false;
+                for key in pod.minted_photo_keys() {
+                    if self.pod_storage.object_exists(&key).await.map_err(AppError::Internal)? {
+                        stored = true;
+                        break;
+                    }
+                }
+                if !stored {
+                    return Err(AppError::BusinessRule(
+                        "The delivery photo has not finished uploading. Wait for the upload, then submit again.".into(),
+                    ));
+                }
                 pin_waived = true;
                 tracing::warn!(
                     shipment_id = %pod.shipment_id,
@@ -345,7 +360,7 @@ impl PodService {
                 server_timestamp: chrono::Utc::now(),
                 lat:              Some(pod.capture_lat),
                 lng:              Some(pod.capture_lng),
-                metadata:         serde_json::json!({ "pin_exception": "PIN_UNDELIVERED", "photo_count": pod.photos.len() }),
+                metadata:         serde_json::json!({ "pin_exception": crate::domain::entities::proof::PIN_UNDELIVERED, "photo_count": pod.photos.len() }),
             }).await {
                 tracing::warn!(error = %e, pod_id = %pod_id, "Failed to append POD_PIN_UNDELIVERED telemetry — non-fatal");
             }
@@ -828,7 +843,7 @@ impl PodService {
 
         self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
 
-        Ok(IssuedPin::New { otp_id, code })
+        Ok(IssuedPin::New { otp_id, code, via })
     }
 
     /// Retrieve a POD record by ID (for admin/ops views).
@@ -995,6 +1010,7 @@ impl PodService {
             "photo_url":           photo_url,
             "signature_url":       signature_url,
             "otp_verified":        pod.otp_verified,
+            "pin_exception":       pod.pin_exception,
             "cod_collected_cents": pod.cod_collected_cents,
             "captured_at":         pod.captured_at,
         })
