@@ -548,12 +548,27 @@ impl MarketplaceService {
             ));
         }
 
-        self.void_hold_and_cancel(booking, CancelReason::MerchantCancelled)
-            .await
-            .map_err(|e| match e.downcast_ref::<BookingTransitionConflict>() {
-                Some(_) => AppError::BusinessRule(CONFLICT_MESSAGE.into()),
-                None => AppError::internal(e),
-            })
+        match self.void_hold_and_cancel(booking, CancelReason::MerchantCancelled).await
+        {
+            Ok(b) => Ok(b),
+            Err(e) if e.downcast_ref::<BookingTransitionConflict>().is_some() => {
+                Err(AppError::BusinessRule(CONFLICT_MESSAGE.into()))
+            }
+            Err(e) => {
+                // The provider void can fail because the carrier's capture won
+                // the claim: that is a lost race (409), not a server fault.
+                // Re-read; if the booking moved on, report the conflict.
+                let moved_on = matches!(
+                    self.repo.find_booking_by_id(booking_id).await,
+                    Ok(Some(b)) if b.tenant_id == tenant_id && b.status != BookingStatus::Pending
+                );
+                if moved_on {
+                    Err(AppError::BusinessRule(CONFLICT_MESSAGE.into()))
+                } else {
+                    Err(AppError::internal(e))
+                }
+            }
+        }
     }
 
     async fn publish_requested(&self, booking: &MarketplaceBooking) {
@@ -1411,6 +1426,44 @@ mod booking_tests {
         let saved = repo.booking(b.id);
         assert_eq!(saved.status, BookingStatus::Accepted);
         assert_eq!(saved.payment_status, BookingPaymentStatus::Captured);
+    }
+
+    /// The carrier's capture wins the provider claim, so the merchant's void is
+    /// refused. That is a lost race (409), not a 500.
+    #[tokio::test]
+    async fn a_merchant_void_refused_because_the_capture_won_is_a_conflict() {
+        let pay = Arc::new(FakePayments { void_fails: true, ..Default::default() });
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+        let r = repo.clone();
+        *pay.during_call.lock().unwrap() = Some(Box::new(move || {
+            let mut won = r.booking(b.id);
+            won.accept().unwrap();
+            won.payment_captured().unwrap();
+            r.bookings.lock().unwrap().iter_mut().find(|x| x.id == b.id).into_iter().for_each(|x| *x = won.clone());
+        }));
+
+        let err = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(&err, AppError::BusinessRule(m) if m == CONFLICT_MESSAGE), "got {err:?}");
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Accepted);
+    }
+
+    /// A void that fails with the booking still pending is a real fault.
+    #[tokio::test]
+    async fn a_merchant_void_that_fails_on_a_still_pending_booking_stays_an_error() {
+        let pay = Arc::new(FakePayments { void_fails: true, ..Default::default() });
+        let (repo, svc, b) = funded_booking(pay.clone()).await;
+
+        let err = svc
+            .cancel_booking_by_merchant(b.id, b.tenant_id, b.booked_by_user_id.unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(!matches!(err, AppError::BusinessRule(_)), "got {err:?}");
+        assert_eq!(repo.booking(b.id).status, BookingStatus::Pending);
     }
 
     #[tokio::test]
