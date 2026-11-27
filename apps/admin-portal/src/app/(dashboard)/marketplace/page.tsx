@@ -197,7 +197,11 @@ function AdminMarketplacePageInner() {
     return () => { mountedRef.current = false; };
   }, []);
 
+  // A tick (or roster nudge) that lands while a request is outstanding is skipped.
+  const inFlightRef = useRef(false);
   const refresh = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const [l, b, s] = await Promise.all([
         fetchAllListings(),
@@ -212,6 +216,7 @@ function AdminMarketplacePageInner() {
     } catch {
       if (mountedRef.current) setLoadError(true);
     } finally {
+      inFlightRef.current = false;
       if (mountedRef.current) setLoading(false);
     }
   }, []);

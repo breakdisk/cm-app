@@ -1,11 +1,11 @@
 /**
  * Admin Portal — Marketplace oversight API.
  *
- * Tenant-scoped view across every partner's `marketplace.vehicle_listings`
- * and `marketplace.bookings` (ADR-0013). The tenant_admin sees all rows by
- * virtue of `scope=tenant` in the session GUC — no partner filter applied.
- *
- * Real API: calls /v1/marketplace/* on the carrier service via authFetch.
+ * Tenant-scoped view across every partner's vehicle listings and bookings
+ * (ADR-0013). Reads and writes go through the carrier service's
+ * `/v1/marketplace/admin/*` routes (`carriers:manage`), which scope by the
+ * caller's tenant. The plain `/v1/marketplace/listings|bookings` routes resolve
+ * the caller's *own* carrier from their email and cannot serve an operator.
  * A receipt has no record of its own: the receipt modal renders straight from
  * the booking the carrier service returned.
  */
@@ -78,7 +78,7 @@ export interface MarketplaceBooking {
 /**
  * A booking as the oversight table shows it: the real booking plus the carrier
  * label. The carrier service returns no carrier name, so `partner_display_name`
- * is the short carrier id until a tenant-scope carrier lookup exists.
+ * is the short carrier id; the carrier service does not return carrier names here.
  */
 export interface AdminBooking extends MarketplaceBooking {
   partner_id:           string;
@@ -127,7 +127,7 @@ function apiListingToAdmin(l: ApiListing): AdminListing {
   return {
     id:                   l.id,
     partner_id:           l.carrier_id,
-    partner_display_name: l.carrier_id.slice(0, 8),   // filled in by backend once tenant-scope endpoint lands
+    partner_display_name: l.carrier_id.slice(0, 8),
     partner_type:         "marketplace" as PartnerType,
     vehicle_plate:        l.vehicle_plate,
     size_class:           l.size_class,
@@ -156,7 +156,7 @@ function bookingToAdmin(b: MarketplaceBooking): AdminBooking {
 
 /** Throws on any failure: an empty array always means the tenant has no listings. */
 export async function fetchAllListings(): Promise<AdminListing[]> {
-  const json = await apiGetStrict<{ listings?: ApiListing[] } | ApiListing[]>("/v1/marketplace/listings");
+  const json = await apiGetStrict<{ listings?: ApiListing[] } | ApiListing[]>("/v1/marketplace/admin/listings");
   const raw = Array.isArray(json) ? json : (json.listings ?? []);
   return raw.map(apiListingToAdmin);
 }
@@ -164,7 +164,7 @@ export async function fetchAllListings(): Promise<AdminListing[]> {
 /** Throws on any failure: an empty array always means the tenant has no bookings. */
 export async function fetchAllBookings(): Promise<AdminBooking[]> {
   const json = await apiGetStrict<{ bookings?: MarketplaceBooking[] } | MarketplaceBooking[]>(
-    "/v1/marketplace/bookings",
+    "/v1/marketplace/admin/bookings",
   );
   const raw = Array.isArray(json) ? json : (json.bookings ?? []);
   return raw
@@ -193,6 +193,8 @@ export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {
 }
 
 export interface CreateListingPayload {
+  /** The carrier the listing belongs to; must be in the caller's tenant. */
+  carrier_id:                   string;
   vehicle_plate:                string;
   size_class:                   SizeClass;
   max_weight_kg:                number;
@@ -207,7 +209,7 @@ export interface CreateListingPayload {
 }
 
 export async function createVehicleListing(payload: CreateListingPayload): Promise<void> {
-  const res = await authFetch(`${API_BASE}/v1/marketplace/listings`, {
+  const res = await authFetch(`${API_BASE}/v1/marketplace/admin/listings`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify(payload),
@@ -217,6 +219,14 @@ export async function createVehicleListing(payload: CreateListingPayload): Promi
     const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
     throw new Error(body?.error?.message ?? `Marketplace listing failed (HTTP ${res.status})`);
   }
+}
+
+export interface CarrierOption { id: string; name: string }
+
+/** Carriers in the caller's tenant, for the listing-owner picker. Throws on failure. */
+export async function fetchCarrierOptions(): Promise<CarrierOption[]> {
+  const json = await apiGetStrict<{ carriers?: CarrierOption[] }>("/v1/carriers?limit=100");
+  return (json.carriers ?? []).map((c) => ({ id: c.id, name: c.name }));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

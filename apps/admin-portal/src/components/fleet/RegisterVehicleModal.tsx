@@ -9,7 +9,9 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { createFleetApi, type RegisterVehiclePayload, type VehicleType } from "@/lib/api/fleet";
 import {
   createVehicleListing,
+  fetchCarrierOptions,
   SIZE_CLASS_LABEL,
+  type CarrierOption,
   type SizeClass,
   type CreateListingPayload,
 } from "@/lib/api/marketplace";
@@ -337,11 +339,25 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
   });
   const [s2,     setS2]     = useState<Step2Fields>(() => defaultStep2("van"));
   const [result, setResult] = useState<RegisterResult | null>(null);
+  const [carriers, setCarriers] = useState<CarrierOption[]>([]);
+  const [carrierId, setCarrierId] = useState("");
+  const [carriersError, setCarriersError] = useState(false);
+
+  // The listing belongs to a carrier in this tenant; load the choices when the modal opens.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    fetchCarrierOptions()
+      .then((c) => { if (live) { setCarriers(c); setCarriersError(false); } })
+      .catch(() => { if (live) setCarriersError(true); });
+    return () => { live = false; };
+  }, [open]);
 
   function reset() {
     setStep(1); setLoading(false); setError(null); setResult(null);
     setS1({ plate_number: "", size_class: "van", make: "", model: "", year: String(THIS_YEAR), color: "" });
     setS2(defaultStep2("van"));
+    setCarrierId("");
   }
 
   function handleClose() { reset(); onClose(); }
@@ -406,6 +422,7 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
     if (isNaN(weightKg)  || weightKg  <= 0) { setError("Max weight must be a positive number.");  return; }
     if (isNaN(baseCents) || baseCents <= 0) { setError("Base price must be a positive number.");   return; }
     if (isNaN(kmCents)   || kmCents   <= 0) { setError("Per-km rate must be a positive number."); return; }
+    if (!carrierId)                         { setError("Choose the carrier this listing belongs to."); return; }
     if (!s2.service_area_label.trim())      { setError("Service area is required.");               return; }
     if (new Date(s2.idle_until) <= new Date(s2.idle_from)) {
       setError("'Available until' must be after 'Available from'."); return;
@@ -414,6 +431,7 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
     setError(null); setLoading(true);
     try {
       const listing: CreateListingPayload = {
+        carrier_id:                   carrierId,
         vehicle_plate:                result.plate,
         size_class:                   s1.size_class,
         max_weight_kg:                weightKg,
@@ -638,8 +656,21 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
                   {/* Listing fields */}
                   {s2.list_on_marketplace && (
                     <div className="space-y-3 pt-1">
-                      <div className="rounded-lg border border-purple-plasma/20 bg-purple-plasma/5 px-3 py-2 text-[11px] font-mono text-white/40">
-                        🏢 Listed under: LogisticOS Platform Fleet · auto-assigned carrier
+                      <div>
+                        <label className={labelCls}>Carrier</label>
+                        <select
+                          className={inputCls}
+                          value={carrierId}
+                          onChange={(e) => setCarrierId(e.target.value)}
+                        >
+                          <option value="">Select a carrier…</option>
+                          {carriers.map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                        {carriersError && (
+                          <p className="mt-1 text-[11px] text-red-400">Carriers could not be loaded. Close and reopen to retry.</p>
+                        )}
                       </div>
 
                       {/* Weight + Pricing */}

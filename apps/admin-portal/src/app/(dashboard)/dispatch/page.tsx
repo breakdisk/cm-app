@@ -271,7 +271,7 @@ function DispatchPageInner() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  // Marketplace-origin queue: accepted bookings (GET /v1/marketplace/bookings, the
+  // Marketplace-origin queue: accepted bookings (GET /v1/marketplace/admin/bookings, the
   // same call the Marketplace page makes) become synthetic queue rows. The
   // booking carries no carrier name or vehicle class, so rows show neither.
   const marketplaceInFlight = useRef(false);
