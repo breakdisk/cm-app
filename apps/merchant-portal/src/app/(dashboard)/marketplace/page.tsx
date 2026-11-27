@@ -618,7 +618,7 @@ function BookingDialog({
   const [pickup,   setPickup]   = useState("");
   const [dropoff,  setDropoff]  = useState("");
   const [weight,   setWeight]   = useState<number | "">("");
-  const [distance, setDistance] = useState<number | "">(0);
+  const [distance, setDistance] = useState<number | "">("");
   const [when,     setWhen]     = useState("");
   const [payment,  setPayment]  = useState<BookingPaymentMethod>("invoice");
   const [busy,     setBusy]     = useState(false);
@@ -655,7 +655,7 @@ function BookingDialog({
     pickup.trim() !== "" &&
     dropoff.trim() !== "" &&
     weightOk &&
-    typeof distance === "number" && distance >= 0 &&
+    typeof distance === "number" && distance > 0 &&
     when !== "";
 
   async function submit() {
@@ -807,6 +807,11 @@ function BookingDialog({
                 onChange={(e) => setDistance(e.target.value === "" ? "" : Number(e.target.value))}
                 className={inputCls}
               />
+              {!(typeof distance === "number" && distance > 0) && (
+                <span className="text-2xs text-amber-signal">
+                  Enter the trip distance. Without it the price is only the base fare.
+                </span>
+              )}
             </label>
           </div>
 
