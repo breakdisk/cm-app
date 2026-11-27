@@ -351,14 +351,9 @@ fn resolve_delivery_category(
 }
 
 /// Human-readable SLA label for the estimated delivery field on `ShipmentCreated`.
+/// Comes from the same table as the stored deadline (`service_promise`).
 fn sla_label(service_type: &str) -> &'static str {
-    match service_type {
-        "express"       => "Next business day",
-        "same_day"      => "Today",
-        "balikbayan"    => "21–45 business days",
-        "international" => "7–14 business days",
-        _               => "2–3 business days",  // standard (default)
-    }
+    crate::domain::value_objects::service_promise::promise_for(service_type).label
 }
 
 /// Bundles the collaborators for the optional "pay online at booking"
@@ -412,6 +407,8 @@ pub struct ShipmentService {
     pub home_teams: Arc<crate::infrastructure::http::home_capacity_client::HomeTeamsClient>,
     /// Driving distance for a quote. The straight line until one is set.
     pub router: Arc<dyn crate::infrastructure::external::RoadRouter>,
+    /// Offset for the SLA day boundary (`SLA__UTC_OFFSET_HOURS`, default +08:00).
+    pub sla_offset: chrono::FixedOffset,
 }
 
 /// What a verified quote was discounted by, all spent at booking.
@@ -449,7 +446,14 @@ impl ShipmentService {
             home_rates: Default::default(),
             home_teams: Arc::new(crate::infrastructure::http::home_capacity_client::HomeTeamsClient::new(None, None)),
             router: Arc::new(crate::infrastructure::external::DirectRouter),
+            sla_offset: crate::config::SlaConfig::default().offset(),
         }
+    }
+
+    #[must_use]
+    pub fn with_sla_offset(mut self, offset: chrono::FixedOffset) -> Self {
+        self.sla_offset = offset;
+        self
     }
 
     #[must_use]
@@ -784,6 +788,12 @@ impl ShipmentService {
             idempotency_key: cmd.idempotency_key.clone(),
             // Only a whole-home move books a slot, and only its own path sets it.
             scheduled_pickup_at: cmd.home_booking.as_ref().map(|h| h.move_at),
+            sla_due_at: crate::domain::value_objects::service_promise::sla_due_at(
+                service_type.as_str(),
+                now,
+                cmd.home_booking.as_ref().map(|h| h.move_at),
+                self.sla_offset,
+            ),
             cancellation_policy_version: Some(self.cancellation_policy.version.clone()),
             booking_amount_cents: verified_amount_cents,
             booking_currency: verified_currency.clone(),

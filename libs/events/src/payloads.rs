@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -1092,4 +1093,39 @@ mod task_assigned_carrier_tests {
         ).unwrap();
         assert_eq!(t.driver_carrier_id, Some(carrier));
     }
+}
+
+/// Published on `topics::HUB_LOAD_CHANGED` whenever a hub's load changes.
+/// Consumed by business-logic (`HubCapacityExceeded` fires on an upward crossing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubLoadChanged {
+    pub hub_id: Uuid,
+    pub capacity: i32,
+    pub previous_load: i32,
+    pub current_load: i32,
+}
+
+/// Published on `topics::INVOICE_OVERDUE` each time an invoice's overdue age advances.
+/// Consumed by business-logic (`PaymentOverdue` fires when `days` is crossed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceOverdue {
+    pub invoice_id: Uuid,
+    pub merchant_id: Uuid,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub due_at: DateTime<Utc>,
+    pub days_overdue: i32,
+    pub previous_days_overdue: i32,
+}
+
+/// Published on `topics::SHIPMENT_SLA_BREACHED` when a shipment misses its SLA.
+/// Consumed by business-logic (`SlaBreach` matches on `sla_type`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShipmentSlaBreached {
+    pub shipment_id: Uuid,
+    pub merchant_id: Uuid,
+    pub service_type: String,
+    pub sla_type: String,
+    pub sla_due_at: DateTime<Utc>,
+    pub breached_at: DateTime<Utc>,
 }

@@ -93,6 +93,7 @@ struct ShipmentRow {
     updated_at:           chrono::DateTime<chrono::Utc>,
 
     scheduled_pickup_at:         Option<chrono::DateTime<chrono::Utc>>,
+    sla_due_at:                  Option<chrono::DateTime<chrono::Utc>>,
     cancellation_policy_version: Option<String>,
     booking_amount_cents:        Option<i64>,
     booking_currency:            Option<String>,
@@ -221,6 +222,7 @@ impl ShipmentRow {
             created_at:           self.created_at,
             updated_at:           self.updated_at,
             scheduled_pickup_at:         self.scheduled_pickup_at,
+            sla_due_at:                  self.sla_due_at,
             cancellation_policy_version: self.cancellation_policy_version,
             booking_amount_cents:        self.booking_amount_cents,
             booking_currency:            self.booking_currency,
@@ -242,7 +244,7 @@ impl ShipmentRow {
     }
 }
 
-fn status_str(s: &ShipmentStatus) -> &'static str {
+pub(crate) fn status_str(s: &ShipmentStatus) -> &'static str {
     match s {
         ShipmentStatus::Pending           => "pending",
         ShipmentStatus::Confirmed         => "confirmed",
@@ -278,7 +280,7 @@ const SHIPMENT_COLS: &str = r#"
     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
     created_at, updated_at,
     scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency,
-    dest_building, dest_unit, dest_area
+    dest_building, dest_unit, dest_area, sla_due_at
 "#;
 
 /// Maps a dynamic `PgRow` into the typed `ShipmentRow` struct.
@@ -338,6 +340,7 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         created_at:           r.get("created_at"),
         updated_at:           r.get("updated_at"),
         scheduled_pickup_at:         r.get("scheduled_pickup_at"),
+        sla_due_at:                  r.get("sla_due_at"),
         cancellation_policy_version: r.get("cancellation_policy_version"),
         booking_amount_cents:        r.get("booking_amount_cents"),
         booking_currency:            r.get("booking_currency"),
@@ -475,7 +478,7 @@ impl ShipmentRepository for PgShipmentRepository {
                     payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
                     created_at, updated_at,
                     scheduled_pickup_at, cancellation_policy_version, booking_amount_cents, booking_currency,
-                    dest_building, dest_unit, dest_area
+                    dest_building, dest_unit, dest_area, sla_due_at
                 ) VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,
                     $10,$11,$12,$13,
@@ -485,7 +488,7 @@ impl ShipmentRepository for PgShipmentRepository {
                     $38,$39,$40,$41,$42,$43,$44,$45,$46,$47,
                     $48,$49,$50,$51,$52,$53,
                     $54,$55,$56,$57,
-                    $58,$59,$60
+                    $58,$59,$60,$61
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -516,6 +519,7 @@ impl ShipmentRepository for PgShipmentRepository {
                     pending_dispatch_events = EXCLUDED.pending_dispatch_events,
                     idempotency_key         = EXCLUDED.idempotency_key,
                     scheduled_pickup_at  = EXCLUDED.scheduled_pickup_at,
+                    -- sla_due_at is set once at create and intentionally not updated on conflict.
                     -- The version and the quoted total are fixed at booking.
                     cancellation_policy_version = COALESCE(order_intake.shipments.cancellation_policy_version, EXCLUDED.cancellation_policy_version),
                     booking_amount_cents = COALESCE(order_intake.shipments.booking_amount_cents, EXCLUDED.booking_amount_cents),
@@ -585,6 +589,7 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.dest_parts.building.as_deref())
             .bind(s.dest_parts.unit.as_deref())
             .bind(s.dest_parts.area.as_deref())
+            .bind(s.sla_due_at)
             .execute(&self.pool)
             .await?;
             Ok(())

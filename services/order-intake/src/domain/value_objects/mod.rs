@@ -12,6 +12,7 @@ pub use geocoding::{AddressParts, GeocodedAddress, GeocodingRecord, PROVIDER_CUS
 pub mod cancel_authority;
 pub mod cancellation_policy;
 pub mod home_move;
+pub mod service_promise;
 pub mod quote_token;
 pub use quote_token::{sign as sign_quote_token, verify as verify_quote_token, QuoteTokenError, QuoteTokenPayload};
 
