@@ -72,9 +72,6 @@ pub const MCP_TOOL_RULES: &[McpToolRule] = &[
     McpToolRule { tool: "send_notification",        any_of: &[permissions::ENGAGEMENT_SEND],    internal_route: false },
     McpToolRule { tool: "get_delivery_metrics",     any_of: &[permissions::ANALYTICS_VIEW],     internal_route: false },
     McpToolRule { tool: "get_driver_performance",   any_of: &[permissions::ANALYTICS_VIEW],     internal_route: false },
-    McpToolRule { tool: "reconcile_cod",            any_of: &[permissions::PAYMENTS_RECONCILE], internal_route: false },
-    // payments' `generate_invoice` handler requires BILLING_MANAGE.
-    McpToolRule { tool: "generate_invoice",         any_of: &[permissions::BILLING_MANAGE],     internal_route: false },
     McpToolRule { tool: "get_cod_balance",          any_of: &[permissions::PAYMENTS_READ],      internal_route: true  },
     McpToolRule { tool: "get_customer_profile",     any_of: &[permissions::CUSTOMERS_VIEW],     internal_route: false },
     McpToolRule { tool: "get_churn_score",          any_of: &[permissions::CUSTOMERS_VIEW],     internal_route: false },
@@ -93,6 +90,10 @@ pub const MCP_HIDDEN: &[&str] = &[
     // No downstream route exists.
     "get_zone_demand_forecast",
     "schedule_dock",
+    // Can never succeed: its request body lacks GenerateInvoiceCommand's required fields.
+    "generate_invoice",
+    // Can never succeed: its schema lacks the pod_id / driver_id / amount_cents payments requires.
+    "reconcile_cod",
     // Support-agent loop marker; meaningless to a remote caller.
     "escalate_to_human",
 ];
@@ -303,12 +304,8 @@ impl ServerHandler for LogisticOsMcpServer {
                 content:     json!({ "error": message, "denied": true }),
                 is_error:    true,
             };
-            let attempted = request
-                .arguments
-                .clone()
-                .map(Value::Object)
-                .unwrap_or_else(|| Value::Object(Default::default()));
-            self.record_audit(&claims, client_ip.as_deref(), &request.name, &attempted, &refusal)
+            let (audited_name, attempted) = bounded_refusal_audit(&request.name, request.arguments.as_ref());
+            self.record_audit(&claims, client_ip.as_deref(), &audited_name, &attempted, &refusal)
                 .await;
             return Err(McpError::invalid_request(message, None));
         }
@@ -353,6 +350,33 @@ impl ServerHandler for LogisticOsMcpServer {
     }
 }
 
+/// Max characters of a refused call's tool name kept in its audit record.
+const AUDIT_NAME_MAX: usize = 128;
+/// Max bytes of a refused call's serialized arguments kept in its audit record.
+const AUDIT_ARGS_MAX: usize = 2048;
+
+/// A refused call is untrusted input, so bound what is persisted: the name is
+/// cut to `AUDIT_NAME_MAX` chars and the arguments, serialized, to
+/// `AUDIT_ARGS_MAX` bytes (stored as a string with a `truncated` marker).
+fn bounded_refusal_audit(
+    name: &str,
+    args: Option<&serde_json::Map<String, Value>>,
+) -> (String, Value) {
+    let name: String = name.chars().take(AUDIT_NAME_MAX).collect();
+    let Some(args) = args else {
+        return (name, Value::Object(Default::default()));
+    };
+    let serialized = Value::Object(args.clone()).to_string();
+    if serialized.len() <= AUDIT_ARGS_MAX {
+        return (name, Value::Object(args.clone()));
+    }
+    let mut cut = AUDIT_ARGS_MAX;
+    while !serialized.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (name, json!({ "truncated": true, "arguments": &serialized[..cut] }))
+}
+
 /// Build the Tower service mounted at `/mcp`. Stateless Streamable HTTP — no
 /// session pinning — so it rolls cleanly under Istio traffic-splitting like
 /// every other route on this service.
@@ -379,6 +403,33 @@ mod tests {
         "partner", "tenant_admin", "hub_scanner", "store_manager", "store_clerk",
         "no_such_role",
     ];
+
+    /// `rbac.rs` exposes no iterable of roles, so ROLES is hand-listed; this
+    /// keeps it honest by checking it against the match arms in the source.
+    #[test]
+    fn roles_list_matches_every_role_defined_in_rbac() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../libs/auth/src/rbac.rs"));
+        let body = src
+            .split("pub fn default_permissions_for_role")
+            .nth(1)
+            .and_then(|b| b.split("
+}
+").next())
+            .expect("default_permissions_for_role not found in rbac.rs");
+        let mut defined: Vec<&str> = body
+            .lines()
+            .filter_map(|l| {
+                let l = l.strip_prefix("        \"")?;
+                let (name, rest) = l.split_once('"')?;
+                rest.trim_start().starts_with("=>").then_some(name)
+            })
+            .collect();
+        defined.sort_unstable();
+        let mut listed: Vec<&str> = ROLES.iter().copied().filter(|r| *r != "no_such_role").collect();
+        listed.sort_unstable();
+        assert!(!defined.is_empty());
+        assert_eq!(listed, defined, "ROLES is out of sync with rbac.rs");
+    }
 
     fn claims(perms: Vec<String>) -> Claims {
         Claims::new(
@@ -483,6 +534,32 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn refusal_audit_bounds_name_and_arguments() {
+        let long_name = "n".repeat(10_000);
+        let mut args = serde_json::Map::new();
+        args.insert("blob".into(), Value::String("é".repeat(10_000)));
+        let (name, audited) = bounded_refusal_audit(&long_name, Some(&args));
+        assert_eq!(name.chars().count(), AUDIT_NAME_MAX);
+        assert_eq!(audited["truncated"], true);
+        assert!(audited["arguments"].as_str().unwrap().len() <= AUDIT_ARGS_MAX);
+
+        let mut small = serde_json::Map::new();
+        small.insert("a".into(), json!(1));
+        let (n, v) = bounded_refusal_audit("get_shipment", Some(&small));
+        assert_eq!(n, "get_shipment");
+        assert_eq!(v, json!({"a": 1}));
+        assert_eq!(bounded_refusal_audit("x", None).1, json!({}));
+    }
+
+    #[test]
+    fn money_tools_that_cannot_succeed_are_not_exposed() {
+        let c = claims(vec!["*".into()]);
+        for t in ["generate_invoice", "reconcile_cod"] {
+            assert_eq!(mcp_tool_access(&c, t), Err(Denied::NotExposed { tool: t.to_string() }));
         }
     }
 }
