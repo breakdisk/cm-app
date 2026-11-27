@@ -746,7 +746,7 @@ jobs:
         run: cargo install cargo-deny --locked --quiet
 
       - name: Run cargo audit (RustSec CVE check)
-        # Three advisories are ignored, each because no fixed version is
+        # Nine advisories are ignored, each because no fixed version is
         # reachable from where the crate actually sits.
         # below re-derives the justification on every run and fails when it
         # stops holding:
@@ -760,6 +760,25 @@ jobs:
         #                      aws-sdk-s3's internals. No released lru fixes it
         #                      and aws-sdk-s3 pins the major version. Unsoundness
         #                      rather than a remotely reachable vulnerability.
+        #   RUSTSEC-2026-0258  h2 0.3 HTTP/2 DoS; internal gRPC only (see deny.toml).
+        # Added 2026-11-27, after rustc 1.100 / the advisory-db refresh:
+        #   RUSTSEC-2026-0387  crypto-bigint 0.5.5 timing variability. Compiled,
+        #                      but only through aws-sigv4's sigv4a feature (ECDSA
+        #                      signing for S3 multi-region access points), which
+        #                      nothing here calls; we sign with HMAC SigV4. The
+        #                      fix is 0.7.6 and aws-sigv4 1.x pins 0.5.
+        #   RUSTSEC-2026-0459  libsqlite3-sys (C SQLite CVE). Never compiled: in
+        #                      Cargo.lock only as sqlx-sqlite's optional dep; we
+        #                      are Postgres-only. Same shape as the rsa ignore.
+        #   RUSTSEC-2026-0543  chrono unmaintained. Informational, no fixed
+        #                      version and no drop-in successor; sqlx, the AWS
+        #                      SDK and every service depend on it.
+        #   RUSTSEC-2026-0555  chrono-tz unmaintained, via tera (payments
+        #   RUSTSEC-2026-0559  chrono-tz-build    invoice templates). Informational.
+        #   RUSTSEC-2026-0441  pin-utils unmaintained, via aws-smithy-http and
+        #                      aws-smithy-runtime. A macro-only crate.
+        # scripts/check-audit-ignores.sh re-checks every one of these and fails
+        # the job when a justification stops holding.
         run: |
           cargo audit \
             --deny warnings \
@@ -768,7 +787,13 @@ jobs:
             --deny yanked \
             --ignore RUSTSEC-2023-0071 \
             --ignore RUSTSEC-2026-0253 \
-            --ignore RUSTSEC-2026-0258
+            --ignore RUSTSEC-2026-0258 \
+            --ignore RUSTSEC-2026-0387 \
+            --ignore RUSTSEC-2026-0441 \
+            --ignore RUSTSEC-2026-0459 \
+            --ignore RUSTSEC-2026-0543 \
+            --ignore RUSTSEC-2026-0555 \
+            --ignore RUSTSEC-2026-0559
 
       # An --ignore never expires on its own: once upstream ships a fix, the flag
       # keeps suppressing the finding and the job stays green for a reason that
