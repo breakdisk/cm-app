@@ -5,7 +5,7 @@ use serde::Deserialize;
 use logisticos_auth::{middleware::AuthClaims, rbac::permissions, require_permission};
 use logisticos_errors::AppError;
 use crate::api::http::AppState;
-use crate::api::http::upload::{store_upload, UploadDocumentRequest};
+use crate::api::http::upload::{resolve_type_for_profile, store_upload_of_type, UploadDocumentRequest};
 use crate::application::services::DocumentActor;
 use crate::domain::entities::{ComplianceAuditLog, ComplianceProfile, DriverDocument};
 
@@ -338,7 +338,15 @@ pub async fn upload_document_for_profile(
         profile_id,
         claims.tenant_id,
     )?;
-    let upload = store_upload(&state, profile.tenant_id, req).await?;
+    // The type is checked against the profile before anything is stored, so a
+    // refused request leaves no orphaned object behind.
+    let doc_type = resolve_type_for_profile(
+        state.compliance.doc_types.as_ref(),
+        &profile,
+        req.document_type_id,
+        req.document_type_code.as_deref(),
+    ).await?;
+    let upload = store_upload_of_type(&state, profile.tenant_id, doc_type.id, req).await?;
 
     let doc = state.compliance.submit_document(
         profile.id,
