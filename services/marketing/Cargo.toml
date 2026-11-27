@@ -42,16 +42,16 @@ reqwest.workspace    = true
 tracing.workspace    = true
 async-trait.workspace = true
 
-# The unit suite only. `tests/integration/mod.rs` is deliberately NOT a target
-# yet: it builds an `AppState`, and two of that struct's fields are concrete
-# `Arc<PgAbTestRepository>` / `Arc<PgJourneyRepository>` rather than trait
-# objects, so the HTTP layer cannot be exercised without a live Postgres.
-# `campaign_svc` beside them takes a trait and is mocked freely — these two
-# deviate from the pattern this service already uses. Extracting traits for them
-# is the fix, and it is a production change rather than a test one, so it wants
-# its own commit.
-#
-# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs.
+[dev-dependencies]
+# `ServiceExt::oneshot` drives the router in-process.
+tower = { workspace = true, features = ["util"] }
+
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs, but NOT tests/<dir>/mod.rs,
+# so each suite needs a stanza or it is never compiled and never run.
 [[test]]
 name = "unit"
 path = "tests/unit/mod.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"

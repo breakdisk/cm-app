@@ -23,11 +23,13 @@ use logisticos_marketing::{
     api::http,
     application::services::{CampaignService, EventPublisher},
     domain::{
-        entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus, Channel, MessageTemplate, TargetingRule},
+        entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus},
         repositories::CampaignRepository,
     },
+    infrastructure::db::{PgAbTestRepository, PgJourneyRepository},
     AppState,
 };
+use sqlx::postgres::PgPoolOptions;
 use logisticos_types::TenantId;
 
 // ---------------------------------------------------------------------------
@@ -119,7 +121,6 @@ impl EventPublisher for MockPublisher {
 
 struct TestApp {
     router:     axum::Router,
-    tenant_id:  TenantId,
     /// Bearer token carrying the test tenant_id and full campaign permissions.
     test_token: String,
     /// Shared publisher so individual tests can inspect published events.
@@ -135,7 +136,26 @@ impl TestApp {
         let publisher = Arc::new(MockPublisher::default());
         let svc       = Arc::new(CampaignService::new(repo, publisher.clone()));
         let jwt       = Arc::new(JwtService::new("test-secret-for-unit-tests", 3600, 86400));
-        let state     = AppState { campaign_svc: svc, jwt: Arc::clone(&jwt), cdp_client: None };
+
+        // `AppState` holds the A/B-test and journey repositories as concrete Pg
+        // types. A lazy pool opens no connection until first use, and it is
+        // pointed at a closed port with a short acquire timeout: every query
+        // fails fast with a connection error. The campaign routes under test
+        // never need these two, except `activate`, which reads the A/B test with
+        // `.ok().flatten()` and so treats an unreachable database as "no A/B
+        // test configured". A/B fan-out and the journey routes need a real
+        // Postgres and are not covered here.
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(500))
+            .connect_lazy("postgres://nobody:nobody@127.0.0.1:1/none")
+            .expect("lazy pool builds without connecting");
+        let state = AppState {
+            campaign_svc:  svc,
+            ab_test_repo:  Arc::new(PgAbTestRepository::new(pool.clone())),
+            journey_repo:  Arc::new(PgJourneyRepository::new(pool)),
+            jwt:           Arc::clone(&jwt),
+            cdp_client:    None,
+        };
 
         // Mint a real JWT so the production `require_auth` middleware can validate it.
         // The token carries both campaign permissions so every handler under test
@@ -166,7 +186,7 @@ impl TestApp {
             ))
             .with_state(state);
 
-        Self { router, tenant_id, test_token, publisher }
+        Self { router, test_token, publisher }
     }
 
     /// Issue a one-shot HTTP request to the in-process router.
@@ -219,6 +239,15 @@ fn campaign_payload(name: &str) -> Value {
             "estimated_reach": 500
         }
     })
+}
+
+/// Like `campaign_payload`, but with an explicit audience. `activate` refuses a
+/// campaign with no recipients, customer ids, CLV rule or segment, so anything
+/// that needs to reach `Sending` must target someone.
+fn activatable_payload(name: &str) -> Value {
+    let mut p = campaign_payload(name);
+    p["targeting"]["customer_ids"] = json!([Uuid::new_v4()]);
+    p
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +384,8 @@ mod schedule_campaign {
     #[tokio::test]
     async fn scheduling_sending_campaign_returns_conflict() {
         let app = TestApp::new();
-        let id = create_and_get_id(&app).await;
+        let req = app.post_json("/v1/campaigns", activatable_payload("Sched Sending"));
+        let id = body_json(app.request(req).await).await["id"].as_str().unwrap().to_string();
 
         // Activate first (Draft → Sending).
         let activate_req = app.post_json(&format!("/v1/campaigns/{}/activate", id), json!({}));
@@ -449,22 +479,18 @@ mod cancel_campaign {
     }
 
     #[tokio::test]
-    async fn cancelling_completed_campaign_returns_conflict() {
+    async fn cancelling_sending_campaign_returns_conflict() {
         let app = TestApp::new();
-        let id = create_id(&app).await;
+        let req = app.post_json("/v1/campaigns", activatable_payload("Cancel Sending"));
+        let id = body_json(app.request(req).await).await["id"].as_str().unwrap().to_string();
 
-        // Activate then complete.
-        app.request(
-            app.post_json(&format!("/v1/campaigns/{}/activate", id), json!({}))
-        ).await;
+        // Draft -> Sending.
+        let r = app.request(app.post_json(&format!("/v1/campaigns/{}/activate", id), json!({}))).await;
+        assert_eq!(r.status(), StatusCode::OK);
 
-        // Mark it completed by directly calling the service — or simulate via a
-        // completed fixture by activating and then forcing complete through
-        // the cancel path. Instead we test via the domain: after activating the
-        // campaign is Sending; cancelling a Sending campaign should fail.
+        // Cancelling a Sending campaign is a BusinessRule violation -> 422.
         let req = app.post_json(&format!("/v1/campaigns/{}/cancel", id), json!({}));
         let resp = app.request(req).await;
-        // Sending → cancel is a BusinessRule violation → 422
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
@@ -482,7 +508,7 @@ mod activate_publishes_event {
         let app = TestApp::new();
 
         // Create.
-        let req = app.post_json("/v1/campaigns", campaign_payload("Event Test"));
+        let req = app.post_json("/v1/campaigns", activatable_payload("Event Test"));
         let resp = app.request(req).await;
         let id = body_json(resp).await["id"]
             .as_str()
@@ -500,5 +526,18 @@ mod activate_publishes_event {
             published.iter().any(|(topic, _key)| topic == topics::CAMPAIGN_TRIGGERED),
             "CAMPAIGN_TRIGGERED event must be published on activation"
         );
+    }
+
+    #[tokio::test]
+    async fn activating_campaign_with_no_audience_is_refused_and_publishes_nothing() {
+        let app = TestApp::new();
+        let req = app.post_json("/v1/campaigns", campaign_payload("No Audience"));
+        let id = body_json(app.request(req).await).await["id"].as_str().unwrap().to_string();
+
+        let req = app.post_json(&format!("/v1/campaigns/{}/activate", id), json!({}));
+        let resp = app.request(req).await;
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(app.publisher.published.lock().await.is_empty());
     }
 }
