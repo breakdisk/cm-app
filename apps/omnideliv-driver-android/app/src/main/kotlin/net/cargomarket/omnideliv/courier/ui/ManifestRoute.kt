@@ -25,6 +25,7 @@ import net.cargomarket.omnideliv.courier.data.LineDto
 import net.cargomarket.omnideliv.courier.data.ManifestDto
 import net.cargomarket.omnideliv.courier.data.StopDto
 import net.cargomarket.omnideliv.courier.domain.Dropoff
+import net.cargomarket.omnideliv.courier.domain.ExceptionDraft
 import net.cargomarket.omnideliv.courier.domain.GeofenceAdvice
 import net.cargomarket.omnideliv.courier.domain.Leg
 import net.cargomarket.omnideliv.courier.domain.Line
@@ -106,6 +107,17 @@ data class ManifestUiState(
      * the photo exists.
      */
     val capturingProof: Boolean = false,
+    /** True while the courier is filling in the "Report an issue" screen. */
+    val reportingIssue: Boolean = false,
+    /**
+     * True once this courier has reported an issue on this job in this session.
+     *
+     * Session-local for the same reason as [arrivedStops]: a report changes no
+     * state the manifest reads back, because the job stays open until ops
+     * resolves it. It drives a banner, not a gate. A second report is allowed,
+     * since circumstances change at a doorstep.
+     */
+    val issueReported: Boolean = false,
 )
 
 @HiltViewModel
@@ -188,13 +200,37 @@ class ManifestViewModel @Inject constructor(
         }
     }
 
+    fun openIssue() {
+        _state.value = _state.value.copy(reportingIssue = true)
+    }
+
+    fun cancelIssue() {
+        _state.value = _state.value.copy(reportingIssue = false)
+    }
+
+    /**
+     * The courier sent a report. Queue it and return them to the order.
+     *
+     * Same enqueue-then-move-on rule as every milestone: the courier is back on
+     * the manifest the moment the row is on disk, whether or not there is
+     * signal. The timestamp and the idempotency key are both taken inside
+     * `recordException`, at this instant.
+     */
+    fun reportIssue(assignmentId: String, draft: ExceptionDraft) {
+        _state.value = _state.value.copy(reportingIssue = false, issueReported = true)
+        viewModelScope.launch {
+            outbound.recordException(assignmentId, draft)
+            runCatching { outbound.drain() }
+        }
+    }
+
     private suspend fun fetch(orderId: String) {
         val result = runCatching { api.manifest(orderId) }
         result.fold(
             onSuccess = { res ->
                 val body = res.body()
                 _state.value = if (res.isSuccessful && body != null) {
-                    ManifestUiState(body.toDomain(), servedFromCache = false, loading = false)
+                    _state.value.copy(manifest = body.toDomain(), servedFromCache = false, loading = false)
                 } else {
                     // Keep what is on screen. A courier mid-route needs the stop
                     // they are driving to more than they need an error page.
@@ -288,6 +324,14 @@ fun ManifestRoute(
 ) {
     val state by vm.state.collectAsState()
 
+    if (state.reportingIssue) {
+        IssueScreen(
+            onSubmit = { draft -> vm.reportIssue(assignmentId, draft) },
+            onCancel = vm::cancelIssue,
+        )
+        return
+    }
+
     if (state.capturingProof) {
         ProofScreen(
             onCaptured = { file -> vm.proofCaptured(assignmentId, file) },
@@ -319,6 +363,7 @@ fun ManifestRoute(
             }
         } ?: false,
         onArrived = { vm.arrived(assignmentId) },
-        onIssue = { /* the exception flow is its own spec */ },
+        onIssue = vm::openIssue,
+        issueReported = state.issueReported,
     )
 }

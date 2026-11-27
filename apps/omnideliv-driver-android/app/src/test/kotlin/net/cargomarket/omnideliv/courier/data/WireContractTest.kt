@@ -2,7 +2,9 @@ package net.cargomarket.omnideliv.courier.data
 
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import net.cargomarket.omnideliv.courier.domain.ExceptionReason
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -149,5 +151,43 @@ class WireContractTest {
         assertEquals("Maria Reyes", m.dropoff.customerName)
         // Null until the customer app grows a delivery-note field.
         assertEquals(null, m.dropoff.notes)
+    }
+
+    /**
+     * field-ops refuses any reason outside its closed set with a 400, and the
+     * queue parks a 400. A spelling drift here would silently park every report
+     * a courier ever makes.
+     */
+    @Test
+    fun `exception reasons match field-ops wire strings exactly`() {
+        assertEquals(
+            listOf(
+                "customer_unreachable",
+                "address_unreachable",
+                "customer_refused",
+                "cannot_pay",
+                "goods_damaged",
+                "courier_blocked",
+            ),
+            ExceptionReason.entries.map { it.wire },
+        )
+    }
+
+    /** snake_case keys, and an absent fix is omitted rather than sent as a half-null pair. */
+    @Test
+    fun `exception request uses the field-ops field names`() {
+        val body = json.encodeToString(
+            ExceptionRequest(
+                reason = "customer_refused",
+                goodsDisposition = "returned to vendor",
+                clientRef = "6f1c0d2e-0000-4000-8000-000000000001",
+                deviceTimestamp = "2026-11-27T10:00:00Z",
+            ),
+        )
+        assertTrue(body.contains("\"goods_disposition\":\"returned to vendor\""), body)
+        assertTrue(body.contains("\"client_ref\":"), body)
+        assertTrue(body.contains("\"device_timestamp\":"), body)
+        assertFalse(body.contains("lat"), body)
+        assertFalse(body.contains("note"), body)
     }
 }

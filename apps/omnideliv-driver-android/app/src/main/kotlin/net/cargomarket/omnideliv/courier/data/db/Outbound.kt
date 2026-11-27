@@ -7,6 +7,8 @@ import androidx.room.Insert
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 import net.cargomarket.omnideliv.courier.domain.MilestoneKind
 import net.cargomarket.omnideliv.courier.domain.QueuedMilestone
@@ -41,6 +43,8 @@ data class OutboundEntity(
     val state: String = "PENDING",
     /** Why a row was parked, for the support surface. Null unless parked. */
     val parkedReason: String? = null,
+    /** See [QueuedMilestone.payloadJson]. Added in schema version 2. */
+    val payloadJson: String? = null,
 )
 
 internal fun OutboundEntity.toDomain() = QueuedMilestone(
@@ -52,6 +56,7 @@ internal fun OutboundEntity.toDomain() = QueuedMilestone(
     proofPath = proofPath,
     attempts = attempts,
     state = SyncState.valueOf(state),
+    payloadJson = payloadJson,
 )
 
 @Dao
@@ -97,7 +102,20 @@ interface OutboundDao {
     suspend fun park(id: Long, reason: String)
 }
 
-@Database(entities = [OutboundEntity::class], version = 1, exportSchema = false)
+@Database(entities = [OutboundEntity::class], version = 2, exportSchema = false)
 abstract class CourierDb : RoomDatabase() {
     abstract fun outbound(): OutboundDao
+}
+
+/**
+ * Version 1 to 2: the exception payload column.
+ *
+ * Additive and nullable, so every row already queued keeps its meaning. A
+ * courier who updates mid-shift with deliveries still unsynced must not lose
+ * them, which is why there is no destructive fallback anywhere in this database.
+ */
+val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE outbound ADD COLUMN payloadJson TEXT")
+    }
 }

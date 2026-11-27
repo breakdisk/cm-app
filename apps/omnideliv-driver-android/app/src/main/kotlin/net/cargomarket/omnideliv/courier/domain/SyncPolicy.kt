@@ -24,9 +24,21 @@ data class QueuedMilestone(
     val proofPath: String?,
     val attempts: Int,
     val state: SyncState,
+    /**
+     * The request body for a kind whose payload is more than a timestamp, as
+     * JSON. Only [MilestoneKind.EXCEPTION] uses it today. Stored whole, at the
+     * tap, so a replay sends exactly what the courier submitted.
+     */
+    val payloadJson: String? = null,
 )
 
-enum class MilestoneKind { ARRIVED, COLLECTED, DELIVERED }
+/**
+ * `EXCEPTION` rides the same queue as the milestones on purpose. A courier
+ * reporting a failed delivery is usually standing somewhere with poor signal,
+ * and it must reach ops in the order it happened relative to the collection
+ * before it.
+ */
+enum class MilestoneKind { ARRIVED, COLLECTED, DELIVERED, EXCEPTION }
 
 enum class SyncState {
     /** Waiting for a network, or for its turn in the queue. */

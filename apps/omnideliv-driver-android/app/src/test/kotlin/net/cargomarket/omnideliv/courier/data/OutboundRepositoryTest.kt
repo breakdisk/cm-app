@@ -12,6 +12,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import net.cargomarket.omnideliv.courier.data.db.OutboundDao
 import net.cargomarket.omnideliv.courier.data.db.OutboundEntity
+import net.cargomarket.omnideliv.courier.domain.ExceptionDraft
+import net.cargomarket.omnideliv.courier.domain.ExceptionReason
 import net.cargomarket.omnideliv.courier.domain.MilestoneKind
 import net.cargomarket.omnideliv.courier.domain.SyncScheduler
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -140,5 +142,73 @@ class OutboundRepositoryTest {
         second.join()
         coVerify(exactly = 1) { api.collected(any(), any()) }
         assertEquals("SYNCED", dao.rows.single().state)
+    }
+
+    // ── delivery exceptions ──────────────────────────────────────────────────
+
+    private val draft = ExceptionDraft(ExceptionReason.CUSTOMER_UNREACHABLE, "called twice", "still with me")
+
+    /**
+     * The server's insert is idempotent on `client_ref`. That only protects the
+     * ops queue if every replay carries the *same* ref, so it must be minted at
+     * the tap and stored, never generated per attempt.
+     */
+    @Test
+    fun `an exception replays with the client_ref minted at the tap`() = runTest {
+        repo.recordException("assignment-1", draft, clientRef = "ref-1")
+        val sent = mutableListOf<ExceptionRequest>()
+        coEvery { api.raiseException(any(), capture(sent)) } returnsMany listOf(refused(503), Response.success(Unit))
+
+        assertFalse(repo.drain())
+        repo.drain()
+
+        assertEquals(2, sent.size)
+        assertEquals(listOf("ref-1", "ref-1"), sent.map { it.clientRef })
+        assertEquals(sent[0], sent[1])
+        assertEquals("customer_unreachable", sent[0].reason)
+        assertEquals("still with me", sent[0].goodsDisposition)
+        assertEquals(dao.rows.single().deviceTimestamp, sent[0].deviceTimestamp)
+        assertEquals("SYNCED", dao.rows.single().state)
+    }
+
+    @Test
+    fun `reporting an exception asks for a drain`() = runTest {
+        repo.recordException("assignment-1", draft)
+
+        assertEquals(1, scheduler.kicks)
+    }
+
+    /**
+     * A row whose payload is gone can never be sent. It must park, not sit at
+     * the head of the queue blocking every delivery recorded after it.
+     */
+    @Test
+    fun `an exception row with no payload parks and lets later work through`() = runTest {
+        dao.insert(
+            OutboundEntity(
+                kind = MilestoneKind.EXCEPTION.name,
+                assignmentId = "assignment-1",
+                stopRef = null,
+                deviceTimestamp = "2026-11-27T10:00:00Z",
+                proofPath = null,
+                payloadJson = null,
+            ),
+        )
+        dao.insert(
+            OutboundEntity(
+                kind = MilestoneKind.COLLECTED.name,
+                assignmentId = "assignment-2",
+                stopRef = "vendor-1",
+                deviceTimestamp = "2026-11-27T10:05:00Z",
+                proofPath = null,
+            ),
+        )
+        coEvery { api.collected(any(), any()) } returns Response.success(Unit)
+
+        repo.drain()
+
+        assertEquals("PARKED", dao.rows[0].state)
+        assertEquals("SYNCED", dao.rows[1].state)
+        coVerify(exactly = 0) { api.raiseException(any(), any()) }
     }
 }

@@ -8,6 +8,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import net.cargomarket.omnideliv.courier.data.db.CourierDb
+import net.cargomarket.omnideliv.courier.data.db.MIGRATION_1_2
 import net.cargomarket.omnideliv.courier.data.db.OutboundDao
 import javax.inject.Singleton
 
@@ -24,6 +25,7 @@ object DatabaseModule {
             // server has not yet accepted — so dropping it on a schema change
             // would silently destroy money-moving work. A future migration is
             // written by hand or the upgrade fails loudly.
+            .addMigrations(MIGRATION_1_2)
             .build()
 
     @Provides

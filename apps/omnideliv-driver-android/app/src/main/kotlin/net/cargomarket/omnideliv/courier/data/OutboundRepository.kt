@@ -9,6 +9,7 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import net.cargomarket.omnideliv.courier.data.db.OutboundDao
 import net.cargomarket.omnideliv.courier.data.db.OutboundEntity
 import net.cargomarket.omnideliv.courier.data.db.toDomain
+import net.cargomarket.omnideliv.courier.domain.ExceptionDraft
 import net.cargomarket.omnideliv.courier.domain.MilestoneKind
 import net.cargomarket.omnideliv.courier.domain.SyncDecision
 import net.cargomarket.omnideliv.courier.domain.SyncScheduler
@@ -17,6 +18,7 @@ import net.cargomarket.omnideliv.courier.domain.drainOrder
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -81,6 +83,49 @@ class OutboundRepository @Inject constructor(
     }
 
     /**
+     * Record a delivery exception.
+     *
+     * The same two rules as [record], plus one. The device timestamp is taken
+     * here, at the tap. And `client_ref` is minted here too, once, and stored
+     * with the row, so every replay of this report is the same report. The
+     * server's insert is idempotent on it; a fresh id per attempt would put one
+     * failed delivery into the ops queue once per retry.
+     *
+     * The whole request body is serialised now and replayed verbatim. Nothing
+     * the courier typed is re-read from UI state at upload time.
+     */
+    suspend fun recordException(
+        assignmentId: String,
+        draft: ExceptionDraft,
+        fix: Pair<Double, Double>? = null,
+        atMillis: Long = System.currentTimeMillis(),
+        clientRef: String = UUID.randomUUID().toString(),
+    ): Long {
+        val deviceTimestamp = isoFromMillis(atMillis)
+        val body = ExceptionRequest(
+            reason = draft.reason.wire,
+            note = draft.note,
+            goodsDisposition = draft.goodsDisposition,
+            lat = fix?.first,
+            lng = fix?.second,
+            clientRef = clientRef,
+            deviceTimestamp = deviceTimestamp,
+        )
+        val id = dao.insert(
+            OutboundEntity(
+                kind = MilestoneKind.EXCEPTION.name,
+                assignmentId = assignmentId,
+                stopRef = null,
+                deviceTimestamp = deviceTimestamp,
+                proofPath = null,
+                payloadJson = CourierJson.encodeToString(ExceptionRequest.serializer(), body),
+            ),
+        )
+        scheduler.kick()
+        return id
+    }
+
+    /**
      * Send everything pending, oldest physical event first, stopping at the
      * first row that cannot go.
      *
@@ -124,7 +169,7 @@ class OutboundRepository @Inject constructor(
             }
 
             val sent = runCatching {
-                send(item.kind, item.assignmentId, item.stopRef, item.deviceTimestamp)
+                send(item.kind, item.assignmentId, item.stopRef, item.deviceTimestamp, item.payloadJson)
             }
             val status = sent.getOrNull()
 
@@ -210,6 +255,7 @@ class OutboundRepository @Inject constructor(
         assignmentId: String,
         stopRef: String?,
         deviceTimestamp: String,
+        payloadJson: String?,
     ): Int = when (kind) {
         MilestoneKind.ARRIVED -> api.arrived(
             assignmentId,
@@ -225,9 +271,20 @@ class OutboundRepository @Inject constructor(
             assignmentId,
             DeliveredRequest(deviceTimestamp = deviceTimestamp),
         ).code()
+
+        // A row with no payload, or one that no longer decodes, can never be
+        // sent. Answer as the server would to a malformed body, a 400, so the
+        // ordinary policy parks it instead of letting it block the queue.
+        MilestoneKind.EXCEPTION -> payloadJson
+            ?.let { runCatching { CourierJson.decodeFromString(ExceptionRequest.serializer(), it) }.getOrNull() }
+            ?.let { api.raiseException(assignmentId, it).code() }
+            ?: MALFORMED_ROW
     }
 
     private companion object {
+        /** See the `EXCEPTION` arm of [send]. */
+        const val MALFORMED_ROW = 400
+
         /**
          * ISO-8601 in UTC, the one format the backend parses.
          *

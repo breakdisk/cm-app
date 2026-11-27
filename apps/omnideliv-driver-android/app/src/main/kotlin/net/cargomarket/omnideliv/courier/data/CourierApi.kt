@@ -86,6 +86,16 @@ interface CourierApi {
         @Body body: DeliveredRequest,
     ): Response<Unit>
 
+    /**
+     * Report that this job cannot be finished. 202 on accept, and a replay with
+     * the same `client_ref` is a 202 too, not a second row.
+     */
+    @POST("v1/field-ops/assignments/{id}/exception")
+    suspend fun raiseException(
+        @Path("id") assignmentId: String,
+        @Body body: ExceptionRequest,
+    ): Response<Unit>
+
     @POST("v1/field-ops/couriers/{id}/position")
     suspend fun position(
         @Path("id") courierId: String,
@@ -133,6 +143,24 @@ data class CollectedRequest(
 
 @Serializable
 data class DeliveredRequest(
+    @SerialName("device_timestamp") val deviceTimestamp: String,
+)
+
+/**
+ * A delivery exception. `clientRef` is minted once, at the tap, and every
+ * offline replay reuses it. Without that, a retry is a second exception in the
+ * ops queue for one real failure.
+ *
+ * `lat` and `lng` go together or not at all: the server refuses half a fix.
+ */
+@Serializable
+data class ExceptionRequest(
+    val reason: String,
+    val note: String? = null,
+    @SerialName("goods_disposition") val goodsDisposition: String? = null,
+    val lat: Double? = null,
+    val lng: Double? = null,
+    @SerialName("client_ref") val clientRef: String,
     @SerialName("device_timestamp") val deviceTimestamp: String,
 )
 

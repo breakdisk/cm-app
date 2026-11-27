@@ -67,6 +67,8 @@ fun ManifestScreen(
     /** True once arrival at the current stop has been recorded. */
     arrivedHere: Boolean = false,
     onArrived: () -> Unit = {},
+    /** True once an issue has been reported on this job. Drives a banner only. */
+    issueReported: Boolean = false,
 ) {
     if (manifest == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -97,7 +99,7 @@ fun ManifestScreen(
             }
         }
         // Pinned in the bottom third and never moved by a re-sequence.
-        AdvanceControl(manifest, advice, onAdvance, onFinish, onIssue, arrivedHere, onArrived)
+        AdvanceControl(manifest, advice, onAdvance, onFinish, onIssue, arrivedHere, onArrived, issueReported)
     }
 }
 
@@ -369,6 +371,7 @@ private fun AdvanceControl(
     onIssue: () -> Unit,
     arrivedHere: Boolean,
     onArrived: () -> Unit,
+    issueReported: Boolean,
 ) {
     val action = primaryAction(manifest.currentLeg())
 
@@ -380,6 +383,18 @@ private fun AdvanceControl(
     ) {
         GeofenceChip(advice)
         Spacer(Modifier.height(8.dp))
+
+        // The report does not end the job, so say what it did do. Without this
+        // the courier taps "Send report", lands back on an unchanged manifest,
+        // and has no way to tell the tap registered.
+        if (issueReported && manifest.currentLeg() != Leg.Done) {
+            Text(
+                "Issue reported · ops will contact you. Keep the order with you.",
+                color = Tokens.Amber,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         // Arrival is its own tap, and it is not derived from the geofence: GPS
         // cannot tell "parked outside" from "at the door", and it is the event
@@ -422,6 +437,8 @@ private fun AdvanceControl(
         ) {
             Text(action.label, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
+        // Nothing left to report against once every leg is done.
+        if (manifest.currentLeg() == Leg.Done) return@Column
         Spacer(Modifier.height(7.dp))
         Button(
             onClick = onIssue,
