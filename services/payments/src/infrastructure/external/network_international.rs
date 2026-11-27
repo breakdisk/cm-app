@@ -93,6 +93,27 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct NetworkInternationalGateway {
     cfg: NetworkInternationalConfig,
     http: reqwest::Client,
+    /// The access token NI actually wants on every call, and when it dies.
+    ///
+    /// Cached because NI issues one good for `expires_in` seconds and a fresh
+    /// exchange on every capture would double the request count on the money
+    /// path for no benefit.
+    token: tokio::sync::RwLock<Option<CachedToken>>,
+}
+
+#[derive(Clone)]
+struct CachedToken {
+    value:      String,
+    expires_at: std::time::Instant,
+}
+
+/// What NI's identity service returns.
+#[derive(Deserialize)]
+struct AccessTokenResponse {
+    access_token: String,
+    /// Seconds. Absent on some responses, so it is optional and defaulted.
+    #[serde(default)]
+    expires_in: Option<u64>,
 }
 
 impl NetworkInternationalGateway {
@@ -101,7 +122,75 @@ impl NetworkInternationalGateway {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("NI HTTP client");
-        Self { cfg, http }
+        Self { cfg, http, token: tokio::sync::RwLock::new(None) }
+    }
+
+    /// Exchange the configured API key for a short-lived access token.
+    ///
+    /// **This step was missing entirely.** Every call in this adapter used to
+    /// send the raw API key as the bearer token, which NI rejects because it
+    /// tries to decode a bearer as a JWT:
+    ///
+    /// ```text
+    /// 401 invalid_token — "Invalid JWT serialization: Missing dot delimiter(s)"
+    /// ```
+    ///
+    /// The API key is not a JWT; the access token is. So every NI request —
+    /// create, capture, refund, void — would have failed on first contact with
+    /// a real gateway. Nothing caught it because nothing had ever called NI.
+    ///
+    /// The endpoint, media type and `Basic` scheme below were confirmed against
+    /// NI's sandbox: plain `application/json` is rejected with 415, which is
+    /// how we know `application/vnd.ni-identity.v1+json` is the one it wants.
+    async fn access_token(&self) -> anyhow::Result<String> {
+        // A minute of slack, so a token cannot expire between this check and
+        // the request that uses it.
+        const SKEW: std::time::Duration = std::time::Duration::from_secs(60);
+
+        if let Some(t) = self.token.read().await.as_ref() {
+            if t.expires_at > std::time::Instant::now() + SKEW {
+                return Ok(t.value.clone());
+            }
+        }
+
+        let mut guard = self.token.write().await;
+        // Re-check: another task may have refreshed while we waited for the
+        // write lock, and a second exchange would be wasted work.
+        if let Some(t) = guard.as_ref() {
+            if t.expires_at > std::time::Instant::now() + SKEW {
+                return Ok(t.value.clone());
+            }
+        }
+
+        let url = format!("{}/identity/auth/access-token", self.cfg.base_url.trim_end_matches('/'));
+        let resp = self
+            .http
+            .post(&url)
+            // The portal hands out a key that is already base64 of
+            // `<id>:<secret>`, so it is passed through as the Basic credential
+            // rather than re-encoded.
+            .header("Authorization", format!("Basic {}", self.cfg.api_key.trim()))
+            .header("Content-Type", "application/vnd.ni-identity.v1+json")
+            .header("Accept", "application/vnd.ni-identity.v1+json")
+            .body("{}")
+            .send()
+            .await?;
+
+        if let Err(e) = resp.error_for_status_ref() {
+            let body_text = resp.text().await.unwrap_or_default();
+            // Named explicitly: a failure here means NOTHING on this gateway
+            // works, and the message is the difference between "our key is
+            // wrong" and "NI is down".
+            anyhow::bail!("NI access-token exchange failed: {e} — body: {body_text}");
+        }
+
+        let parsed = resp.json::<AccessTokenResponse>().await?;
+        let ttl = std::time::Duration::from_secs(parsed.expires_in.unwrap_or(3600));
+        *guard = Some(CachedToken {
+            value:      parsed.access_token.clone(),
+            expires_at: std::time::Instant::now() + ttl,
+        });
+        Ok(parsed.access_token)
     }
 }
 
@@ -165,7 +254,7 @@ impl PaymentGateway for NetworkInternationalGateway {
             merchant_order_reference: req.intent_id.to_string(),
             merchant_attributes: MerchantAttributes { redirect_url: req.return_url },
         };
-        let resp = self.http.post(&url).bearer_auth(&self.cfg.api_key).json(&body).send().await?;
+        let resp = self.http.post(&url).bearer_auth(self.access_token().await?).json(&body).send().await?;
         if let Err(e) = resp.error_for_status_ref() {
             let body_text = resp.text().await.unwrap_or_default();
             anyhow::bail!("NI create_session failed: {e} — body: {body_text}");
@@ -264,7 +353,7 @@ impl PaymentGateway for NetworkInternationalGateway {
         );
         let resp = self.http
             .post(&url)
-            .bearer_auth(&self.cfg.api_key)
+            .bearer_auth(self.access_token().await?)
             .json(&serde_json::json!({ "amount": { "value": amount_cents } }))
             .send()
             .await?;
@@ -300,7 +389,7 @@ impl PaymentGateway for NetworkInternationalGateway {
         );
         let resp = self.http
             .post(&url)
-            .bearer_auth(&self.cfg.api_key)
+            .bearer_auth(self.access_token().await?)
             .json(&serde_json::json!({ "amount": { "value": amount_cents } }))
             .send()
             .await?;
@@ -360,7 +449,7 @@ impl PaymentGateway for NetworkInternationalGateway {
             gateway_order_ref,
             gateway_payment_ref,
         );
-        let resp = self.http.delete(&url).bearer_auth(&self.cfg.api_key).send().await?;
+        let resp = self.http.delete(&url).bearer_auth(self.access_token().await?).send().await?;
         if let Err(e) = resp.error_for_status_ref() {
             let body_text = resp.text().await.unwrap_or_default();
             anyhow::bail!(
