@@ -898,6 +898,24 @@ async fn arrived(
 /// 202 like the other milestones: the report is accepted, and what happens
 /// next is an ops decision rather than anything this call performs. Nothing
 /// here changes the assignment or touches money.
+/// Longest `note` / `goods_disposition` accepted, in characters. Matches the
+/// courier app's own cap, so only a client that bypasses the app hits it.
+const EXCEPTION_TEXT_MAX: usize = 500;
+
+/// Bounds on what a courier may store in the ops queue: free text no longer
+/// than [`EXCEPTION_TEXT_MAX`], and a fix that is a real point on the globe.
+fn exception_input_is_bounded(
+    note: Option<&str>,
+    goods_disposition: Option<&str>,
+    capture: Option<(f64, f64)>,
+) -> bool {
+    let text_ok = |t: Option<&str>| t.is_none_or(|t| t.chars().count() <= EXCEPTION_TEXT_MAX);
+    let fix_ok = capture.is_none_or(|(lat, lng)| {
+        (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lng)
+    });
+    text_ok(note) && text_ok(goods_disposition) && fix_ok
+}
+
 async fn raise_exception(
     State(st): State<Arc<AppState>>,
     claims: AuthClaims,
@@ -915,6 +933,9 @@ async fn raise_exception(
         (None, None) => None,
         _ => return Err(StatusCode::BAD_REQUEST),
     };
+    if !exception_input_is_bounded(req.note.as_deref(), req.goods_disposition.as_deref(), capture) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     let found = st
         .dispatch
@@ -1023,4 +1044,26 @@ async fn delivered(
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(StatusCode::ACCEPTED)
+}
+
+#[cfg(test)]
+mod exception_input_tests {
+    use super::{exception_input_is_bounded, EXCEPTION_TEXT_MAX};
+
+    #[test]
+    fn text_at_the_cap_passes_and_one_over_fails() {
+        let at = "é".repeat(EXCEPTION_TEXT_MAX);
+        let over = "é".repeat(EXCEPTION_TEXT_MAX + 1);
+        assert!(exception_input_is_bounded(Some(&at), Some(&at), None));
+        assert!(!exception_input_is_bounded(Some(&over), None, None));
+        assert!(!exception_input_is_bounded(None, Some(&over), None));
+    }
+
+    #[test]
+    fn a_fix_off_the_globe_or_nan_fails() {
+        assert!(exception_input_is_bounded(None, None, Some((14.5, 121.0))));
+        assert!(!exception_input_is_bounded(None, None, Some((91.0, 0.0))));
+        assert!(!exception_input_is_bounded(None, None, Some((0.0, -180.5))));
+        assert!(!exception_input_is_bounded(None, None, Some((f64::NAN, 0.0))));
+    }
 }
