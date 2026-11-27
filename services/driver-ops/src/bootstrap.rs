@@ -188,6 +188,7 @@ pub async fn run() -> anyhow::Result<()> {
         fcm: fcm_for_state,
         providers: Arc::new(crate::infrastructure::db::PgProviderStore::new(pool.clone())),
         credits,
+        idle: Arc::new(crate::infrastructure::db::PgIdleDriverStore::new(pool.clone())),
     });
 
     use tower_http::cors::CorsLayer;
@@ -195,10 +196,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
-            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+            HeaderValue::from_static("http://localhost:3001"),
+            HeaderValue::from_static("http://localhost:3002"),
+            HeaderValue::from_static("http://localhost:3003"),
+            HeaderValue::from_static("http://localhost:8083"),
         ])
         .allow_methods([
             Method::GET, Method::POST, Method::PUT,

@@ -53,9 +53,17 @@ pub struct ProofOfDelivery {
     #[serde(default = "default_true")]
     pub requires_signature: bool,
 
+    /// Set when the PIN requirement was waived because the recipient never
+    /// received a PIN (`"PIN_UNDELIVERED"`). Ops visibility tag, not a block.
+    #[serde(default)]
+    pub pin_exception: Option<String>,
+
     pub captured_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
+
+/// `pin_exception` value for a delivery whose recipient never got a PIN.
+pub const PIN_UNDELIVERED: &str = "PIN_UNDELIVERED";
 
 fn default_true() -> bool { true }
 
@@ -113,6 +121,7 @@ impl ProofOfDelivery {
             cod_collected_cents: None,
             requires_photo,
             requires_signature,
+            pin_exception: None,
             captured_at: now,
             created_at: now,
         }
@@ -129,6 +138,35 @@ impl ProofOfDelivery {
     pub fn mark_otp_verified(&mut self, otp_id: Uuid) {
         self.otp_verified = true;
         self.otp_id = Some(otp_id);
+    }
+
+    /// Waives the PIN because the recipient never received one. The substitute
+    /// evidence is a photo of the delivered parcel; without one this refuses.
+    ///
+    /// Only a photo under this POD's own upload prefix counts: `attach_photo`
+    /// takes the `s3_key` from the client, so any other key is an assertion, not
+    /// evidence.
+    pub fn waive_undelivered_pin(&mut self) -> Result<(), &'static str> {
+        if self.minted_photo_keys().is_empty() {
+            return Err("A photo of the delivered parcel is required when the recipient never received a delivery PIN.");
+        }
+        self.pin_exception = Some(PIN_UNDELIVERED.to_string());
+        Ok(())
+    }
+
+    /// The key prefix `get_upload_url` mints photo keys under for this POD.
+    pub fn upload_key_prefix(&self) -> String {
+        format!("pod/{}/{}/{}/", self.tenant_id, self.shipment_id, self.id)
+    }
+
+    /// Keys of attached photos that sit under this POD's upload prefix.
+    pub fn minted_photo_keys(&self) -> Vec<String> {
+        let prefix = self.upload_key_prefix();
+        self.photos.iter()
+            .map(|p| p.s3_key.as_str())
+            .filter(|k| k.starts_with(&prefix) && !k.contains(".."))
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn record_cod(&mut self, amount_cents: i64) {

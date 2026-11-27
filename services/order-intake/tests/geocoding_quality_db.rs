@@ -80,6 +80,7 @@ fn shipment(dest_geocoding: GeocodingRecord) -> Shipment {
         created_at: now,
         updated_at: now,
         scheduled_pickup_at: None,
+        sla_due_at: None,
         cancellation_policy_version: None,
         booking_amount_cents: None,
         booking_currency: None,

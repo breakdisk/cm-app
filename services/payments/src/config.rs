@@ -11,6 +11,9 @@ pub struct Config {
     pub identity: IdentityConfig,
     #[serde(default)]
     pub subscription: SubscriptionConfig,
+    /// Env prefix `PAYMENTS__` (e.g. `PAYMENTS__OVERDUE_SWEEP_SECS`).
+    #[serde(default)]
+    pub payments: PaymentsConfig,
     /// Network International (online card payment gateway) config. Optional:
     /// card payment is an additive capability layered on top of the core
     /// payments service (invoicing, COD, wallets, driver ledger, billing) —
@@ -58,6 +61,25 @@ pub struct IdentityConfig {
     /// that cleared it would recreate the free self-upgrade this design avoids.
     #[serde(default)]
     pub internal_secret: String,
+}
+
+/// Payments-service tuning. Env: `PAYMENTS__OVERDUE_SWEEP_SECS`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PaymentsConfig {
+    /// How often the overdue sweep runs. Default 3600 (hourly) — overdue is
+    /// counted in whole days, so finer than this only re-reads the same rows.
+    #[serde(default = "default_overdue_sweep_secs")]
+    pub overdue_sweep_secs: u64,
+}
+
+impl Default for PaymentsConfig {
+    fn default() -> Self {
+        Self { overdue_sweep_secs: default_overdue_sweep_secs() }
+    }
+}
+
+fn default_overdue_sweep_secs() -> u64 {
+    3600
 }
 
 /// Where a merchant's browser lands after paying for a plan.
@@ -419,5 +441,14 @@ mod config_tests {
             cfg.network_international.unwrap().webhook_encryption_key().map(str::len),
             Some(32),
         );
+    }
+
+    #[test]
+    fn overdue_sweep_secs_defaults_to_hourly() {
+        assert_eq!(PaymentsConfig::default().overdue_sweep_secs, 3600);
+        let parsed: PaymentsConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.overdue_sweep_secs, 3600);
+        let parsed: PaymentsConfig = serde_json::from_str(r#"{"overdue_sweep_secs":60}"#).unwrap();
+        assert_eq!(parsed.overdue_sweep_secs, 60);
     }
 }

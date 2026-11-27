@@ -1,40 +1,30 @@
 /**
- * Merchant Portal — Marketplace Discovery API.
+ * Merchant Portal — Marketplace API (carrier service, via the gateway).
  *
- * Merchants (the `business` or `consumer` merchant_type per ADR-0013) *consume*
- * marketplace vehicle listings: they browse idle capacity published by alliance
- * and marketplace partners and create bookings. A booking creates a shipment
- * via order-intake (zero-loss invariant: no shipment bypass, even for
- * marketplace-origin flows).
+ * Merchants consume marketplace vehicle listings: they browse idle capacity
+ * published by carriers and book it for one of their own shipments. Every
+ * route here requires `marketplace:book`. Types mirror the carrier service's
+ * serde output (`services/carrier/src/domain/entities/mod.rs`) exactly.
  *
- * Shape mirrors the partner/admin marketplace APIs but is scoped to the
- * merchant's view:
- *   - `listings`: cross-partner, status=active only (merchants don't see paused
- *     or expired inventory)
- *   - `bookings`: filtered to the current merchant's own bookings
- *
- * Pre-backend stub. Swap to `authFetch` when the service ships.
- *
- * Pre-backend propagation: `createBooking` also writes to the marketplace-bus
- * (shared localStorage) so partner-portal and admin-portal reflect the new
- * booking on next refresh. In production this is replaced by the real service
- * emitting `marketplace.booking_created` on Kafka (ADR-0013 §Booking flow).
+ * Money is integer cents; weights/volumes/distances are f32 on the wire.
  */
 
-import {
-  appendBooking as busAppend,
-  readBus,
-  subscribeToBus,
-  findReceiptByBookingId as busFindReceiptByBookingId,
-  type BusBooking,
-  type BusReceipt,
-} from "./marketplace-bus";
-
-export type { BusReceipt } from "./marketplace-bus";
+import { authFetch } from "@/lib/auth/auth-fetch";
+import { API_BASE } from "@/lib/api/endpoints";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ListingStatus = "active" | "booked";
+export type SizeClass =
+  | "motorcycle"
+  | "sedan"
+  | "van"
+  | "l300"
+  | "6wheeler"
+  | "10wheeler"
+  | "trailer";
+
+export type ListingStatus = "active" | "paused" | "booked" | "expired";
+
 export type BookingStatus =
   | "pending"
   | "accepted"
@@ -44,520 +34,259 @@ export type BookingStatus =
   | "cancelled"
   | "disputed";
 
-export type SizeClass =
-  | "scooter_bicycle"
-  | "motorcycle"
-  | "sedan"
-  | "van"
-  | "1ton"
-  | "3ton"
-  | "7ton"
-  | "10ton"
-  | "trailer"
-  | "refrigerated_truck"
-  | "recovery_truck";
+export type BookingPaymentMethod = "invoice" | "online";
+export type BookingPaymentStatus = "pending" | "authorized" | "captured" | "voided" | "failed";
 
-export type VehicleFeature = "tail_lift" | "chiller" | "freezer";
-
-export type PartnerType = "alliance" | "marketplace";
-
-export interface MerchantListing {
-  id:                   string;
-  partner_id:           string;
-  partner_display_name: string;
-  partner_type:         PartnerType;
-  vehicle_plate:        string;       // revealed only after booking accepted; masked on preview
-  size_class:           SizeClass;
-  features:             VehicleFeature[];
-  max_weight_kg:        number;
-  max_volume_m3:        number | null;
-  base_price_cents:     number;
-  per_km_cents:         number;
-  per_kg_cents:         number | null;
-  service_area_label:   string;
-  idle_until:           string;
-  status:               ListingStatus;
-  rating:               number;        // 0..5
-  response_window_mins: number;
+export interface VehicleListing {
+  id:                           string;
+  tenant_id:                    string;
+  carrier_id:                   string;
+  vehicle_plate:                string;
+  size_class:                   SizeClass;
+  max_weight_kg:                number;
+  max_volume_m3:                number | null;
+  base_price_cents:             number;
+  per_km_cents:                 number;
+  per_kg_cents:                 number | null;
+  service_area_label:           string;
+  idle_from:                    string;
+  idle_until:                   string;
+  status:                       ListingStatus;
+  carrier_response_window_mins: number;
+  bookings_today:               number;
+  revenue_today_cents:          number;
+  created_at:                   string;
+  updated_at:                   string;
 }
 
-export interface MerchantBooking {
-  id:                   string;
-  listing_id:           string;
-  shipment_id:          string;        // FK to shipments; drives tracking page & order detail link
-  awb:                  string;
-  partner_id:           string;
-  partner_display_name: string;
-  merchant_id:          string;        // ADR-0013: business/consumer merchants both carry merchant_id
-  size_class:           SizeClass;
-  features:             VehicleFeature[];
-  cargo_weight_kg:      number;
-  cargo_description:    string | null;
-  pickup_label:         string;
-  dropoff_label:        string;
-  quoted_price_cents:   number;
-  status:               BookingStatus;
-  pickup_at:            string;
-  created_at:           string;
-  picked_up_at:         string | null;
-  picked_up_by:         string | null;
-  pickup_notes:         string | null;
+export interface MarketplaceBooking {
+  id:                    string;
+  tenant_id:             string;
+  listing_id:            string;
+  carrier_id:            string;
+  shipment_id:           string;
+  awb:                   string;
+  consumer_name:         string;
+  consumer_phone:        string | null;
+  pickup_label:          string;
+  dropoff_label:         string;
+  cargo_weight_kg:       number;
+  cargo_volume_m3:       number | null;
+  quoted_price_cents:    number;
+  status:                BookingStatus;
+  pickup_at:             string;
+  picked_up_at:          string | null;
+  picked_up_by:          string | null;
+  pickup_notes:          string | null;
+  booked_by_user_id:     string | null;
+  payment_method:        BookingPaymentMethod;
+  payment_status:        BookingPaymentStatus;
+  payment_intent_id:     string | null;
+  payment_checkout_url:  string | null;
+  payment_authorized_at: string | null;
+  response_window_mins:  number;
+  distance_km:           number;
+  created_at:            string;
+  updated_at:            string;
 }
-
-// Pre-backend: this portal represents a single merchant session. In production
-// the merchant_id comes from the JWT `mid` claim (ADR-0013 §JWT claims).
-export const CURRENT_MERCHANT_ID   = "m2000000-0000-0000-0000-000000000001";
-export const CURRENT_MERCHANT_NAME = "Acme E-commerce";
 
 export interface MerchantMarketplaceStats {
-  available_now:       number;
-  avg_rate_per_km:     number;         // cents, weighted across active listings
-  partners_reachable:  number;
-  my_bookings_active:  number;
-}
-
-// ── Mock data ─────────────────────────────────────────────────────────────────
-
-const iso = (d: Date) => d.toISOString();
-const addHours = (d: Date, h: number) => new Date(d.getTime() + h * 3_600_000);
-const now = () => new Date();
-
-const P_FASTSHIP = { id: "a1b2c3d4-0000-0000-0000-000000000001", name: "FastShip Co.",        type: "alliance"    as PartnerType };
-const P_NORTH    = { id: "a1b2c3d4-0000-0000-0000-000000000002", name: "NorthLink Logistics", type: "alliance"    as PartnerType };
-const P_MANILA   = { id: "a1b2c3d4-0000-0000-0000-000000000003", name: "Manila MoveIt",       type: "marketplace" as PartnerType };
-const P_CEBU     = { id: "a1b2c3d4-0000-0000-0000-000000000004", name: "Cebu Carriers Co-op", type: "marketplace" as PartnerType };
-const P_COLDEX   = { id: "a1b2c3d4-0000-0000-0000-000000000005", name: "ColdEx Freight",      type: "marketplace" as PartnerType };
-
-const MOCK_LISTINGS: MerchantListing[] = [
-  {
-    id: "l1000000-0000-0000-0000-000000000001",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name, partner_type: P_FASTSHIP.type,
-    vehicle_plate: "NKT-••••", size_class: "1ton", max_weight_kg: 1000, max_volume_m3: 6,
-    features: ["tail_lift"],
-    base_price_cents: 150000, per_km_cents: 2500, per_kg_cents: null,
-    service_area_label: "Metro Manila · Luzon",
-    idle_until: iso(addHours(now(), 6)),
-    status: "active", rating: 4.8, response_window_mins: 15,
-  },
-  {
-    id: "l1000000-0000-0000-0000-000000000002",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name, partner_type: P_FASTSHIP.type,
-    vehicle_plate: "JBX-••••", size_class: "motorcycle", max_weight_kg: 30, max_volume_m3: 0.25,
-    features: [],
-    base_price_cents: 8000, per_km_cents: 900, per_kg_cents: 1500,
-    service_area_label: "Metro Manila only",
-    idle_until: iso(addHours(now(), 4)),
-    status: "booked", rating: 4.9, response_window_mins: 10,
-  },
-  {
-    id: "l2000000-0000-0000-0000-000000000001",
-    partner_id: P_NORTH.id, partner_display_name: P_NORTH.name, partner_type: P_NORTH.type,
-    vehicle_plate: "TLX-••••", size_class: "10ton", max_weight_kg: 10000, max_volume_m3: 40,
-    features: ["tail_lift"],
-    base_price_cents: 800000, per_km_cents: 5500, per_kg_cents: null,
-    service_area_label: "Luzon inter-provincial",
-    idle_until: iso(addHours(now(), 12)),
-    status: "active", rating: 4.7, response_window_mins: 30,
-  },
-  {
-    id: "l3000000-0000-0000-0000-000000000001",
-    partner_id: P_MANILA.id, partner_display_name: P_MANILA.name, partner_type: P_MANILA.type,
-    vehicle_plate: "MLI-••••", size_class: "van", max_weight_kg: 800, max_volume_m3: 5.0,
-    features: [],
-    base_price_cents: 90000, per_km_cents: 1800, per_kg_cents: null,
-    service_area_label: "NCR + Cavite",
-    idle_until: iso(addHours(now(), 3)),
-    status: "active", rating: 4.5, response_window_mins: 15,
-  },
-  {
-    id: "l4000000-0000-0000-0000-000000000001",
-    partner_id: P_CEBU.id, partner_display_name: P_CEBU.name, partner_type: P_CEBU.type,
-    vehicle_plate: "CEB-••••", size_class: "7ton", max_weight_kg: 7000, max_volume_m3: 28.0,
-    features: [],
-    base_price_cents: 450000, per_km_cents: 4200, per_kg_cents: null,
-    service_area_label: "Cebu island",
-    idle_until: iso(addHours(now(), 18)),
-    status: "active", rating: 4.6, response_window_mins: 30,
-  },
-  {
-    id: "l5000000-0000-0000-0000-000000000001",
-    partner_id: P_COLDEX.id, partner_display_name: P_COLDEX.name, partner_type: P_COLDEX.type,
-    vehicle_plate: "CLX-••••", size_class: "refrigerated_truck", max_weight_kg: 5000, max_volume_m3: 22,
-    features: ["freezer"],
-    base_price_cents: 350000, per_km_cents: 4800, per_kg_cents: null,
-    service_area_label: "Metro Manila · Luzon · Visayas",
-    idle_until: iso(addHours(now(), 8)),
-    status: "active", rating: 4.9, response_window_mins: 20,
-  },
-  {
-    id: "l5000000-0000-0000-0000-000000000002",
-    partner_id: P_COLDEX.id, partner_display_name: P_COLDEX.name, partner_type: P_COLDEX.type,
-    vehicle_plate: "CLX-••••", size_class: "refrigerated_truck", max_weight_kg: 3000, max_volume_m3: 14,
-    features: ["chiller"],
-    base_price_cents: 280000, per_km_cents: 3800, per_kg_cents: null,
-    service_area_label: "Metro Manila · NCR",
-    idle_until: iso(addHours(now(), 10)),
-    status: "active", rating: 4.7, response_window_mins: 20,
-  },
-  {
-    id: "l6000000-0000-0000-0000-000000000001",
-    partner_id: P_NORTH.id, partner_display_name: P_NORTH.name, partner_type: P_NORTH.type,
-    vehicle_plate: "TLX-••••", size_class: "trailer", max_weight_kg: 25000, max_volume_m3: null,
-    features: [],
-    base_price_cents: 1200000, per_km_cents: 6500, per_kg_cents: null,
-    service_area_label: "Nationwide · Flatbed available",
-    idle_until: iso(addHours(now(), 24)),
-    status: "active", rating: 4.8, response_window_mins: 45,
-  },
-  {
-    id: "l7000000-0000-0000-0000-000000000001",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name, partner_type: P_FASTSHIP.type,
-    vehicle_plate: "RSQ-••••", size_class: "recovery_truck", max_weight_kg: 5000, max_volume_m3: null,
-    features: [],
-    base_price_cents: 250000, per_km_cents: 3500, per_kg_cents: null,
-    service_area_label: "Metro Manila · Luzon",
-    idle_until: iso(addHours(now(), 6)),
-    status: "active", rating: 4.6, response_window_mins: 20,
-  },
-];
-
-const MOCK_BOOKINGS: MerchantBooking[] = [
-  {
-    id: "b9000000-0000-0000-0000-000000000001",
-    listing_id: "l1000000-0000-0000-0000-000000000001",
-    shipment_id: "s9000000-0000-0000-0000-000000000001",
-    awb: "CM-PHL-S0000301Q",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name,
-    merchant_id: CURRENT_MERCHANT_ID,
-    size_class: "1ton", features: ["tail_lift"], cargo_weight_kg: 640,
-    cargo_description: "General goods — mixed pallets",
-    pickup_label: "Pasig Warehouse", dropoff_label: "Batangas Industrial Park",
-    quoted_price_cents: 212000, status: "in_transit",
-    pickup_at: iso(addHours(now(), -1.2)), created_at: iso(addHours(now(), -3)),
-    picked_up_at: iso(addHours(now(), -1.1)),
-    picked_up_by: "Driver R. Villanueva", pickup_notes: null,
-  },
-  {
-    id: "b9000000-0000-0000-0000-000000000002",
-    listing_id: "l3000000-0000-0000-0000-000000000001",
-    shipment_id: "s9000000-0000-0000-0000-000000000002",
-    awb: "CM-PHL-S0000312R",
-    partner_id: P_MANILA.id, partner_display_name: P_MANILA.name,
-    merchant_id: CURRENT_MERCHANT_ID,
-    size_class: "van", features: [], cargo_weight_kg: 280,
-    cargo_description: null,
-    pickup_label: "Quezon City Store", dropoff_label: "Antipolo Branch",
-    quoted_price_cents: 48000, status: "pending",
-    pickup_at: iso(addHours(now(), 2)), created_at: iso(addHours(now(), -0.4)),
-    picked_up_at: null, picked_up_by: null, pickup_notes: null,
-  },
-  {
-    id: "b9000000-0000-0000-0000-000000000003",
-    listing_id: "l2000000-0000-0000-0000-000000000001",
-    shipment_id: "s9000000-0000-0000-0000-000000000003",
-    awb: "CM-PHL-S0000287P",
-    partner_id: P_NORTH.id, partner_display_name: P_NORTH.name,
-    merchant_id: CURRENT_MERCHANT_ID,
-    size_class: "10ton", features: ["tail_lift"], cargo_weight_kg: 8400,
-    cargo_description: "Steel plates and structural materials",
-    pickup_label: "Valenzuela DC", dropoff_label: "La Union Warehouse",
-    quoted_price_cents: 1280000, status: "delivered",
-    pickup_at: iso(addHours(now(), -22)), created_at: iso(addHours(now(), -26)),
-    picked_up_at: iso(addHours(now(), -21.5)),
-    picked_up_by: "Driver E. Ocampo", pickup_notes: null,
-  },
-  {
-    id: "b9000000-0000-0000-0000-000000000004",
-    listing_id: "l3000000-0000-0000-0000-000000000001",
-    shipment_id: "s9000000-0000-0000-0000-000000000004",
-    awb: "CM-PHL-S0000296T",
-    partner_id: P_MANILA.id, partner_display_name: P_MANILA.name,
-    merchant_id: CURRENT_MERCHANT_ID,
-    size_class: "van", features: [], cargo_weight_kg: 420,
-    cargo_description: null,
-    pickup_label: "Makati Office",  dropoff_label: "Alabang Town Center",
-    quoted_price_cents: 82000, status: "disputed",
-    pickup_at: iso(addHours(now(), -8)), created_at: iso(addHours(now(), -12)),
-    picked_up_at: iso(addHours(now(), -7.5)),
-    picked_up_by: "Driver P. Mendoza", pickup_notes: null,
-  },
-];
-
-// Project a BusBooking (canonical cross-portal shape) into this portal's view.
-// Filters to the current merchant's own rows — RLS-equivalent for scope=merchant
-// (ADR-0013 §RLS extension: merchant scope sees only own merchant_id rows).
-function busToMerchantBooking(b: BusBooking): MerchantBooking | null {
-  if (b.merchant_id !== CURRENT_MERCHANT_ID) return null;
-  return {
-    id:                   b.id,
-    listing_id:           b.listing_id,
-    shipment_id:          b.shipment_id,
-    awb:                  b.awb,
-    partner_id:           b.partner_id,
-    partner_display_name: b.partner_display_name,
-    merchant_id:          b.merchant_id,
-    size_class:           b.size_class as SizeClass,
-    features:             (b.features ?? []) as VehicleFeature[],
-    cargo_weight_kg:      b.cargo_weight_kg,
-    cargo_description:    b.cargo_description ?? null,
-    pickup_label:         b.pickup_label,
-    dropoff_label:        b.dropoff_label,
-    quoted_price_cents:   b.quoted_price_cents,
-    status:               b.status,
-    pickup_at:            b.pickup_at,
-    created_at:           b.created_at,
-    picked_up_at:         b.picked_up_at,
-    picked_up_by:         b.picked_up_by,
-    pickup_notes:         b.pickup_notes,
-  };
-}
-
-// ── API stubs ─────────────────────────────────────────────────────────────────
-
-const latency = (ms = 220) => new Promise((r) => setTimeout(r, ms));
-
-export async function fetchAvailableListings(): Promise<MerchantListing[]> {
-  await latency();
-  return structuredClone(MOCK_LISTINGS);
-}
-
-export async function fetchMyBookings(): Promise<MerchantBooking[]> {
-  await latency();
-  // Merge seeded mocks with bus-originated bookings; dedupe by id (bus wins).
-  const busRows = readBus()
-    .map(busToMerchantBooking)
-    .filter((b): b is MerchantBooking => b !== null);
-  const byId = new Map<string, MerchantBooking>();
-  for (const b of MOCK_BOOKINGS) byId.set(b.id, b);
-  for (const b of busRows)      byId.set(b.id, b);  // bus overrides mock (status updates from partner accept/reject)
-  return [...byId.values()].sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-  );
-}
-
-export async function fetchMarketplaceStats(): Promise<MerchantMarketplaceStats> {
-  await latency(150);
-  const active = MOCK_LISTINGS.filter((l) => l.status === "active");
-  const avgRate = active.length === 0
-    ? 0
-    : Math.round(active.reduce((s, l) => s + l.per_km_cents, 0) / active.length);
-  // Active-bookings count must include bus-originated rows (new merchant bookings
-  // that haven't been propagated back into the mock seed).
-  const merged = await fetchMyBookings();
-  const activeBookings = merged.filter(
-    (b) => b.status === "pending" || b.status === "accepted" || b.status === "in_transit"
-  ).length;
-  return {
-    available_now:      active.length,
-    avg_rate_per_km:    avgRate,
-    partners_reachable: new Set(MOCK_LISTINGS.map((l) => l.partner_id)).size,
-    my_bookings_active: activeBookings,
-  };
-}
-
-// Re-export the bus subscriber so page code can live-refresh on cross-portal
-// updates (partner accepts → merchant sees status flip) without another import.
-export { subscribeToBus as subscribeToMarketplaceUpdates } from "./marketplace-bus";
-
-// Fetch the shipment receipt for a booking, if one has been issued. The merchant
-// only reads — the partner (or admin override) issues receipts.
-export async function fetchReceiptForBooking(bookingId: string): Promise<BusReceipt | null> {
-  return busFindReceiptByBookingId(bookingId);
+  available_now:      number;
+  avg_rate_per_km:    number;   // cents, mean across active listings
+  carriers_reachable: number;
+  my_bookings_active: number;
 }
 
 export interface CreateBookingInput {
-  listing_id:        string;
-  pickup_label:      string;
-  dropoff_label:     string;
-  cargo_weight_kg:   number;
-  pickup_at:         string;     // ISO-8601
-  cargo_description: string | null;
-  features:          VehicleFeature[];
-  // For recovery_truck / trailer: cargo vehicle / heavy-equipment details
-  cargo_dims_m?:     { length: number; width: number; height: number } | null;
-  cargo_vehicle_kg?: number | null;
+  listing_id:       string;
+  shipment_id:      string;
+  awb:              string;
+  consumer_name:    string;
+  consumer_phone?:  string;
+  pickup_label:     string;
+  dropoff_label:    string;
+  cargo_weight_kg:  number;
+  cargo_volume_m3?: number;
+  distance_km:      number;
+  pickup_at:        string;   // RFC 3339
+  payment_method:   BookingPaymentMethod;
 }
 
-// Booking creates a shipment via order-intake; zero-loss invariant preserved
-// (ADR-0013 §Booking flow). Stub synthesizes the AWB the way the real
-// CM-{TTT}-{S}{NNNNNNN}{C} generator will — partner_id/merchant_id are
-// denormalized onto the booking row for RLS, same as the real schema.
-// Also publishes to the marketplace-bus so partner-portal and admin-portal
-// see the new row on next refresh (stand-in for `marketplace.booking_created`
-// on Kafka — ADR-0013 §Booking flow).
-export async function createBooking(input: CreateBookingInput): Promise<MerchantBooking> {
-  await latency(320);
-  const listing = MOCK_LISTINGS.find((l) => l.id === input.listing_id);
-  if (!listing) throw new Error(`Listing not found: ${input.listing_id}`);
-  const quoted = listing.base_price_cents + listing.per_km_cents * 10;  // rough stub quote
-  const stamp  = Date.now();
-  const booking: MerchantBooking = {
-    id:                   `b9000000-0000-0000-0000-${stamp.toString().padStart(12, "0")}`,
-    listing_id:           listing.id,
-    shipment_id:          `s9000000-0000-0000-0000-${stamp.toString().padStart(12, "0")}`,
-    awb:                  `CM-PHL-S${String(stamp).slice(-7)}Z`,
-    partner_id:           listing.partner_id,
-    partner_display_name: listing.partner_display_name,
-    merchant_id:          CURRENT_MERCHANT_ID,
-    size_class:           listing.size_class,
-    features:             input.features.length > 0 ? input.features : listing.features,
-    cargo_weight_kg:      input.cargo_weight_kg,
-    cargo_description:    input.cargo_description,
-    pickup_label:         input.pickup_label,
-    dropoff_label:        input.dropoff_label,
-    quoted_price_cents:   quoted,
-    status:               "pending",
-    pickup_at:            input.pickup_at,
-    created_at:           iso(now()),
-    picked_up_at:         null,
-    picked_up_by:         null,
-    pickup_notes:         null,
-  };
-  MOCK_BOOKINGS.unshift(booking);
+export interface CreateBookingResult {
+  booking:      MarketplaceBooking;
+  checkout_url: string | null;
+}
 
-  // Publish to cross-portal bus (canonical superset shape).
-  busAppend({
-    id:                   booking.id,
-    listing_id:           booking.listing_id,
-    shipment_id:          booking.shipment_id,
-    awb:                  booking.awb,
-    partner_id:           booking.partner_id,
-    partner_display_name: booking.partner_display_name,
-    merchant_id:          CURRENT_MERCHANT_ID,
-    merchant_type:        "business",
-    merchant_display:     CURRENT_MERCHANT_NAME,
-    consumer_display:     CURRENT_MERCHANT_NAME,    // business booking — no masking needed
-    size_class:           booking.size_class,
-    features:             booking.features,
-    cargo_description:    booking.cargo_description,
-    cargo_weight_kg:      booking.cargo_weight_kg,
-    pickup_label:         booking.pickup_label,
-    dropoff_label:        booking.dropoff_label,
-    quoted_price_cents:   booking.quoted_price_cents,
-    status:               "pending",
-    pickup_at:            booking.pickup_at,
-    created_at:           booking.created_at,
-    updated_at:           booking.created_at,
-    picked_up_at:         null,
-    picked_up_by:         null,
-    pickup_notes:         null,
+/** A shipment the merchant can book a vehicle for (the fields the picker needs). */
+export interface BookableShipment {
+  id:             string;
+  awb:            string;
+  status:         string;
+  customer_name:  string;
+  customer_phone: string;
+  pickup_label:   string;
+  dropoff_label:  string;
+  weight_kg:      number | null;
+}
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+/** Carries the server's message for 4xx responses (BusinessRule texts are user-facing). */
+export class MarketplaceApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "MarketplaceApiError";
+    this.status = status;
+  }
+}
+
+async function expectOk(res: Response, what: string): Promise<void> {
+  if (res.ok) return;
+  let detail = "";
+  try {
+    const body = (await res.json()) as { error?: { message?: string } };
+    detail = body?.error?.message ?? "";
+  } catch {
+    // Non-JSON body (proxy error page, empty 502): fall through to the generic text.
+  }
+  // 4xx messages are written for the user; a 5xx is not worth quoting.
+  const message = res.status >= 400 && res.status < 500 && detail
+    ? detail
+    : `${what} failed (HTTP ${res.status}). Please try again.`;
+  throw new MarketplaceApiError(message, res.status);
+}
+
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
+// ── API ───────────────────────────────────────────────────────────────────────
+
+export async function fetchAvailableListings(
+  opts: { min_weight_kg?: number; size_class?: SizeClass; limit?: number } = {},
+): Promise<VehicleListing[]> {
+  const qs = new URLSearchParams();
+  if (opts.min_weight_kg !== undefined) qs.set("min_weight_kg", String(opts.min_weight_kg));
+  if (opts.size_class)                  qs.set("size_class", opts.size_class);
+  if (opts.limit !== undefined)         qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  const res = await authFetch(`${API_BASE}/v1/marketplace/available${q ? `?${q}` : ""}`);
+  await expectOk(res, "Loading listings");
+  const body = (await res.json()) as { listings?: VehicleListing[] };
+  return body.listings ?? [];
+}
+
+export async function fetchMyBookings(limit = 50, offset = 0): Promise<MarketplaceBooking[]> {
+  const res = await authFetch(
+    `${API_BASE}/v1/marketplace/my-bookings?limit=${limit}&offset=${offset}`,
+  );
+  await expectOk(res, "Loading bookings");
+  const body = (await res.json()) as { bookings?: MarketplaceBooking[] };
+  return body.bookings ?? [];
+}
+
+export async function createBooking(input: CreateBookingInput): Promise<CreateBookingResult> {
+  const res = await authFetch(`${API_BASE}/v1/marketplace/bookings`, {
+    method:  "POST",
+    headers: JSON_HEADERS,
+    body:    JSON.stringify(input),
   });
+  await expectOk(res, "Booking");
+  return (await res.json()) as CreateBookingResult;
+}
 
-  return booking;
+/** Only `pending` bookings can be cancelled; the server enforces it. */
+export async function cancelBooking(bookingId: string): Promise<MarketplaceBooking> {
+  const res = await authFetch(
+    `${API_BASE}/v1/marketplace/bookings/${encodeURIComponent(bookingId)}/cancel`,
+    { method: "POST" },
+  );
+  await expectOk(res, "Cancelling");
+  const body = (await res.json()) as { booking: MarketplaceBooking };
+  return body.booking;
+}
+
+/** Stats are derived from the listings and bookings already fetched; no extra route. */
+export function computeMarketplaceStats(
+  listings: VehicleListing[],
+  bookings: MarketplaceBooking[],
+): MerchantMarketplaceStats {
+  const active = listings.filter((l) => l.status === "active");
+  const avgRate = active.length === 0
+    ? 0
+    : Math.round(active.reduce((s, l) => s + l.per_km_cents, 0) / active.length);
+  return {
+    available_now:      active.length,
+    avg_rate_per_km:    avgRate,
+    carriers_reachable: new Set(active.map((l) => l.carrier_id)).size,
+    my_bookings_active: bookings.filter(
+      (b) => b.status === "pending" || b.status === "accepted" || b.status === "in_transit",
+    ).length,
+  };
+}
+
+// ── The merchant's own shipments (for the booking picker) ─────────────────────
+
+/** Terminal states: a vehicle cannot usefully be booked for these. */
+const NOT_BOOKABLE = new Set(["delivered", "cancelled", "returned", "failed"]);
+
+interface RawAddress {
+  line1?: string;
+  city?: string;
+  province?: string;
+}
+
+function addressLabel(a: RawAddress | string | null | undefined): string {
+  if (!a) return "";
+  if (typeof a === "string") return a;
+  return [a.line1, a.city, a.province].filter(Boolean).join(", ");
+}
+
+/**
+ * The merchant's shipments, from the same `GET /v1/shipments` the Shipments page
+ * reads. The AWB is `awb` (older rows: `tracking_number`); weight is grams.
+ */
+export async function fetchBookableShipments(): Promise<BookableShipment[]> {
+  const res = await authFetch(`${API_BASE}/v1/shipments?per_page=100`);
+  await expectOk(res, "Loading shipments");
+  const body = (await res.json()) as {
+    shipments?: Array<{
+      id:               string;
+      awb?:             string;
+      tracking_number?: string;
+      status:           string;
+      customer_name?:   string;
+      customer_phone?:  string;
+      origin?:          RawAddress | string;
+      destination?:     RawAddress | string;
+      weight?:          { grams?: number } | null;
+    }>;
+  };
+  return (body.shipments ?? [])
+    .filter((s) => !NOT_BOOKABLE.has(s.status))
+    .map((s) => ({
+      id:             s.id,
+      awb:            s.awb ?? s.tracking_number ?? "",
+      status:         s.status,
+      customer_name:  s.customer_name ?? "",
+      customer_phone: s.customer_phone ?? "",
+      pickup_label:   addressLabel(s.origin),
+      dropoff_label:  addressLabel(s.destination),
+      weight_kg:      s.weight?.grams ? Math.round((s.weight.grams / 1000) * 100) / 100 : null,
+    }))
+    .filter((s) => s.awb !== "");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export const SIZE_CLASS_LABEL: Record<SizeClass, string> = {
-  scooter_bicycle:    "Scooter / Bicycle",
-  motorcycle:         "Motorcycle",
-  sedan:              "Sedan",
-  van:                "Van",
-  "1ton":             "1 Ton",
-  "3ton":             "3 Ton",
-  "7ton":             "7 Ton",
-  "10ton":            "10 Ton",
-  trailer:            "Trailer",
-  refrigerated_truck: "Refrigerated Truck",
-  recovery_truck:     "Recovery Truck",
+  motorcycle:  "Motorcycle",
+  sedan:       "Sedan",
+  van:         "Cargo van",
+  l300:        "L300",
+  "6wheeler":  "6-wheeler",
+  "10wheeler": "10-wheeler",
+  trailer:     "Trailer",
 };
-
-export const SIZE_CLASS_CAPACITY_HINT: Record<SizeClass, string> = {
-  scooter_bicycle:    "Up to 20 kg · 0.1 m³",
-  motorcycle:         "Up to 30 kg · 0.25 m³",
-  sedan:              "Up to 200 kg · 1.2 m³",
-  van:                "Up to 800 kg · 5 m³",
-  "1ton":             "Up to 1,000 kg · 6 m³",
-  "3ton":             "Up to 3,000 kg · 14 m³",
-  "7ton":             "Up to 7,000 kg · 28 m³",
-  "10ton":            "Up to 10,000 kg · 40 m³",
-  trailer:            "Up to 25,000 kg · 80 m³ · Flatbed available",
-  refrigerated_truck: "Up to 5,000 kg · 22 m³ · Chiller / Freezer",
-  recovery_truck:     "Vehicle towing · capacity by cargo vehicle quote",
-};
-
-export const VEHICLE_FEATURE_LABEL: Record<VehicleFeature, string> = {
-  tail_lift: "Tail-lift",
-  chiller:   "Chiller (0–8 °C)",
-  freezer:   "Freezer (−18 °C)",
-};
-
-// ── AI Cargo Smart-Assignment ─────────────────────────────────────────────────
-
-export interface CargoSuggestion {
-  size_class:  SizeClass;
-  features:    VehicleFeature[];
-  reason:      string;
-  needs_dims:  boolean;   // trailer / recovery_truck — ask for L × W × H + kg
-  is_vehicle:  boolean;   // cargo is a vehicle — show vehicle-dims form
-}
-
-/**
- * Rule-based cargo analyser. Parses the customer's free-text cargo description
- * and returns the recommended size class, required features, and UX guidance.
- * Returns null when the description contains insufficient signal.
- *
- * Production path: replace with a Claude API call (streaming, with JSON tool-use
- * for structured output). Rules here serve as the offline fallback.
- */
-export function detectCargoRequirements(description: string): CargoSuggestion | null {
-  const d = description.toLowerCase();
-  if (!d.trim()) return null;
-
-  // ── Vehicle as cargo → Recovery Truck ──────────────────────────────────────
-  const vehicleCargoPattern =
-    /\b(car|sedan|suv|pickup truck|delivery van|bus|motorbike|motorcycle as cargo|automobile|auto for towing|tow|broken.?down vehicle|non.?running|disabled vehicle)\b/;
-  if (vehicleCargoPattern.test(d)) {
-    return {
-      size_class:  "recovery_truck",
-      features:    [],
-      reason:      "Vehicle detected as cargo — please provide the cargo vehicle's dimensions (L × W × H) and weight so we can size the right Recovery Truck.",
-      needs_dims:  true,
-      is_vehicle:  true,
-    };
-  }
-
-  // ── Frozen / meat → Refrigerated Truck + Freezer ───────────────────────────
-  const frozenPattern =
-    /\b(meat|beef|pork|chicken|lamb|goat|seafood|fish|shrimp|prawn|frozen|ice cream|gelato|cold chain|freezer|cryogenic)\b/;
-  if (frozenPattern.test(d)) {
-    return {
-      size_class: "refrigerated_truck",
-      features:   ["freezer"],
-      reason:     "Frozen or meat cargo detected — a Refrigerated Truck with Freezer (−18 °C) is required to maintain cold chain integrity.",
-      needs_dims: false,
-      is_vehicle: false,
-    };
-  }
-
-  // ── Chilled / fresh produce / dairy → Refrigerated Truck + Chiller ─────────
-  const chilledPattern =
-    /\b(dairy|milk|cheese|yogurt|butter|cream|fresh produce|vegetables?|fruits?|salad|flowers?|medicine|pharmaceuticals?|chilled|refrigerat|cold storage)\b/;
-  if (chilledPattern.test(d)) {
-    return {
-      size_class: "refrigerated_truck",
-      features:   ["chiller"],
-      reason:     "Chilled goods detected — a Refrigerated Truck with Chiller (0–8 °C) is recommended to preserve freshness.",
-      needs_dims: false,
-      is_vehicle: false,
-    };
-  }
-
-  // ── Heavy / irregular equipment → Trailer Flatbed ──────────────────────────
-  const heavyPattern =
-    /\b(machinery|heavy equipment|excavator|bulldozer|crane|backhoe|generator|transformer|boiler|vessel|tank|oversize|oversized|irregular|flatbed|structural steel|i.?beam|steel plate|precast|concrete slab)\b/;
-  if (heavyPattern.test(d)) {
-    return {
-      size_class: "trailer",
-      features:   [],
-      reason:     "Heavy or oversized cargo detected — a Trailer (Flatbed) is recommended. Please provide cargo dimensions (L × W × H) and total weight for an accurate quote.",
-      needs_dims: true,
-      is_vehicle: false,
-    };
-  }
-
-  return null;
-}
 
 export function formatCentsPhp(cents: number): string {
   return "₱" + (cents / 100).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",");

@@ -19,7 +19,7 @@ pub trait InvoiceRepository: Send + Sync {
     /// only shows B2B billing state.
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Invoice>>;
     async fn save(&self, invoice: &Invoice) -> anyhow::Result<()>;
-    /// Returns the most recently issued (status = 'issued') ShipmentCharges invoice
+    /// Returns the most recently issued (status = 'issued' or 'overdue') ShipmentCharges invoice
     /// for a merchant. Used by the weight-discrepancy consumer to find which invoice
     /// to append the surcharge adjustment to.
     async fn find_latest_issued_for_merchant(
@@ -30,7 +30,7 @@ pub trait InvoiceRepository: Send + Sync {
 
     /// Returns all invoices that:
     ///   - Have their `shipment_id` in the provided list, AND
-    ///   - Are in `draft` or `issued` status (i.e., not yet paid/voided).
+    ///   - Are in `draft`, `issued` or `overdue` status (i.e., not yet paid/voided).
     ///
     /// Used by the billing clearance gate at container departure to identify
     /// per-shipment invoices that are still outstanding.

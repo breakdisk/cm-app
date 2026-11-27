@@ -183,6 +183,9 @@ create_topic "logisticos.payments.cod.collected"       3 "$DEFAULT_RF" "$RETENTI
 create_topic "logisticos.payments.invoice.generated"   3 "$DEFAULT_RF" "$RETENTION_7D"
 create_topic "logisticos.hub.parcel.inducted"          3 "$DEFAULT_RF" "$RETENTION_7D"
 create_topic "logisticos.carrier.shipment.allocated"   3 "$DEFAULT_RF" "$RETENTION_7D"
+create_topic "logisticos.hub.load.changed"             3 "$DEFAULT_RF" "$RETENTION_7D"
+create_topic "logisticos.payments.invoice.overdue"     3 "$DEFAULT_RF" "$RETENTION_7D"
+create_topic "logisticos.order.shipment.sla_breached"  3 "$DEFAULT_RF" "$RETENTION_7D"
 
 # ── High-volume topics (12 partitions, 7-day retention) ──────────────────────
 log_section "High-volume topics  [12 partitions | ${DEFAULT_RF}x RF | 7d retention]"

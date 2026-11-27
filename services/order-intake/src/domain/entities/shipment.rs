@@ -87,6 +87,11 @@ pub struct Shipment {
     /// slot, which the cancellation policy does not price.
     #[serde(default)]
     pub scheduled_pickup_at: Option<DateTime<Utc>>,
+    /// The delivery promise as a deadline. `None` for shipments that predate
+    /// it, which never breach. Set once at creation; the sweep owns
+    /// `sla_breached_at`, which is not on this struct.
+    #[serde(default)]
+    pub sla_due_at: Option<DateTime<Utc>>,
     /// The cancellation policy version in force when the customer booked.
     #[serde(default)]
     pub cancellation_policy_version: Option<String>,
@@ -294,6 +299,7 @@ mod tests {
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
             scheduled_pickup_at:         None,
+            sla_due_at:                  None,
             cancellation_policy_version: None,
             booking_amount_cents:        None,
             booking_currency:            None,
@@ -338,6 +344,7 @@ mod tests {
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
             scheduled_pickup_at:         None,
+            sla_due_at:                  None,
             cancellation_policy_version: None,
             booking_amount_cents:        None,
             booking_currency:            None,
@@ -411,6 +418,7 @@ mod tests {
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
             scheduled_pickup_at:         None,
+            sla_due_at:                  None,
             cancellation_policy_version: None,
             booking_amount_cents:        None,
             booking_currency:            None,

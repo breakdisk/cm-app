@@ -96,6 +96,9 @@ impl DispatchBlock {
 }
 
 impl Courier {
+    /// A courier's id IS its identity user id (ADR-0015 collapse). Migration
+    /// 0010 enforces it with `CHECK couriers_id_is_user_id`, so a constructor
+    /// that minted its own id would build a row the database refuses.
     pub fn new(
         tenant_id: Uuid,
         user_id: Uuid,
@@ -105,7 +108,7 @@ impl Courier {
     ) -> Self {
         let now = Utc::now();
         Self {
-            id: Uuid::new_v4(),
+            id: user_id,
             tenant_id,
             user_id,
             first_name,

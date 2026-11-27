@@ -63,6 +63,15 @@ pub const CONSOLIDATION_PLAN_LOADED:     &str = "logisticos.hub.consolidation.pl
 
 // Invoice / Billing
 pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
+/// An invoice crossed another day past its due date. Payload: `payloads::InvoiceOverdue`.
+/// Consumed by business-logic (`PaymentOverdue` trigger).
+pub const INVOICE_OVERDUE:            &str = "logisticos.payments.invoice.overdue";
+
+// Threshold signals (consumed by business-logic triggers)
+/// A hub's load changed. Payload: `payloads::HubLoadChanged`.
+pub const HUB_LOAD_CHANGED:           &str = "logisticos.hub.load.changed";
+/// A shipment missed an SLA. Payload: `payloads::ShipmentSlaBreached`.
+pub const SHIPMENT_SLA_BREACHED:      &str = "logisticos.order.shipment.sla_breached";
 
 // Dispatch
 pub const ROUTE_CREATED:             &str = "logisticos.dispatch.route.created";
@@ -229,6 +238,7 @@ mod tests {
             WHATSAPP_INBOUND,
             TIER_CHANGED,
             HOME_NOTICE,
+            INVOICE_OVERDUE, HUB_LOAD_CHANGED, SHIPMENT_SLA_BREACHED,
         ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),

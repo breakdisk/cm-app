@@ -99,8 +99,8 @@ impl CustomsDutyConsumer {
         let mut billed = 0usize;
 
         for detail in d.details.iter().filter(|x| is_billable(x)) {
-            // Safe unwrap: is_billable guarantees merchant_id is Some.
-            let merchant_id = detail.merchant_id.unwrap();
+            // is_billable guarantees merchant_id is Some; skip defensively otherwise.
+            let Some(merchant_id) = detail.merchant_id else { continue };
             let awb = if detail.master_awb.is_empty() {
                 detail.tracking_number.clone()
             } else {

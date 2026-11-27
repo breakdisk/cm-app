@@ -6,17 +6,28 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use axum::{body::Body, http::{header, Method, Request, StatusCode}, Router};
 use serde_json::Value;
+use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 use uuid::Uuid;
-use logisticos_auth::{claims::Claims, jwt::JwtService};
+use logisticos_auth::{claims::Claims, jwt::JwtService, rbac::permissions};
+use logisticos_events::producer::KafkaProducer;
 use logisticos_types::TenantId;
 use logisticos_carrier::{
-    AppState, application::services::CarrierService,
+    AppState,
+    application::services::{CarrierService, MarketplaceService},
     domain::{
         entities::{Carrier, CarrierId, CarrierStatus, RateCard, SlaCommitment},
-        repositories::CarrierRepository,
+        repositories::{CarrierRepository, MarketplaceRepository, SlaRecordRepository},
+    },
+    infrastructure::{
+        adapters::AdapterRegistry,
+        db::{PgMarketplaceRepository, PgSlaRecordRepository},
+        external::ExternalCarrierClient,
+        messaging::CarrierPublisher,
     },
 };
+
+const JWT_SECRET: &str = "test-secret-key-for-logisticos-testing";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // In-memory repository
@@ -36,6 +47,10 @@ impl CarrierRepository for InMemoryCarrierRepo {
         let up = code.to_uppercase();
         Ok(self.store.lock().unwrap().values()
             .find(|c| &c.tenant_id == tid && c.code == up).cloned())
+    }
+    async fn find_by_contact_email(&self, tid: &TenantId, email: &str) -> anyhow::Result<Option<Carrier>> {
+        Ok(self.store.lock().unwrap().values()
+            .find(|c| &c.tenant_id == tid && c.contact_email.eq_ignore_ascii_case(email)).cloned())
     }
     async fn list(&self, tid: &TenantId, limit: i64, _offset: i64) -> anyhow::Result<Vec<Carrier>> {
         let s = self.store.lock().unwrap();
@@ -58,16 +73,64 @@ impl CarrierRepository for InMemoryCarrierRepo {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// An in-process Kafka broker. `CarrierPublisher` holds a concrete
+/// `KafkaProducer`, so without a broker every publish waits out its timeout.
+/// Leaked so the broker outlives the router built from it.
+fn mock_brokers() -> String {
+    let cluster = rdkafka::mocking::MockCluster::new(1).expect("mock kafka cluster");
+    let brokers = cluster.bootstrap_servers();
+    assert!(!brokers.is_empty());
+    Box::leak(Box::new(cluster));
+    brokers
+}
+
 fn make_app(repo: InMemoryCarrierRepo) -> Router {
-    let svc = Arc::new(CarrierService::new(Arc::new(repo)));
-    logisticos_carrier::api::http::router().with_state(AppState { carrier_svc: svc })
+    // `connect_lazy` never dials: the routes under test touch only the
+    // in-memory carrier repo, so these repositories are never queried.
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://test:test@127.0.0.1:1/test")
+        .expect("lazy pool");
+    let brokers = mock_brokers();
+    let kafka = Arc::new(KafkaProducer::new(&brokers).expect("kafka producer"));
+
+    let carrier_svc = Arc::new(CarrierService::new(
+        Arc::new(repo),
+        Arc::new(PgSlaRecordRepository::new(pool.clone())) as Arc<dyn SlaRecordRepository>,
+        Arc::new(CarrierPublisher::new(Arc::clone(&kafka))),
+        Arc::new(ExternalCarrierClient::new(None)),
+    ));
+    let marketplace_svc = Arc::new(MarketplaceService::new(
+        Arc::new(PgMarketplaceRepository::new(pool)) as Arc<dyn MarketplaceRepository>,
+        kafka,
+    ));
+    let jwt = Arc::new(JwtService::new(JWT_SECRET, 3600, 86400));
+    let state = AppState {
+        carrier_svc,
+        marketplace_svc,
+        jwt: Arc::clone(&jwt),
+        adapter_registry: Arc::new(AdapterRegistry::new()),
+        storage: None,
+        booking_repo: None,
+    };
+    // Mounted exactly as bootstrap does: `require_auth` over the /v1 router.
+    logisticos_carrier::api::http::router()
+        .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+        .with_state(state)
 }
 
 fn make_jwt(tid: Uuid) -> String {
-    let svc = JwtService::new("test-secret-key-for-logisticos-testing");
-    let c = Claims::new(Uuid::new_v4(), tid,
-        vec!["carriers:read".into(), "carriers:manage".into()]);
-    svc.encode(&c).unwrap()
+    let svc = JwtService::new(JWT_SECRET, 3600, 86400);
+    let c = Claims::new(
+        Uuid::new_v4(),
+        tid,
+        "test".into(),
+        "starter".into(),
+        "ops@example.com".into(),
+        vec!["admin".into()],
+        vec![permissions::CARRIERS_READ.into(), permissions::CARRIERS_MANAGE.into()],
+        3600,
+    );
+    svc.issue_access_token(c).unwrap()
 }
 
 fn bearer(t: &str) -> String { format!("Bearer {}", t) }

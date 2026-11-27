@@ -1277,19 +1277,22 @@ async fn get_hub_by_id(State(s): State<AppState>, claims: AuthClaims, Path(id): 
 
 async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<InductParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.induct_parcel(cmd).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.induct_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(induction)))
 }
 
 async fn sort(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<SortParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.sort_parcel(cmd).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.sort_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }
 
 async fn dispatch(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<Uuid>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let induction = s.svc.dispatch_parcel(id).await?;
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let induction = s.svc.dispatch_parcel(&tenant_id, id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
 }
 
@@ -1956,7 +1959,6 @@ pub async fn run() -> anyhow::Result<()> {
     let spec_repo      = Arc::new(PgTruckSpecRepository { pool: pool.clone() });
     let plan_repo      = Arc::new(PgConsolidationPlanRepository { pool: pool.clone() });
     let hub_broadcaster = HubBroadcaster::new();
-    let svc = Arc::new(HubService::new(hub_repo, induction_repo));
     let consolidation_svc = Arc::new(ConsolidationService::new(
         spec_repo, plan_repo, hub_broadcaster.clone(),
     ));
@@ -1965,6 +1967,7 @@ pub async fn run() -> anyhow::Result<()> {
         KafkaProducer::new(&cfg.kafka.brokers)
             .context("failed to create Kafka producer for hub-ops")?,
     );
+    let svc = Arc::new(HubService::new(hub_repo, induction_repo).with_events(kafka.clone()));
     let pallet_repo    = Arc::new(PgPalletRepository::new(pool.clone()));
     let pallet_ctr_repo = Arc::new(PgPalletContainerRepository::new(pool.clone()));
     let pallet_svc     = Arc::new(PalletService::new(pallet_repo, pallet_ctr_repo.clone(), kafka.clone()));

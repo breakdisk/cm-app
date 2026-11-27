@@ -40,12 +40,12 @@ impl BillingPeriod {
             .expect("invalid month");
         // Last day of the month
         let end = if month == 12 {
-            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap()
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)
         } else {
-            NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap()
+            NaiveDate::from_ymd_opt(year, month + 1, 1)
         }
-        .pred_opt()
-        .unwrap();
+        .and_then(|first_of_next| first_of_next.pred_opt())
+        .expect("first day of the following month is within chrono's supported date range");
         Self { start, end }
     }
 
@@ -306,10 +306,19 @@ impl Invoice {
 
     /// Transition Issued → Overdue if past due_at and not yet paid.
     pub fn check_overdue(&mut self) {
-        if self.status == InvoiceStatus::Issued && Utc::now() > self.due_at {
+        let now = Utc::now();
+        if self.is_past_due(now) {
             self.status     = InvoiceStatus::Overdue;
-            self.updated_at = Utc::now();
+            self.updated_at = now;
         }
+    }
+
+    /// The overdue rule, with the clock passed in: an `Issued` invoice whose
+    /// `due_at` is strictly before `now`. The overdue sweep's SQL
+    /// (`status = 'issued' AND due_at < $now`) must agree with this exactly;
+    /// `overdue_sweep` has a test pinning that boundary.
+    pub fn is_past_due(&self, now: DateTime<Utc>) -> bool {
+        self.status == InvoiceStatus::Issued && now > self.due_at
     }
 
     /// Business rule: cannot cancel a paid invoice.
@@ -542,6 +551,33 @@ mod tests {
         assert_eq!(inv.adjustments_total(), php(1000));
         assert_eq!(inv.vat_amount(),        php(1140));
         assert_eq!(inv.total_due(),         php(10640));
+    }
+
+    #[test]
+    fn is_past_due_boundary_is_strict() {
+        let mut inv = make_invoice();
+        inv.add_line_item(InvoiceLineItem::for_awb(
+            ChargeType::BaseFreight, make_awb(), "Freight".into(), 1, php(8500),
+        )).unwrap();
+        inv.issue().unwrap();
+        let due = inv.due_at;
+        assert!(!inv.is_past_due(due), "due exactly now is not yet overdue");
+        assert!(inv.is_past_due(due + chrono::Duration::seconds(1)));
+        assert!(!inv.is_past_due(due - chrono::Duration::seconds(1)));
+    }
+
+    #[test]
+    fn overdue_invoice_can_still_be_paid() {
+        let mut inv = make_invoice();
+        inv.add_line_item(InvoiceLineItem::for_awb(
+            ChargeType::BaseFreight, make_awb(), "Freight".into(), 1, php(8500),
+        )).unwrap();
+        inv.issue().unwrap();
+        inv.status = InvoiceStatus::Overdue;
+        assert!(!inv.is_past_due(inv.due_at + chrono::Duration::days(9)), "only Issued can become overdue");
+        inv.mark_paid().unwrap();
+        assert_eq!(inv.status, InvoiceStatus::Paid);
+        assert!(inv.paid_at.is_some());
     }
 
     #[test]

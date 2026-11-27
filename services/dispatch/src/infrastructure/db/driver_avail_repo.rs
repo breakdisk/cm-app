@@ -40,7 +40,7 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
         // stop_count comes from dispatch.route_stops for loaded-driver awareness.
         // Use driver_latest_locations view (DISTINCT ON driver_id, ordered by recorded_at DESC)
         // to get each driver's most recent GPS fix. All FK references use d.user_id (identity
-        // user UUID) — drivers.id may differ for API-registered drivers.
+        // user UUID); driver_ops migration 0014 enforces drivers.id = user_id.
         let rows = sqlx::query_as::<_, AvailableDriverRow>(
             r#"
             SELECT

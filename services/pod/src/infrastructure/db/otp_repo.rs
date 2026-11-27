@@ -22,6 +22,8 @@ struct OtpRow {
     expires_at:      chrono::DateTime<chrono::Utc>,
     created_at:      chrono::DateTime<chrono::Utc>,
     failed_attempts: i32,
+    delivered_via:   Option<String>,
+    delivered_at:    Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl From<OtpRow> for OtpCode {
@@ -36,6 +38,8 @@ impl From<OtpRow> for OtpCode {
             expires_at: r.expires_at,
             created_at: r.created_at,
             failed_attempts: r.failed_attempts,
+            delivered_via: r.delivered_via,
+            delivered_at: r.delivered_at,
         }
     }
 }
@@ -45,7 +49,7 @@ impl OtpRepository for PgOtpRepository {
     async fn find_active_by_shipment(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<OtpCode>> {
         let row = sqlx::query_as::<_, OtpRow>(
             r#"SELECT id, tenant_id, shipment_id, phone, code_hash, is_used, expires_at, created_at,
-                      failed_attempts
+                      failed_attempts, delivered_via, delivered_at
                FROM pod.otp_codes
                WHERE shipment_id = $1
                  AND tenant_id = $2
@@ -67,8 +71,9 @@ impl OtpRepository for PgOtpRepository {
         // would undo guesses counted by a concurrent request.
         sqlx::query(
             r#"INSERT INTO pod.otp_codes
-                   (id, tenant_id, shipment_id, phone, code_hash, is_used, expires_at, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                   (id, tenant_id, shipment_id, phone, code_hash, is_used, expires_at, created_at,
+                    delivered_via, delivered_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                ON CONFLICT (id) DO UPDATE SET
                    is_used = EXCLUDED.is_used"#,
         )
@@ -80,6 +85,8 @@ impl OtpRepository for PgOtpRepository {
         .bind(otp.is_used)
         .bind(otp.expires_at)
         .bind(otp.created_at)
+        .bind(&otp.delivered_via)
+        .bind(otp.delivered_at)
         .execute(&self.pool)
         .await?;
         Ok(())

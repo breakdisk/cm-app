@@ -520,6 +520,17 @@ impl MarketplaceRepository for PgMarketplaceRepository {
         rows.into_iter().map(VehicleListing::try_from).collect()
     }
 
+    async fn list_listings_by_tenant(
+        &self, tenant_id: Uuid, limit: i64, offset: i64,
+    ) -> anyhow::Result<Vec<VehicleListing>> {
+        let rows = sqlx::query_as::<_, VehicleListingRow>(
+            &format!(
+                "SELECT {LISTING_COLS} FROM carrier.vehicle_listings                  WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            ),
+        ).bind(tenant_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        rows.into_iter().map(VehicleListing::try_from).collect()
+    }
+
     async fn update_listing(&self, l: &VehicleListing) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE carrier.vehicle_listings SET \
@@ -594,6 +605,17 @@ impl MarketplaceRepository for PgMarketplaceRepository {
         rows.into_iter().map(MarketplaceBooking::try_from).collect()
     }
 
+    async fn list_bookings_by_tenant(
+        &self, tenant_id: Uuid, limit: i64, offset: i64,
+    ) -> anyhow::Result<Vec<MarketplaceBooking>> {
+        let rows = sqlx::query_as::<_, MarketplaceBookingRow>(
+            &format!(
+                "SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings                  WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            ),
+        ).bind(tenant_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        rows.into_iter().map(MarketplaceBooking::try_from).collect()
+    }
+
     async fn save_booking(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {
         // The payment columns join the mutable set: the authorized consumer,
         // accept's capture and reject's void all advance them on an
@@ -613,6 +635,27 @@ impl MarketplaceRepository for PgMarketplaceRepository {
         .bind(b.id)
         .execute(&self.pool).await?;
         Ok(())
+    }
+
+    async fn transition_booking(
+        &self,
+        b: &MarketplaceBooking,
+        expected_status: &crate::domain::entities::BookingStatus,
+        expected_payment: crate::domain::entities::BookingPaymentStatus,
+    ) -> anyhow::Result<bool> {
+        // Same mutable column set as `save_booking`, guarded on the state the
+        // caller read. `rows_affected() == 0` means the booking moved first.
+        let res = sqlx::query(
+            "UPDATE carrier.marketplace_bookings SET              status = $1, picked_up_at = $2, picked_up_by = $3, pickup_notes = $4,              updated_at = $5, payment_status = $6, payment_intent_id = $7,              payment_authorized_at = $8              WHERE id = $9 AND tenant_id = $10 AND status = $11 AND payment_status = $12",
+        )
+        .bind(b.status.as_str()).bind(b.picked_up_at).bind(&b.picked_up_by)
+        .bind(&b.pickup_notes).bind(b.updated_at)
+        .bind(b.payment_status.as_str()).bind(b.payment_intent_id)
+        .bind(b.payment_authorized_at)
+        .bind(b.id).bind(b.tenant_id)
+        .bind(expected_status.as_str()).bind(expected_payment.as_str())
+        .execute(&self.pool).await?;
+        Ok(res.rows_affected() == 1)
     }
 
     async fn save_booking_payment_reference(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {

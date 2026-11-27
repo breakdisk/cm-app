@@ -145,7 +145,7 @@ fn simple_ctx(tenant_id: Uuid) -> RuleContext {
 async fn rule_repo_empty_initially() {
     let repo = RuleRepository::new(vec![]);
     let tid = tenant_id();
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     assert!(rules.is_empty());
 }
 
@@ -154,7 +154,7 @@ async fn rule_repo_returns_matching_rule() {
     let tid = tenant_id();
     let rule = make_rule(tid, RuleTrigger::DeliveryFailed, vec![], vec![], 10);
     let repo = RuleRepository::new(vec![rule.clone()]);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].id, rule.id);
 }
@@ -165,7 +165,7 @@ async fn rule_repo_excludes_inactive_rules() {
     let mut rule = make_rule(tid, RuleTrigger::DeliveryFailed, vec![], vec![], 10);
     rule.is_active = false;
     let repo = RuleRepository::new(vec![rule]);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     assert!(rules.is_empty());
 }
 
@@ -176,7 +176,7 @@ async fn rule_repo_sorts_by_priority_asc() {
     let r2 = make_rule(tid, RuleTrigger::DeliveryFailed, vec![], vec![], 5);
     let r3 = make_rule(tid, RuleTrigger::DeliveryFailed, vec![], vec![], 15);
     let repo = RuleRepository::new(vec![r1.clone(), r2.clone(), r3.clone()]);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     assert_eq!(rules.len(), 3);
     assert_eq!(rules[0].id, r2.id); // priority=5 first
     assert_eq!(rules[1].id, r3.id); // priority=15
@@ -190,7 +190,7 @@ async fn rule_repo_excludes_different_tenant_rules() {
     let rule_t2 = make_rule(t2, RuleTrigger::DeliveryFailed, vec![], vec![], 10);
     let repo = RuleRepository::new(vec![rule_t1.clone(), rule_t2]);
     // Querying for t1 should only return t1's rule
-    let rules = repo.rules_for_topic(t1, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(t1, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].id, rule_t1.id);
 }
@@ -202,8 +202,8 @@ async fn rule_repo_platform_rules_match_all_tenants() {
     let platform_rule = make_rule(Uuid::nil(), RuleTrigger::DeliveryFailed, vec![], vec![], 1);
     let repo = RuleRepository::new(vec![platform_rule.clone()]);
     // Both t1 and t2 see the platform rule
-    let rules_t1 = repo.rules_for_topic(t1, "logisticos.driver.delivery.failed").await;
-    let rules_t2 = repo.rules_for_topic(t2, "logisticos.driver.delivery.failed").await;
+    let rules_t1 = repo.rules_for_topic(t1, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
+    let rules_t2 = repo.rules_for_topic(t2, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     assert_eq!(rules_t1.len(), 1);
     assert_eq!(rules_t2.len(), 1);
 }
@@ -213,13 +213,13 @@ async fn rule_repo_reload_replaces_rules() {
     let tid = tenant_id();
     let r1 = make_rule(tid, RuleTrigger::DeliveryFailed, vec![], vec![], 10);
     let repo = RuleRepository::new(vec![r1]);
-    assert_eq!(repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await.len(), 1);
+    assert_eq!(repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await.len(), 1);
 
     // Reload with new rules
     let r2 = make_rule(tid, RuleTrigger::DeliveryFailed, vec![], vec![], 5);
     let r3 = make_rule(tid, RuleTrigger::DeliveryFailed, vec![], vec![], 15);
     repo.reload(vec![r2, r3]).await;
-    assert_eq!(repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await.len(), 2);
+    assert_eq!(repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await.len(), 2);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -232,9 +232,9 @@ async fn delivery_completed_matches_correct_topic() {
     let rule = make_rule(tid, RuleTrigger::DeliveryCompleted, vec![], vec![], 10);
     let repo = RuleRepository::new(vec![rule.clone()]);
     // Wrong topic
-    assert!(repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await.is_empty());
+    assert!(repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await.is_empty());
     // Correct topic
-    assert_eq!(repo.rules_for_topic(tid, "logisticos.driver.delivery.completed").await.len(), 1);
+    assert_eq!(repo.rules_for_topic(tid, "logisticos.driver.delivery.completed", &serde_json::json!({})).await.len(), 1);
 }
 
 #[tokio::test]
@@ -242,7 +242,7 @@ async fn shipment_created_matches_correct_topic() {
     let tid = tenant_id();
     let rule = make_rule(tid, RuleTrigger::ShipmentCreated, vec![], vec![], 10);
     let repo = RuleRepository::new(vec![rule]);
-    let rules = repo.rules_for_topic(tid, "logisticos.order.shipment.created").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.order.shipment.created", &serde_json::json!({})).await;
     assert_eq!(rules.len(), 1);
 }
 
@@ -251,7 +251,7 @@ async fn delivery_attempted_matches_correct_topic() {
     let tid = tenant_id();
     let rule = make_rule(tid, RuleTrigger::DeliveryAttempted { attempts: 2 }, vec![], vec![], 10);
     let repo = RuleRepository::new(vec![rule]);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.attempted").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.attempted", &serde_json::json!({})).await;
     assert_eq!(rules.len(), 1);
 }
 
@@ -568,7 +568,7 @@ async fn end_to_end_delivery_failed_fires_notification() {
     });
     let ctx = build_context(tid, "logisticos.driver.delivery.failed", &payload);
 
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     assert_eq!(rules.len(), 1);
 
     for rule in &rules {
@@ -595,7 +595,7 @@ async fn end_to_end_condition_failure_prevents_execution() {
     // Event has attempt_number=3 — condition fails
     let payload = serde_json::json!({ "attempt_number": 3 });
     let ctx = build_context(tid, "logisticos.driver.delivery.failed", &payload);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
 
     for rule in &rules {
         if rule.conditions_met(&ctx) {
@@ -618,7 +618,7 @@ async fn end_to_end_multiple_rules_fire_in_priority_order() {
 
     let repo = RuleRepository::new(vec![r1, r2]);
     let ctx = simple_ctx(tid);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
 
     assert_eq!(rules[0].priority, 5);  // lower priority number = executed first
     assert_eq!(rules[1].priority, 20);
@@ -641,7 +641,7 @@ async fn end_to_end_inactive_rules_not_fired() {
 
     let repo = RuleRepository::new(vec![rule]);
     let ctx = simple_ctx(tid);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed").await;
+    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.failed", &serde_json::json!({})).await;
     // Empty — inactive rules excluded at repo level
     assert!(rules.is_empty());
     for rule in &rules {

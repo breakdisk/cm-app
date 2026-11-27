@@ -85,7 +85,7 @@ pub fn attempts_left(max_attempts: i32, attempts_used: i32) -> i32 {
 /// handler's decision — a driver never does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IssuedPin {
-    New { otp_id: uuid::Uuid, code: String },
+    New { otp_id: uuid::Uuid, code: String, via: Option<&'static str> },
     KeptLive { otp_id: uuid::Uuid },
 }
 
@@ -113,9 +113,138 @@ pub fn issue_decision(live_pin_failed_attempts: Option<i32>, reissue: bool, max_
     }
 }
 
+/// The state of the shipment's live PIN, as far as the submit path cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LivePinState {
+    /// The PIN is known to have reached the recipient (SMS, or shown to a non-driver caller).
+    pub delivered: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinRequirement {
+    /// A PIN was supplied: verify it.
+    Check,
+    /// The recipient holds a PIN and none was supplied: refuse.
+    RefuseMissing,
+    /// A PIN exists but never reached the recipient: accept photo evidence instead.
+    Waive,
+    /// No live PIN exists at all and none was supplied: refuse. Whether a PIN is
+    /// ever issued must not be the driver's choice, so absence never waives.
+    RefuseNotIssued,
+    /// Policy does not require a PIN.
+    NotRequired,
+}
+
+/// Whether a submit needs a PIN. A PIN is demanded if it reached the recipient;
+/// only an existing PIN whose SMS failed is waived. No PIN at all is refused.
+pub fn pin_requirement(policy_required: bool, supplied: bool, live_pin: Option<LivePinState>) -> PinRequirement {
+    if supplied {
+        PinRequirement::Check
+    } else if !policy_required {
+        PinRequirement::NotRequired
+    } else {
+        match live_pin {
+            None => PinRequirement::RefuseNotIssued,
+            Some(p) if p.delivered => PinRequirement::RefuseMissing,
+            Some(_) => PinRequirement::Waive,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupersedeDecision {
+    Allow,
+    Refuse,
+}
+
+/// Whether a freshly issued PIN may replace the live one. A new PIN that reached
+/// nobody must not shadow one the recipient holds: the newest row wins, so it
+/// would turn a refused delivery into a waivable one.
+pub fn supersede_decision(live_pin: Option<LivePinState>, new_pin_delivered: bool) -> SupersedeDecision {
+    if live_pin.is_some_and(|p| p.delivered) && !new_pin_delivered {
+        SupersedeDecision::Refuse
+    } else {
+        SupersedeDecision::Allow
+    }
+}
+
+/// Maps a PIN's recorded `delivered_via` to its live state. Any recorded
+/// channel, including `"legacy"` (rows backfilled by migration 0010), means
+/// the recipient is presumed to hold the PIN; only NULL means it never arrived.
+pub fn live_pin_state(delivered_via: Option<&str>) -> LivePinState {
+    LivePinState { delivered: delivered_via.is_some() }
+}
+
+/// How a newly issued PIN reached the recipient, if it did.
+pub fn delivered_via(sms_sent: bool, reveal_to_caller: bool) -> Option<&'static str> {
+    if sms_sent {
+        Some("sms")
+    } else if reveal_to_caller {
+        Some("response")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const D: Option<LivePinState> = Some(LivePinState { delivered: true });
+    const U: Option<LivePinState> = Some(LivePinState { delivered: false });
+
+    #[test]
+    fn a_supplied_pin_is_always_checked() {
+        for policy in [true, false] {
+            for live in [None, U, D] {
+                assert_eq!(pin_requirement(policy, true, live), PinRequirement::Check);
+            }
+        }
+    }
+
+    #[test]
+    fn no_pin_is_needed_when_policy_does_not_require_one() {
+        for live in [None, U, D] {
+            assert_eq!(pin_requirement(false, false, live), PinRequirement::NotRequired);
+        }
+    }
+
+    #[test]
+    fn a_missing_pin_is_refused_only_if_the_recipient_received_one() {
+        assert_eq!(pin_requirement(true, false, D), PinRequirement::RefuseMissing);
+        assert_eq!(pin_requirement(true, false, U), PinRequirement::Waive);
+        assert_eq!(pin_requirement(true, false, None), PinRequirement::RefuseNotIssued);
+    }
+
+    #[test]
+    fn any_recorded_channel_counts_as_delivered_including_legacy() {
+        for via in ["sms", "response", "legacy"] {
+            assert!(live_pin_state(Some(via)).delivered, "{via}");
+            assert_eq!(pin_requirement(true, false, Some(live_pin_state(Some(via)))), PinRequirement::RefuseMissing);
+        }
+        assert!(!live_pin_state(None).delivered);
+        assert_eq!(pin_requirement(true, false, Some(live_pin_state(None))), PinRequirement::Waive);
+        assert_eq!(pin_requirement(true, false, None), PinRequirement::RefuseNotIssued);
+    }
+
+    #[test]
+    fn an_undelivered_pin_never_replaces_a_delivered_one() {
+        use SupersedeDecision::{Allow, Refuse};
+        assert_eq!(supersede_decision(D, false), Refuse);
+        assert_eq!(supersede_decision(D, true), Allow);
+        assert_eq!(supersede_decision(None, false), Allow);
+        assert_eq!(supersede_decision(U, false), Allow);
+        assert_eq!(supersede_decision(U, true), Allow);
+        assert_eq!(supersede_decision(None, true), Allow);
+    }
+
+    #[test]
+    fn delivered_via_picks_sms_then_response_then_nothing() {
+        assert_eq!(delivered_via(true, false), Some("sms"));
+        assert_eq!(delivered_via(true, true), Some("sms"));
+        assert_eq!(delivered_via(false, true), Some("response"));
+        assert_eq!(delivered_via(false, false), None);
+    }
 
     #[test]
     fn the_default_policy_requires_a_pin_that_outlives_sea_freight() {

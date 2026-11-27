@@ -15,6 +15,50 @@ use crate::domain::{
 };
 use crate::infrastructure::messaging::ComplianceProducer;
 
+/// Who is putting a document on a profile. Recorded on the audit row, so a
+/// document an admin submitted for a courier with no app is never attributed to
+/// the courier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentActor {
+    Driver(Uuid),
+    Admin(Uuid),
+}
+
+impl DocumentActor {
+    pub fn id(self) -> Uuid {
+        match self {
+            Self::Driver(id) | Self::Admin(id) => id,
+        }
+    }
+
+    pub fn actor_type(self) -> &'static str {
+        match self {
+            Self::Driver(_) => "driver",
+            Self::Admin(_)  => "admin",
+        }
+    }
+}
+
+/// The `doc_submitted` audit row for one submission.
+fn submission_audit_entry(
+    tenant_id:  Uuid,
+    profile_id: Uuid,
+    doc_id:     Uuid,
+    actor:      DocumentActor,
+) -> ComplianceAuditLog {
+    ComplianceAuditLog {
+        id:                    Uuid::new_v4(),
+        tenant_id,
+        compliance_profile_id: profile_id,
+        document_id:           Some(doc_id),
+        event_type:            "doc_submitted".into(),
+        actor_id:              actor.id(),
+        actor_type:            actor.actor_type().into(),
+        notes:                 None,
+        created_at:            Utc::now(),
+    }
+}
+
 pub struct ComplianceService {
     pub profiles:  Arc<dyn ComplianceProfileRepository>,
     pub documents: Arc<dyn DriverDocumentRepository>,
@@ -187,7 +231,7 @@ impl ComplianceService {
         issue_date:       Option<chrono::NaiveDate>,
         expiry_date:      Option<chrono::NaiveDate>,
         file_url:         String,
-        actor_id:         Uuid,
+        actor:            DocumentActor,
     ) -> anyhow::Result<DriverDocument> {
         let profile = self.profiles.find_by_id(profile_id).await?
             .context("Profile not found")?;
@@ -220,17 +264,9 @@ impl ComplianceService {
         };
         self.documents.save(&doc).await?;
 
-        self.audit.append(&ComplianceAuditLog {
-            id:                    Uuid::new_v4(),
-            tenant_id:             profile.tenant_id,
-            compliance_profile_id: profile_id,
-            document_id:           Some(doc.id),
-            event_type:            "doc_submitted".into(),
-            actor_id,
-            actor_type:            "driver".into(),
-            notes:                 None,
-            created_at:            Utc::now(),
-        }).await?;
+        self.audit.append(&submission_audit_entry(
+            profile.tenant_id, profile_id, doc.id, actor,
+        )).await?;
 
         self.recompute_and_publish(&profile).await?;
         Ok(doc)
@@ -288,10 +324,14 @@ impl ComplianceService {
     }
 
     /// Admin manually suspends an entity.
+    ///
+    /// `tenant_id` scopes the load: a profile in another tenant is "not found",
+    /// so no caller can suspend one by id.
     pub async fn suspend(
-        &self, profile_id: Uuid, admin_id: Uuid, reason: Option<String>,
+        &self, tenant_id: Uuid, profile_id: Uuid, admin_id: Uuid, reason: Option<String>,
     ) -> anyhow::Result<()> {
         let mut profile = self.profiles.find_by_id(profile_id).await?
+            .filter(|p| p.tenant_id == tenant_id)
             .context("Profile not found")?;
         let old_status = profile.overall_status.as_str().to_owned();
         profile.overall_status = ComplianceStatus::Suspended;
@@ -322,10 +362,13 @@ impl ComplianceService {
     }
 
     /// Admin reinstates a suspended entity.
+    ///
+    /// `tenant_id` scopes the load, as in `suspend`.
     pub async fn reinstate(
-        &self, profile_id: Uuid, admin_id: Uuid, reason: Option<String>,
+        &self, tenant_id: Uuid, profile_id: Uuid, admin_id: Uuid, reason: Option<String>,
     ) -> anyhow::Result<()> {
         let mut profile = self.profiles.find_by_id(profile_id).await?
+            .filter(|p| p.tenant_id == tenant_id)
             .context("Profile not found")?;
 
         // Set transitional status so recompute_and_publish guard doesn't short-circuit.
@@ -406,13 +449,25 @@ impl ComplianceService {
             updated.updated_at = Utc::now();
             self.profiles.save(&updated).await?;
 
-            self.producer.publish_status_changed(profile.tenant_id, ComplianceStatusChangedPayload {
+            // The status is already saved. A broker failure here must not fail
+            // a request whose database change committed, so it is logged with
+            // enough to replay it (the backfill script re-announces).
+            if let Err(e) = self.producer.publish_status_changed(profile.tenant_id, ComplianceStatusChangedPayload {
                 entity_type:   profile.entity_type.clone(),
                 entity_id:     profile.entity_id,
                 old_status,
                 new_status:    new_status.as_str().to_owned(),
                 is_assignable: new_status.is_assignable(),
-            }).await?;
+            }).await {
+                tracing::error!(
+                    error = %e,
+                    tenant_id = %profile.tenant_id,
+                    profile_id = %profile.id,
+                    entity_id = %profile.entity_id,
+                    new_status = %new_status.as_str(),
+                    "compliance status saved but compliance.status_changed was not published; downstream tiers hold the old verdict until it is replayed",
+                );
+            }
         }
         Ok(())
     }
@@ -484,6 +539,24 @@ mod tests {
             created_at:       Utc::now(),
             updated_at:       Utc::now(),
         }
+    }
+
+    #[test]
+    fn a_courier_submission_is_audited_as_a_driver() {
+        let (t, p, d, u) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let e = submission_audit_entry(t, p, d, DocumentActor::Driver(u));
+        assert_eq!(e.actor_type, "driver");
+        assert_eq!(e.actor_id, u);
+        assert_eq!((e.tenant_id, e.compliance_profile_id, e.document_id), (t, p, Some(d)));
+        assert_eq!(e.event_type, "doc_submitted");
+    }
+
+    #[test]
+    fn an_on_behalf_submission_is_audited_as_the_admin() {
+        let (t, p, d, a) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let e = submission_audit_entry(t, p, d, DocumentActor::Admin(a));
+        assert_eq!(e.actor_type, "admin");
+        assert_eq!(e.actor_id, a);
     }
 
     #[test]
@@ -559,5 +632,99 @@ mod tests {
             submitted_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }
+    }
+
+    // --- tenant scoping of suspend / reinstate ---------------------------
+
+    use std::sync::Mutex;
+    use async_trait::async_trait;
+    use crate::domain::entities::DocumentType;
+    use crate::domain::repositories::PendingReviewItem;
+
+    /// Holds one profile and counts every write, so a refusal can be shown to
+    /// have mutated nothing.
+    struct Profiles { row: ComplianceProfile, saves: Mutex<u32> }
+
+    #[async_trait]
+    impl ComplianceProfileRepository for Profiles {
+        async fn find_by_entity(&self, _: Uuid, _: &str, _: Uuid)
+            -> anyhow::Result<Option<ComplianceProfile>> { Ok(None) }
+        async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ComplianceProfile>> {
+            Ok((id == self.row.id).then(|| self.row.clone()))
+        }
+        async fn list_by_tenant(&self, _: Uuid, _: Option<&str>, _: i64, _: i64)
+            -> anyhow::Result<Vec<ComplianceProfile>> { Ok(vec![]) }
+        async fn save(&self, _: &ComplianceProfile) -> anyhow::Result<()> {
+            *self.saves.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    struct NoDocs;
+    #[async_trait]
+    impl DriverDocumentRepository for NoDocs {
+        async fn find_by_id(&self, _: Uuid) -> anyhow::Result<Option<DriverDocument>> { Ok(None) }
+        async fn list_by_profile(&self, _: Uuid) -> anyhow::Result<Vec<DriverDocument>> { Ok(vec![]) }
+        async fn find_expiring(&self, _: i32) -> anyhow::Result<Vec<DriverDocument>> { Ok(vec![]) }
+        async fn find_expired(&self) -> anyhow::Result<Vec<DriverDocument>> { Ok(vec![]) }
+        async fn list_pending_review(&self, _: Option<Uuid>, _: i64, _: i64)
+            -> anyhow::Result<Vec<PendingReviewItem>> { Ok(vec![]) }
+        async fn save(&self, _: &DriverDocument) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    struct NoTypes;
+    #[async_trait]
+    impl DocumentTypeRepository for NoTypes {
+        async fn find_by_code(&self, _: &str) -> anyhow::Result<Option<DocumentType>> { Ok(None) }
+        async fn list_required_for(&self, _: &str, _: &str) -> anyhow::Result<Vec<DocumentType>> { Ok(vec![]) }
+        async fn find_by_id(&self, _: Uuid) -> anyhow::Result<Option<DocumentType>> { Ok(None) }
+        async fn list_all(&self) -> anyhow::Result<Vec<DocumentType>> { Ok(vec![]) }
+    }
+
+    struct Audit(Mutex<u32>);
+    #[async_trait]
+    impl AuditLogRepository for Audit {
+        async fn append(&self, _: &ComplianceAuditLog) -> anyhow::Result<()> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+        async fn list_by_profile(&self, _: Uuid, _: i64, _: i64)
+            -> anyhow::Result<Vec<ComplianceAuditLog>> { Ok(vec![]) }
+    }
+
+    /// A service over one profile. The producer points at a broker that does
+    /// not exist; a refused call must never reach it, and a call that did would
+    /// fail the test by erroring, not by hanging (nothing here awaits a send
+    /// before the tenant check).
+    fn service_over(row: ComplianceProfile) -> (ComplianceService, Arc<Profiles>, Arc<Audit>) {
+        let profiles = Arc::new(Profiles { row, saves: Mutex::new(0) });
+        let audit = Arc::new(Audit(Mutex::new(0)));
+        let kafka = logisticos_events::producer::KafkaProducer::new("127.0.0.1:1")
+            .expect("a producer is created without connecting");
+        let svc = ComplianceService::new(
+            profiles.clone(), Arc::new(NoDocs), Arc::new(NoTypes), audit.clone(),
+            Arc::new(ComplianceProducer::new(Arc::new(kafka))),
+        );
+        (svc, profiles, audit)
+    }
+
+    #[tokio::test]
+    async fn suspending_a_profile_in_another_tenant_is_refused_and_mutates_nothing() {
+        let p = mock_profile(ComplianceStatus::Compliant);
+        let (svc, profiles, audit) = service_over(p.clone());
+        let res = svc.suspend(Uuid::new_v4(), p.id, Uuid::new_v4(), None).await;
+        assert!(res.is_err());
+        assert_eq!(*profiles.saves.lock().unwrap(), 0);
+        assert_eq!(*audit.0.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn reinstating_a_profile_in_another_tenant_is_refused_and_mutates_nothing() {
+        let p = mock_profile(ComplianceStatus::Suspended);
+        let (svc, profiles, audit) = service_over(p.clone());
+        let res = svc.reinstate(Uuid::new_v4(), p.id, Uuid::new_v4(), None).await;
+        assert!(res.is_err());
+        assert_eq!(*profiles.saves.lock().unwrap(), 0);
+        assert_eq!(*audit.0.lock().unwrap(), 0);
     }
 }

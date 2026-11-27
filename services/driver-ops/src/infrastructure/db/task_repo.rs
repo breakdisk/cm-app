@@ -392,16 +392,15 @@ impl TaskRepository for PgTaskRepository {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<EarningEntry>> {
-        // Join through drivers.user_id (tasks.driver_id is drivers.id, which
-        // may differ from the identity user UUID for API-registered drivers).
+        // tasks.driver_id is drivers.id, and migration 0014 enforces
+        // drivers.id = user_id, so the identity user UUID filters it directly.
         // Delivery tasks only: the pickup+delivery pair of a shipment pays
         // once, on the delivery leg.
         let rows = sqlx::query(
             r#"SELECT t.id AS task_id, t.tracking_number, t.merchant_name,
                       t.delivery_category, t.completed_at, t.payout_cents
                FROM driver_ops.tasks t
-               JOIN driver_ops.drivers d ON d.id = t.driver_id
-               WHERE d.user_id = $1
+               WHERE t.driver_id = $1
                  AND t.task_type = 'delivery'
                  AND t.status = 'completed'
                  AND t.completed_at >= $2 AND t.completed_at < $3
@@ -438,15 +437,13 @@ impl TaskRepository for PgTaskRepository {
             r#"WITH lines AS (
                    SELECT t.completed_at AS at, COALESCE(t.payout_cents, 0) AS cents, 1 AS delivery
                    FROM driver_ops.tasks t
-                   JOIN driver_ops.drivers d ON d.id = t.driver_id
-                   WHERE d.user_id = $1
+                   WHERE t.driver_id = $1
                      AND t.task_type = 'delivery'
                      AND t.status = 'completed'
                    UNION ALL
                    SELECT t.completed_at, t.waiting_fee_cents, 0
                    FROM driver_ops.tasks t
-                   JOIN driver_ops.drivers d ON d.id = t.driver_id
-                   WHERE d.user_id = $1
+                   WHERE t.driver_id = $1
                      AND t.waiting_fee_cents > 0
                    UNION ALL
                    SELECT jd.dropped_at, -jd.fee_cents, 0
@@ -480,8 +477,8 @@ impl TaskRepository for PgTaskRepository {
     }
 
     async fn cancel_all_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<u64> {
-        // driver_id on tasks is drivers.id (not identity user_id).
-        // The caller (TaskService) resolves drivers.id from user_id before calling here.
+        // driver_id on tasks is drivers.id, which equals the identity user_id
+        // (migration 0014). The caller (TaskService) still resolves it via the driver row.
         let result = sqlx::query(
             r#"UPDATE driver_ops.tasks
                SET status = 'cancelled'

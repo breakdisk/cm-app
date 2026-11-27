@@ -73,22 +73,22 @@ pub async fn run() -> anyhow::Result<()> {
     let meta_ready    = meta_token.as_deref().is_some_and(is_real_cred)
         && meta_phone_id.as_deref().is_some_and(is_real_cred);
 
-    let whatsapp: Arc<dyn ChannelAdapter> = if meta_ready {
+    let whatsapp: Arc<dyn ChannelAdapter> = if let (true, Some(meta_token), Some(meta_phone_id)) = (meta_ready, meta_token, meta_phone_id) {
         tracing::info!("engagement: WhatsApp using Meta Cloud API adapter");
         Arc::new(MetaWhatsAppAdapter::new(
-            meta_token.unwrap(),
-            meta_phone_id.unwrap(),
+            meta_token,
+            meta_phone_id,
         ))
     } else {
         tracing::warn!("engagement: WhatsApp using LogChannelAdapter (META_WHATSAPP_* not set) — messages printed to stdout");
         Arc::new(LogChannelAdapter::new("whatsapp"))
     };
 
-    let sms: Arc<dyn ChannelAdapter> = if twilio_ready {
+    let sms: Arc<dyn ChannelAdapter> = if let (true, Some(twilio_sid), Some(twilio_token)) = (twilio_ready, twilio_sid, twilio_token) {
         tracing::info!("engagement: SMS using Twilio adapter");
         Arc::new(TwilioSmsAdapter::new(
-            twilio_sid.unwrap(),
-            twilio_token.unwrap(),
+            twilio_sid,
+            twilio_token,
             std::env::var("TWILIO_SMS_FROM").unwrap_or_else(|_| "+15005550006".into()),
         ))
     } else {
@@ -215,10 +215,10 @@ pub async fn run() -> anyhow::Result<()> {
     use axum::{http::{HeaderName, HeaderValue, Method}, Router};
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+            HeaderValue::from_static("http://localhost:3000"),
+            HeaderValue::from_static("http://localhost:3001"),
+            HeaderValue::from_static("http://localhost:3002"),
+            HeaderValue::from_static("http://localhost:3003"),
         ])
         .allow_methods([
             Method::GET, Method::POST, Method::PUT,

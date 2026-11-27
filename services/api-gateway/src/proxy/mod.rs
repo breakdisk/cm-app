@@ -83,6 +83,12 @@ impl ProxyClient {
         // Dispatch & Routing — dispatch service exposes /v1/routes, /v1/queue,
         // /v1/assignments, and /v1/offers (gig grab surface)
         } else if path.starts_with("/v1/routes")
+            // Exactly one dispatch route lives under the `/v1/drivers` prefix
+            // that driver-ops otherwise owns: ops cancelling a driver's stale
+            // assignment. Matched by full shape, and this branch sits ahead of
+            // the generic driver-ops rule, so the rest of `/v1/drivers/...`
+            // still goes to driver-ops.
+            || is_driver_cancel_assignment(path)
             || path.starts_with("/v1/queue")
             || path.starts_with("/v1/assignments")
             || path.starts_with("/v1/offers")
@@ -229,6 +235,13 @@ pub fn diner_may_reach(method: &str, path: &str) -> bool {
     false
 }
 
+/// `POST /v1/drivers/<id>/cancel-assignment` — served by dispatch, not driver-ops.
+fn is_driver_cancel_assignment(path: &str) -> bool {
+    path.strip_prefix("/v1/drivers/")
+        .and_then(|rest| rest.strip_suffix("/cancel-assignment"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
 #[cfg(test)]
 mod routing_tests {
     use super::*;
@@ -272,6 +285,30 @@ mod routing_tests {
         assert_eq!(resolve("/v1/promotions/codes/MOVE20/validate").as_deref(), Some("http://promotions:8022"));
         assert_ne!(resolve("/v1/offers/open").as_deref(), Some("http://promotions:8022"));
         assert_eq!(resolve("/v1/promotions/internal/redeem"), None);
+    }
+
+    /// dispatch owns `/v1/drivers/:id/cancel-assignment`; every other
+    /// `/v1/drivers...` path stays with driver-ops.
+    #[test]
+    fn cancel_assignment_reaches_dispatch_and_only_that_shape() {
+        assert_eq!(
+            resolve("/v1/drivers/1e9f4c2a-0000-0000-0000-000000000004/cancel-assignment").as_deref(),
+            Some("http://dispatch:8005")
+        );
+        for path in [
+            "/v1/drivers",
+            "/v1/drivers/1e9f",
+            "/v1/drivers/1e9f/status",
+            "/v1/drivers//cancel-assignment",
+            "/v1/drivers/1e9f/extra/cancel-assignment",
+            "/v1/drivers/cancel-assignment",
+        ] {
+            assert_eq!(
+                resolve(path).as_deref(),
+                Some("http://driver-ops:8006"),
+                "{path} must stay with driver-ops"
+            );
+        }
     }
 
     fn resolve(path: &str) -> Option<String> {

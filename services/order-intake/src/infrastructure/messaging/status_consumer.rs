@@ -186,7 +186,7 @@ pub async fn start_status_consumer(
 }
 
 /// Statuses past which a shipment can no longer be moved by a downstream event.
-const TERMINAL_STATUSES: &[&str] = &["delivered", "cancelled", "returned", "failed"];
+pub(crate) const TERMINAL_STATUSES: &[&str] = &["delivered", "cancelled", "returned", "failed"];
 
 async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()> {
     // Cross-border hub transfer events share a uniform forward-only update path.
