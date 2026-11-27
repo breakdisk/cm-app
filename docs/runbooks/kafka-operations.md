@@ -17,6 +17,7 @@
 6. [Adding Partitions to a Topic](#6-adding-partitions-to-a-topic)
 7. [Dead Letter Queue Pattern](#7-dead-letter-queue-pattern)
 8. [Monitoring and Alerting](#8-monitoring-and-alerting)
+9. [Orphaned Partitions (single-broker VPS)](#9-orphaned-partitions-single-broker-vps)
 
 ---
 
@@ -820,3 +821,80 @@ via the `logisticos-msk-alerts` SNS topic:
 
 CloudWatch Alarms console:
 `https://ap-southeast-1.console.aws.amazon.com/cloudwatch/home?region=ap-southeast-1#alarmsV2:?search=logisticos-msk`
+
+---
+
+## 9. Orphaned Partitions (single-broker VPS)
+
+### Symptom
+
+A topic looks healthy to `kafka-topics --describe`: the leader is set and the ISR is full. Yet keyed events for some tenants never arrive.
+
+- Producers log `NotLeaderOrFollower` or `MessageTimedOut` once and move on.
+- Nothing downstream errors, because the event never reached it.
+
+### Cause
+
+A partition's on-disk directory belongs to an **older incarnation of the topic**: its `partition.metadata` `topic_id` differs from the live topic ID, so the broker refuses to serve that partition.
+
+It happens when a topic is recreated while a stale `<topic>-<n>` directory survives on the volume, for example after a cluster-ID reset. Creating the topic can itself re-break it: the new incarnation collides with the old directory.
+
+Producers key by `tenant_id`, so **every** event for a tenant that hashes to the broken partition is lost.
+
+### Detect
+
+Run on the broker host:
+
+```bash
+scripts/check-kafka-partitions.sh            # exit 0 healthy, 1 broken, 2 broker unreachable
+docker logs --since 1h logisticos-kafka 2>&1 | grep "does not match the topic ID"
+```
+
+`check-kafka-partitions.sh` issues one `kafka-get-offsets` call for all partitions. A per-topic loop takes several seconds for each broken topic and times out on ~80 topics.
+
+Run it after every broker restart and after creating any topic. `--list` proves nothing.
+
+### Confirm before touching anything
+
+For each broken partition, compare the live topic ID with the one on disk:
+
+```bash
+V=/var/lib/docker/volumes/oscargomarketnet-logisticosbackend-pqfh0u_kafka_data/_data
+kafka-topics --bootstrap-server localhost:9092 --describe --topic <t> | grep -o 'TopicId: [^ ]*'
+grep topic_id $V/<t>-<n>/partition.metadata
+find $V/<t>-<n> -name '*.log' -printf '%s\n'   # bytes of old-incarnation data
+```
+
+Delete a directory only when the IDs **differ**. A matching directory is live data.
+
+### Repair
+
+This was used on 2026-08-25 (2 topics) and again on 2026-11-25 (12 topics, one restart).
+
+1. Back up first, even if the logs are 0 bytes: `tar czf /root/orphan-parts-<date>.tar.gz -C $V <t>-<n> ...`
+2. `docker stop logisticos-kafka`. Only the broker; clients reconnect on their own. Do **not** touch `__consumer_offsets`.
+3. `rm -rf $V/<t>-<n>` for each orphan. Re-check the ID mismatch in the same script, immediately before deleting.
+4. `docker start logisticos-kafka`. The broker recreates each missing partition with the live topic ID.
+5. Verify:
+   - `scripts/check-kafka-partitions.sh` → `OK`
+   - each repaired `partition.metadata` now carries the live ID
+   - consumer-group count unchanged (`kafka-consumer-groups --list | wc -l`)
+   - every group `Stable`
+
+Old-incarnation data in the backup was already unreachable: no consumer could read it under the new topic ID. Keep the tarball for forensics, not for replay.
+
+### 2026-11-25 incident
+
+12 topics had partition 0 orphaned:
+- `carrier.onboarded`, `carrier.status_changed`
+- `dispatch.driver.assigned`
+- `driver.delivery.failed`, `driver.pickup.completed`
+- `identity.tenant.created`, `identity.user.created`
+- `marketing.campaign.triggered`
+- `order.awb.issued`, `order.shipment.created`
+- `pod.captured`
+- `task.assigned`
+
+Five held 7–30 KB of old-incarnation data. The backup is at `/root/orphan-parts-20261125.tar.gz` on the VPS.
+
+After the repair, 277/277 partitions reported offsets and consumer groups stayed at 38, all `Stable`.
