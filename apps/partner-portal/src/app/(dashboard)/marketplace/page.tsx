@@ -560,6 +560,8 @@ function MarketplacePageInner() {
 
   // A failed refresh keeps the last good lists and flags the outage; the next success clears it.
   const [loadError, setLoadError] = useState(false);
+  // The server's message for a failed accept / reject / pause / delete.
+  const [actionError, setActionError] = useState<string | null>(null);
   const mountedRef  = useRef(true);
   const pollInFlightRef = useRef(false);
   useEffect(() => {
@@ -639,20 +641,26 @@ function MarketplacePageInner() {
 
   async function handleAccept(b: MarketplaceBooking) {
     setRespondingTo(b.id);
+    setActionError(null);
     try {
       await acceptBooking(b.id);
-      await refresh();
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not accept the booking.");
     } finally {
+      await refresh();
       setRespondingTo(null);
     }
   }
 
   async function handleReject(b: MarketplaceBooking) {
     setRespondingTo(b.id);
+    setActionError(null);
     try {
       await rejectBooking(b.id);
-      await refresh();
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not reject the booking.");
     } finally {
+      await refresh();
       setRespondingTo(null);
     }
   }
@@ -685,14 +693,24 @@ function MarketplacePageInner() {
 
   async function handleTogglePause(l: VehicleListing) {
     const next: ListingStatus = l.status === "active" ? "paused" : "active";
-    await updateListing(l.id, { status: next });
-    refresh();
+    setActionError(null);
+    try {
+      await updateListing(l.id, { status: next });
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not update the listing.");
+    }
+    void refresh();
   }
 
   async function handleDelete(l: VehicleListing) {
     if (!confirm(`Remove listing for ${l.vehicle_plate}? Active bookings remain valid.`)) return;
-    await deleteListing(l.id);
-    refresh();
+    setActionError(null);
+    try {
+      await deleteListing(l.id);
+    } catch (e) {
+      if (mountedRef.current) setActionError(e instanceof Error ? e.message : "Could not remove the listing.");
+    }
+    void refresh();
   }
 
   return (
@@ -756,6 +774,15 @@ function MarketplacePageInner() {
           >
             <X className="h-3 w-3" />
           </a>
+        </div>
+      )}
+
+      {actionError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-signal/40 bg-red-surface px-4 py-2.5 text-xs text-red-signal"
+        >
+          {actionError}
         </div>
       )}
 

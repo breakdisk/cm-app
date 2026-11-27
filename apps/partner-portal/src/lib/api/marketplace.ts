@@ -11,7 +11,8 @@
 
 import { authFetch } from "@/lib/auth/auth-fetch";
 
-const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost:8010";
+// The gateway routes /v1/marketplace to the carrier service.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Types (ADR-0013) ──────────────────────────────────────────────────────────
 
@@ -102,7 +103,7 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await authFetch(`${CARRIER_SVC_URL}${path}`);
+  const res = await authFetch(`${API_BASE}${path}`);
   if (!res.ok) {
     throw new Error(await errorMessage(res, `GET ${path} failed (HTTP ${res.status})`));
   }
@@ -110,7 +111,7 @@ async function apiGet<T>(path: string): Promise<T> {
 }
 
 async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  const res = await authFetch(`${CARRIER_SVC_URL}${path}`, {
+  const res = await authFetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -122,7 +123,7 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function apiPut<T>(path: string, body?: unknown): Promise<T> {
-  const res = await authFetch(`${CARRIER_SVC_URL}${path}`, {
+  const res = await authFetch(`${API_BASE}${path}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -134,7 +135,7 @@ async function apiPut<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function apiDelete(path: string): Promise<void> {
-  const res = await authFetch(`${CARRIER_SVC_URL}${path}`, { method: "DELETE" });
+  const res = await authFetch(`${API_BASE}${path}`, { method: "DELETE" });
   if (!res.ok && res.status !== 204) {
     throw new Error(await errorMessage(res, `DELETE ${path} failed (HTTP ${res.status})`));
   }
