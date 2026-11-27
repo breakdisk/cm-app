@@ -56,17 +56,20 @@ aws-config.workspace  = true
 # the workspace's `cmake-build` is what supplies librdkafka's mock support.
 rdkafka.workspace = true
 tokio   = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `ServiceExt::oneshot` for driving the real router in tests/integration.
+tower   = { workspace = true, features = ["util"] }
 
 [build-dependencies]
 tonic-build.workspace       = true
 protoc-bin-vendored         = "3"
 
-# The unit suite only. `tests/integration/mod.rs` has 14 compile errors of its
-# own against the current API and wants its own pass.
-#
 # Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs,
 # so without a stanza the suite is not a target: never compiled, never run, and
 # `cargo test` reports a clean pass.
 [[test]]
 name = "unit"
 path = "tests/unit/mod.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
