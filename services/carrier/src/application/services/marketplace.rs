@@ -827,6 +827,8 @@ mod booking_tests {
         /// The next N `transition_booking` calls lose the compare-and-set
         /// (write nothing, return false), as if another writer got in first.
         lose_transitions: std::sync::atomic::AtomicUsize,
+        /// Every `find_booking_by_id` fails -- a database outage.
+        fail_reads: std::sync::atomic::AtomicBool,
     }
 
     impl FakeRepo {
@@ -873,6 +875,9 @@ mod booking_tests {
             Ok(())
         }
         async fn find_booking_by_id(&self, id: Uuid) -> anyhow::Result<Option<MarketplaceBooking>> {
+            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("connection reset by peer");
+            }
             Ok(self.bookings.lock().unwrap().iter().find(|b| b.id == id).cloned())
         }
         async fn list_bookings_by_carrier(&self, c: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<MarketplaceBooking>> {
@@ -1560,6 +1565,54 @@ mod booking_tests {
 
         assert_eq!(failing.voids.lock().unwrap().len(), 3);
         assert_eq!(repo.booking(booking_id).payment_status, BookingPaymentStatus::Pending);
+    }
+
+    /// The error text must carry both ids, since the consumer's only trace of a
+    /// possibly-stranded hold is the log line built from it.
+    #[tokio::test]
+    async fn an_authorized_arm_error_carries_both_ids_for_a_cas_give_up() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let tenant = Uuid::new_v4();
+        let l = listing(tenant);
+        let repo = FakeRepo::with_listing(l.clone());
+        let pay = Arc::new(FakePayments::default());
+        let svc = service(repo.clone(), Some(pay.clone()));
+        let placed = svc
+            .create_booking(tenant, Uuid::new_v4(), cmd(l.id, BookingPaymentMethod::Online))
+            .await
+            .unwrap();
+        repo.lose_transitions.store(99, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let intent = Uuid::new_v4();
+
+        let err = handle_authorized(placed.booking.id, intent, &dyn_repo, None, &NO_WAIT)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains(&placed.booking.id.to_string()), "got {err}");
+        assert!(err.contains(&intent.to_string()), "got {err}");
+        assert!(err.contains("hold may be stranded"), "got {err}");
+        assert!(err.contains("MANUAL RELEASE / RECONCILE"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn an_authorized_arm_error_carries_both_ids_for_a_repo_error() {
+        use crate::infrastructure::booking_payment_consumer::handle_authorized;
+        let repo = Arc::new(FakeRepo::default());
+        repo.fail_reads.store(true, std::sync::atomic::Ordering::SeqCst);
+        let dyn_repo: Arc<dyn MarketplaceRepository> = repo.clone();
+        let (booking_id, intent) = (Uuid::new_v4(), Uuid::new_v4());
+
+        let err = handle_authorized(booking_id, intent, &dyn_repo, None, &NO_WAIT)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains(&booking_id.to_string()), "got {err}");
+        assert!(err.contains(&intent.to_string()), "got {err}");
+        assert!(err.contains("hold may be stranded"), "got {err}");
+        assert!(err.contains("connection reset"), "got {err}");
     }
 
     #[tokio::test]

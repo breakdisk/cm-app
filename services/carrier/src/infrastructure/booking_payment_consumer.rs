@@ -174,7 +174,32 @@ async fn void_late_hold(
 }
 
 /// Funds are ring-fenced — the carrier may now see the booking.
+///
+/// Every error from this arm is stamped with `booking_id` and `intent_id` and
+/// logged at `error` with a "hold may be stranded" marker. The loop commits
+/// regardless, so nothing redelivers: if the carrier row is left Pending while
+/// payments holds the intent Authorized, a later cancel or expiry sees nothing
+/// held and skips the void. The log line is the only trace of that hold.
 pub(crate) async fn handle_authorized(
+    booking_id: Uuid,
+    intent_id: Uuid,
+    repo: &Arc<dyn MarketplaceRepository>,
+    payments: Option<&Arc<dyn BookingPayments>>,
+    void_backoff: &[std::time::Duration],
+) -> anyhow::Result<()> {
+    match handle_authorized_inner(booking_id, intent_id, repo, payments, void_backoff).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::error!(%booking_id, %intent_id, err = %format!("{e:#}"),
+                "payment.intent.authorized unhandled — hold may be stranded — MANUAL RELEASE / RECONCILE");
+            Err(anyhow::anyhow!(
+                "booking_id={booking_id} intent_id={intent_id}: hold may be stranded, MANUAL RELEASE / RECONCILE: {e:#}"
+            ))
+        }
+    }
+}
+
+async fn handle_authorized_inner(
     booking_id: Uuid,
     intent_id: Uuid,
     repo: &Arc<dyn MarketplaceRepository>,
