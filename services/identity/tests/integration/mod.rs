@@ -1001,6 +1001,148 @@ mod invite_user {
     }
 }
 
+/// An invite must never reach into an existing account. Before the fix a
+/// re-invite re-hashed the password and rewrote the phone number of whatever
+/// user held the email, so any caller with `users:invite` could take over any
+/// account in their tenant (and the new password came back in the response).
+mod invite_user_credentials {
+    use super::*;
+
+    struct Fixture {
+        server: TestServer,
+        token: String,
+        tenant: Tenant,
+        owner: User,
+        user_repo: Arc<InMemoryUserRepository>,
+        tenant_repo: Arc<InMemoryTenantRepository>,
+    }
+
+    fn fixture(slug: &str) -> Fixture {
+        let tenant_repo = Arc::new(InMemoryTenantRepository::new());
+        let user_repo = Arc::new(InMemoryUserRepository::new());
+        let (tenant, owner) = seed_tenant_and_owner(&tenant_repo, &user_repo, slug, "password123");
+        let (server, jwt) = build_test_server(
+            Arc::clone(&tenant_repo),
+            Arc::clone(&user_repo),
+            Arc::new(InMemoryApiKeyRepository::new()),
+        );
+        let token = mint_admin_token(&jwt, tenant.id.inner(), owner.id.inner(), slug);
+        Fixture { server, token, tenant, owner, user_repo, tenant_repo }
+    }
+
+    async fn invite(f: &Fixture, body: Value) -> TestResponse {
+        f.server
+            .post("/v1/users")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {}", f.token).parse().unwrap(),
+            )
+            .json(&body)
+            .await
+    }
+
+    fn stored(repo: &InMemoryUserRepository, id: &UserId) -> User {
+        repo.users.lock().unwrap().iter().find(|u| &u.id == id).cloned().expect("user exists")
+    }
+
+    #[tokio::test]
+    async fn response_never_carries_a_credential() {
+        let f = fixture("cred-resp");
+        let resp = invite(&f, json!({
+            "email": "new@cred-resp.test", "first_name": "N", "last_name": "U",
+            "roles": ["partner"]
+        })).await;
+        assert_eq!(resp.status_code(), 200);
+        let body: Value = resp.json();
+        let data = body["data"].as_object().expect("data object");
+        assert!(!data.contains_key("temp_password"), "response leaked a password: {body}");
+        assert!(!body.to_string().to_lowercase().contains("password"), "{body}");
+        assert!(data.contains_key("user_id") && data.contains_key("email"));
+    }
+
+    #[tokio::test]
+    async fn a_new_invitee_cannot_sign_in_with_a_password() {
+        // Invitees sign in via Firebase exchange / OTP. The stored hash is an
+        // undisclosed random value, so the password route stays closed.
+        let f = fixture("cred-new");
+        let resp = invite(&f, json!({
+            "email": "new@cred-new.test", "first_name": "N", "last_name": "U",
+            "roles": ["partner"]
+        })).await;
+        assert_eq!(resp.status_code(), 200);
+        let login = f.server.post("/v1/auth/login")
+            .json(&json!({"tenant_slug": "cred-new", "email": "new@cred-new.test", "password": ""}))
+            .await;
+        assert_ne!(login.status_code(), 200);
+    }
+
+    #[tokio::test]
+    async fn re_inviting_an_existing_user_leaves_credentials_and_phone_untouched() {
+        let f = fixture("cred-reinv");
+        let before = stored(&f.user_repo, &f.owner.id);
+        let resp = invite(&f, json!({
+            "email": f.owner.email, "first_name": "X", "last_name": "Y",
+            "roles": ["admin"], "phone_number": "+639171234567"
+        })).await;
+        assert_eq!(resp.status_code(), 200);
+        let body: Value = resp.json();
+        assert!(body["data"].get("temp_password").is_none());
+
+        let after = stored(&f.user_repo, &f.owner.id);
+        assert_eq!(after.password_hash, before.password_hash, "invite overwrote the password hash");
+        assert_eq!(after.phone_number, before.phone_number, "invite rewrote the phone number");
+
+        // The original password still works.
+        let login = f.server.post("/v1/auth/login")
+            .json(&json!({"tenant_slug": "cred-reinv", "email": f.owner.email, "password": "password123"}))
+            .await;
+        assert_eq!(login.status_code(), 200);
+    }
+
+    #[tokio::test]
+    async fn an_empty_role_list_cannot_be_used_to_match_an_existing_user() {
+        let f = fixture("cred-empty");
+        let before = stored(&f.user_repo, &f.owner.id);
+        let resp = invite(&f, json!({
+            "email": f.owner.email, "first_name": "X", "last_name": "Y", "roles": []
+        })).await;
+        assert_ne!(resp.status_code(), 200);
+        assert_eq!(stored(&f.user_repo, &f.owner.id).password_hash, before.password_hash);
+    }
+
+    #[tokio::test]
+    async fn inviting_another_tenants_email_never_touches_that_users_account() {
+        // Tenant A's owner exists. Tenant B's admin invites the same email.
+        let f_a = fixture("cred-ten-a");
+        let victim = stored(&f_a.user_repo, &f_a.owner.id);
+
+        // Tenant B shares the SAME repos so a cross-tenant lookup would be possible.
+        let (server, jwt) = build_test_server(
+            Arc::clone(&f_a.tenant_repo),
+            Arc::clone(&f_a.user_repo),
+            Arc::new(InMemoryApiKeyRepository::new()),
+        );
+        let (tenant_b, owner_b) =
+            seed_tenant_and_owner(&f_a.tenant_repo, &f_a.user_repo, "cred-ten-b", "password123");
+        let token_b = mint_admin_token(&jwt, tenant_b.id.inner(), owner_b.id.inner(), "cred-ten-b");
+
+        let resp = server.post("/v1/users")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {token_b}").parse().unwrap())
+            .json(&json!({
+                "email": victim.email, "first_name": "E", "last_name": "V",
+                "roles": ["admin"], "phone_number": "+639990000000"
+            }))
+            .await;
+        assert_eq!(resp.status_code(), 200);
+
+        let after = stored(&f_a.user_repo, &victim.id);
+        assert_eq!(after.password_hash, victim.password_hash);
+        assert_eq!(after.phone_number, victim.phone_number);
+        assert_eq!(after.tenant_id, f_a.tenant.id);
+
+    }
+}
+
 mod list_users {
     use super::*;
 

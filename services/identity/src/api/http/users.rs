@@ -46,11 +46,10 @@ pub async fn invite_user(
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::USERS_INVITE);
     let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
-    let (user, temp_password) = state.tenant_service.invite_user(&tenant_id, cmd).await?;
-    // DEV-ONLY: temp_password is returned in response for local smoke testing.
-    // In production, the password is delivered out-of-band via email (engagement service).
-    // TODO: Gate this behind a dev-mode config flag before going to production.
-    Ok(Json(serde_json::json!({ "data": { "user_id": user.id, "email": user.email, "temp_password": temp_password } })))
+    let user = state.tenant_service.invite_user(&tenant_id, cmd).await?;
+    // No credential is ever returned: invitees sign in via Firebase exchange
+    // (admin/partner) or phone OTP (drivers).
+    Ok(Json(serde_json::json!({ "data": { "user_id": user.id, "email": user.email } })))
 }
 
 #[derive(Debug, Deserialize)]

@@ -257,7 +257,7 @@ impl TenantService {
         Ok(new_tier)
     }
 
-    pub async fn invite_user(&self, tenant_id: &logisticos_types::TenantId, cmd: InviteUserCommand) -> AppResult<(User, String)> {
+    pub async fn invite_user(&self, tenant_id: &logisticos_types::TenantId, cmd: InviteUserCommand) -> AppResult<User> {
         // Verify tenant is active before allowing user creation
         let tenant = self.tenant_repo.find_by_id(tenant_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: tenant_id.inner().to_string() })?;
@@ -282,39 +282,32 @@ impl TenantService {
             ));
         }
 
-        // Check for duplicate email within tenant.
         // Idempotent re-invite: if a user with the same email already exists in
-        // this tenant and has the same role (e.g. a prior request saved the row
-        // but crashed before returning), re-issue a fresh temp password instead
-        // of rejecting. This lets the admin modal safely retry without manual
-        // DB cleanup. Conflicting roles (different role on existing user) still
-        // raise an error.
-        if let Some(mut existing) = self.user_repo.find_by_email(tenant_id, &cmd.email).await.map_err(AppError::Internal)? {
-            let same_roles = cmd.roles.iter().all(|r| existing.roles.contains(r));
+        // THIS tenant with the requested roles (e.g. a prior request saved the
+        // row but crashed before returning), return it unchanged so the admin
+        // modal can safely retry. An invite must never mutate an existing
+        // account: overwriting credentials or the phone number (which drives
+        // Driver App OTP login) would let anyone holding `users:invite` take
+        // over any account in the tenant. Lookup is tenant-scoped, so another
+        // tenant's user is never matched. Conflicting roles still raise an error.
+        if let Some(existing) = self.user_repo.find_by_email(tenant_id, &cmd.email).await.map_err(AppError::Internal)? {
+            let same_roles = !cmd.roles.is_empty()
+                && cmd.roles.iter().all(|r| existing.roles.contains(r));
             if !same_roles {
                 return Err(AppError::BusinessRule(format!(
                     "User with email '{}' already exists with different roles", cmd.email
                 )));
             }
-            // Re-issue a fresh temp password so the admin can complete onboarding.
-            let temp_password = generate_temp_password();
-            let password_hash = hash_password(&temp_password)
-                .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
-            existing.password_hash = password_hash;
-            // Refresh phone if provided (in case it was wrong on the first attempt).
-            if let Some(phone) = cmd.phone_number {
-                existing.phone_number = Some(normalise_phone(&phone));
-            }
-            existing.updated_at = chrono::Utc::now();
-            self.user_repo.save(&existing).await.map_err(AppError::Internal)?;
-            tracing::info!(user_id = %existing.id, "Re-issued temp password for existing user on idempotent invite");
-            return Ok((existing, temp_password));
+            tracing::info!(user_id = %existing.id, "Idempotent re-invite for existing user; account left unchanged");
+            return Ok(existing);
         }
 
-        // Invited users get a temporary password — they should change on first login.
-        // In production this would send an email with a magic link; for now generate a secure random one.
-        let temp_password = generate_temp_password();
-        let password_hash = hash_password(&temp_password)
+        // Invited users never receive a password. Sign-in is by identity proof:
+        // Firebase exchange (admin/partner, matched on invited email) or phone
+        // OTP (drivers). The stored hash is a random, never-disclosed value so
+        // the password-login path cannot be used against this account.
+        let unusable_password = generate_temp_password();
+        let password_hash = hash_password(&unusable_password)
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
 
         let mut user = User::new(
@@ -332,7 +325,7 @@ impl TenantService {
 
         // Drivers use OTP login (no email verification step). All other
         // invited roles (merchant, admin, partner) can log in immediately
-        // with the temp password — mark verified so can_login() passes.
+        // via Firebase/OTP — mark verified so can_login() passes.
         if !is_driver {
             user.email_verified = true;
         }
@@ -358,7 +351,7 @@ impl TenantService {
         }
         tracing::info!(user_id = %user.id, roles = ?user.roles, "User invited");
 
-        Ok((user, temp_password))
+        Ok(user)
     }
 
     /// Generates a signed driver invite link.
