@@ -86,7 +86,7 @@ pub async fn handle(topic: &str, json: serde_json::Value, svc: &ShipmentService)
             let evt: Event<PaymentIntentCaptured> = serde_json::from_value(json)
                 .context("failed to deserialize payment.intent.captured event")?;
             if evt.data.purpose == HOME_ADDENDUM_PURPOSE {
-                if let Some(settled) = svc.repo.settle_home_addendum(evt.data.reference_id, true).await? {
+                if let Some(settled) = svc.repo.settle_home_addendum(evt.tenant_id, evt.data.reference_id, true).await? {
                     emergency_trucks(svc, &settled).await;
                 }
                 return Ok(());
@@ -94,32 +94,50 @@ pub async fn handle(topic: &str, json: serde_json::Value, svc: &ShipmentService)
             if evt.data.purpose != SHIPPING_FEE_PURPOSE {
                 return Ok(());
             }
-            handle_captured(evt.data.reference_id, svc).await
+            handle_captured(evt.data.reference_id, evt.tenant_id, svc).await
         }
         topics::PAYMENT_INTENT_FAILED => {
             let evt: Event<PaymentIntentFailed> = serde_json::from_value(json)
                 .context("failed to deserialize payment.intent.failed event")?;
             if evt.data.purpose == HOME_ADDENDUM_PURPOSE {
-                svc.repo.settle_home_addendum(evt.data.reference_id, false).await?;
+                svc.repo.settle_home_addendum(evt.tenant_id, evt.data.reference_id, false).await?;
                 return Ok(());
             }
             if evt.data.purpose != SHIPPING_FEE_PURPOSE {
                 return Ok(());
             }
-            handle_failed(evt.data.reference_id, &evt.data.reason, svc).await
+            handle_failed(evt.data.reference_id, evt.tenant_id, &evt.data.reason, svc).await
         }
         _ => Ok(()),
     }
+}
+
+/// An event may only act on a shipment its own tenant owns. A nil tenant or a
+/// mismatch is logged (naming both tenants) and skipped; the caller returns
+/// `Ok` so the offset is still committed and the message does not poison-loop.
+fn event_owns(event_tenant: Uuid, shipment: &crate::domain::entities::shipment::Shipment, topic: &str) -> bool {
+    let owner = shipment.tenant_id.inner();
+    if event_tenant.is_nil() || event_tenant != owner {
+        tracing::warn!(
+            topic, shipment_id = %shipment.id.inner(), event_tenant = %event_tenant, shipment_tenant = %owner,
+            "payment consumer: event tenant does not own the shipment - nothing applied"
+        );
+        return false;
+    }
+    true
 }
 
 /// Republishes the three dispatch events a shipment held while awaiting
 /// payment, and marks it `Paid`. Idempotent: a shipment that is not (or is
 /// no longer) `AwaitingPayment` — including a replay after this handler
 /// already ran — is a no-op.
-pub async fn handle_captured(shipment_id: Uuid, svc: &ShipmentService) -> anyhow::Result<()> {
+pub async fn handle_captured(shipment_id: Uuid, event_tenant: Uuid, svc: &ShipmentService) -> anyhow::Result<()> {
     let id = ShipmentId::from_uuid(shipment_id);
     let mut shipment = svc.repo.find_by_id(&id).await?
         .ok_or_else(|| anyhow::anyhow!("no shipment {shipment_id} for captured payment"))?;
+    if !event_owns(event_tenant, &shipment, "payment.intent.captured") {
+        return Ok(());
+    }
 
     // Already fully processed: paid *and* the held events handed off. A
     // redelivered capture stops here.
@@ -223,10 +241,13 @@ pub async fn handle_captured(shipment_id: Uuid, svc: &ShipmentService) -> anyhow
 /// be redelivered (Kafka at-least-once) or double-published (a declined
 /// webhook racing the sweep's expiry), and a hard error here would leave a
 /// poison-pill message blocking the consumer forever.
-async fn handle_failed(shipment_id: Uuid, reason: &str, svc: &ShipmentService) -> anyhow::Result<()> {
+async fn handle_failed(shipment_id: Uuid, event_tenant: Uuid, reason: &str, svc: &ShipmentService) -> anyhow::Result<()> {
     let id = ShipmentId::from_uuid(shipment_id);
     let shipment = svc.repo.find_by_id(&id).await?
         .ok_or_else(|| anyhow::anyhow!("no shipment {shipment_id} for failed payment"))?;
+    if !event_owns(event_tenant, &shipment, "payment.intent.failed") {
+        return Ok(());
+    }
 
     if !shipment.can_cancel() {
         tracing::info!(

@@ -169,7 +169,12 @@ pub async fn start_status_consumer(
                 if topic == topics::DELIVERY_COMPLETED {
                     if let Some(h) = &home {
                         if let Ok(evt) = serde_json::from_slice::<Event<DeliveryCompletedEvt>>(payload) {
-                            if let Err(e) = crate::application::services::home_settlement::credit_on_delivery(&pool, &h.teams, &h.rates, evt.data.shipment_id).await {
+                            // Credit only a shipment the event's own tenant owns.
+                            let owner = shipment_tenant(&pool, evt.data.shipment_id).await.ok().flatten();
+                            if tenant_gate(evt.tenant_id, owner) != TenantGate::Owned {
+                                tracing::warn!(shipment_id = %evt.data.shipment_id, event_tenant = %evt.tenant_id, shipment_tenant = ?owner,
+                                    "delivery event tenant does not own the shipment - home shares not credited");
+                            } else if let Err(e) = crate::application::services::home_settlement::credit_on_delivery(&pool, &h.teams, &h.rates, evt.data.shipment_id).await {
                                 tracing::error!(shipment_id = %evt.data.shipment_id, err = %e, "home move delivered but its shares were not credited");
                             }
                         }
@@ -188,30 +193,38 @@ pub async fn start_status_consumer(
 /// Statuses past which a shipment can no longer be moved by a downstream event.
 pub(crate) const TERMINAL_STATUSES: &[&str] = &["delivered", "cancelled", "returned", "failed"];
 
-async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()> {
+/// Apply one status event. Every transition is scoped to the tenant on the
+/// event envelope: an event can only move a shipment its own tenant owns.
+/// A missing/nil tenant, or one that does not own the shipment, applies
+/// nothing and returns `Ok` so the caller still commits the offset.
+pub async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()> {
+    let Some(tenant) = envelope_tenant(payload) else {
+        tracing::warn!(topic, "status consumer: event carries no usable tenant_id - nothing applied");
+        return Ok(());
+    };
     // Cross-border hub transfer events share a uniform forward-only update path.
     if let Some((new_status, key)) = hub_status_mapping(topic) {
-        return apply_hub_status(pool, topic, payload, new_status, key).await;
+        return apply_hub_status(pool, topic, payload, tenant, new_status, key).await;
     }
     match topic {
         topics::DRIVER_ASSIGNED => {
             let evt = serde_json::from_slice::<Event<DriverAssignedEvt>>(payload)?.data;
             let n = apply_transition(
-                pool, evt.shipment_id, "pickup_assigned",
+                pool, evt.shipment_id, tenant, "pickup_assigned",
                 &[], &["delivered", "cancelled", "returned"],
                 "assigned", "system", serde_json::json!({}),
             ).await?;
-            warn_if_no_op(n, topic, evt.shipment_id);
+            warn_if_no_op(pool, n, topic, evt.shipment_id, tenant).await;
         }
         topics::PICKUP_COMPLETED => {
             let evt = serde_json::from_slice::<Event<PickupCompletedEvt>>(payload)?.data;
             let n = apply_transition(
-                pool, evt.shipment_id, "picked_up",
+                pool, evt.shipment_id, tenant, "picked_up",
                 &["pending", "confirmed", "pickup_assigned"], &[],
                 "status_changed", "driver",
                 serde_json::json!({ "device_timestamp": evt.completed_at }),
             ).await?;
-            warn_if_no_op(n, topic, evt.shipment_id);
+            warn_if_no_op(pool, n, topic, evt.shipment_id, tenant).await;
         }
         topics::PICKUP_CAPTURED => {
             // POP submission — authoritative chain-of-custody open. Advances the
@@ -220,7 +233,7 @@ async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()
             // network dropped the completeTask call).
             let evt = serde_json::from_slice::<Event<PickupCapturedEvt>>(payload)?.data;
             let n = apply_transition(
-                pool, evt.shipment_id, "picked_up",
+                pool, evt.shipment_id, tenant, "picked_up",
                 &["pending", "confirmed", "pickup_assigned"], &[],
                 "status_changed", "driver",
                 serde_json::json!({
@@ -230,47 +243,94 @@ async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()
                     "via":               "pop",
                 }),
             ).await?;
-            warn_if_no_op(n, topic, evt.shipment_id);
+            warn_if_no_op(pool, n, topic, evt.shipment_id, tenant).await;
         }
         topics::DELIVERY_COMPLETED => {
             let evt = serde_json::from_slice::<Event<DeliveryCompletedEvt>>(payload)?.data;
             let n = apply_transition(
-                pool, evt.shipment_id, "delivered",
+                pool, evt.shipment_id, tenant, "delivered",
                 &[], &[],
                 "status_changed", "driver", serde_json::json!({}),
             ).await?;
-            warn_if_no_op(n, topic, evt.shipment_id);
+            warn_if_no_op(pool, n, topic, evt.shipment_id, tenant).await;
         }
         topics::DELIVERY_FAILED => {
             let evt = serde_json::from_slice::<Event<DeliveryFailedEvt>>(payload)?.data;
             let n = apply_transition(
-                pool, evt.shipment_id, "failed",
+                pool, evt.shipment_id, tenant, "failed",
                 &[], &["delivered", "cancelled"],
                 "status_changed", "driver", serde_json::json!({}),
             ).await?;
-            warn_if_no_op(n, topic, evt.shipment_id);
+            warn_if_no_op(pool, n, topic, evt.shipment_id, tenant).await;
         }
         topics::DELIVERY_ATTEMPTED => {
             let evt = serde_json::from_slice::<Event<DeliveryAttemptedEvt>>(payload)?.data;
             let n = apply_transition(
-                pool, evt.shipment_id, "delivery_attempted",
+                pool, evt.shipment_id, tenant, "delivery_attempted",
                 &[], &["delivered", "cancelled", "returned"],
                 "status_changed", "driver", serde_json::json!({}),
             ).await?;
-            warn_if_no_op(n, topic, evt.shipment_id);
+            warn_if_no_op(pool, n, topic, evt.shipment_id, tenant).await;
         }
         _ => {}
     }
     Ok(())
 }
 
-fn warn_if_no_op(rows: u64, topic: &str, shipment_id: Uuid) {
-    if rows == 0 {
-        tracing::warn!(
-            topic, %shipment_id,
-            "status consumer: no shipment advanced (unknown id or already past this status)"
-        );
+async fn warn_if_no_op(pool: &PgPool, rows: u64, topic: &str, shipment_id: Uuid, event_tenant: Uuid) {
+    if rows != 0 {
+        return;
     }
+    match shipment_tenant(pool, shipment_id).await {
+        Ok(owner) => match tenant_gate(event_tenant, owner) {
+            TenantGate::Mismatch { shipment_tenant } => tracing::warn!(
+                topic, %shipment_id, event_tenant = %event_tenant, %shipment_tenant,
+                "status consumer: event tenant does not own the shipment - nothing applied"
+            ),
+            _ => tracing::warn!(
+                topic, %shipment_id,
+                "status consumer: no shipment advanced (unknown id or already past this status)"
+            ),
+        },
+        Err(e) => tracing::warn!(topic, %shipment_id, err = %e, "status consumer: no shipment advanced"),
+    }
+}
+
+/// Outcome of comparing an event's tenant with the shipment's owner.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TenantGate {
+    Owned,
+    Mismatch { shipment_tenant: Uuid },
+    UnknownShipment,
+}
+
+pub(crate) fn tenant_gate(event_tenant: Uuid, shipment_tenant: Option<Uuid>) -> TenantGate {
+    match shipment_tenant {
+        None => TenantGate::UnknownShipment,
+        Some(t) if t == event_tenant => TenantGate::Owned,
+        Some(t) => TenantGate::Mismatch { shipment_tenant: t },
+    }
+}
+
+/// `tenant_id` of the event envelope, or `None` when absent, unparseable or
+/// nil. `Event<T>` carries it at the top level (not inside `data`), so it is
+/// read from the envelope.
+pub(crate) fn envelope_tenant(payload: &[u8]) -> Option<Uuid> {
+    #[derive(Deserialize)]
+    struct Probe {
+        tenant_id: Option<Uuid>,
+    }
+    serde_json::from_slice::<Probe>(payload)
+        .ok()
+        .and_then(|p| p.tenant_id)
+        .filter(|t| !t.is_nil())
+}
+
+async fn shipment_tenant(pool: &PgPool, shipment_id: Uuid) -> anyhow::Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT tenant_id FROM order_intake.shipments WHERE id = $1")
+        .bind(shipment_id)
+        .fetch_optional(pool)
+        .await?)
 }
 
 /// Atomically advance a single shipment's status **and** append an immutable
@@ -288,6 +348,7 @@ fn warn_if_no_op(rows: u64, topic: &str, shipment_id: Uuid) {
 async fn apply_transition(
     pool: &PgPool,
     shipment_id: Uuid,
+    tenant_id: Uuid,
     new_status: &str,
     allow: &[&str],
     deny: &[&str],
@@ -305,6 +366,7 @@ async fn apply_transition(
         .bind(event_type)
         .bind(actor_type)
         .bind(&extra_metadata)
+        .bind(tenant_id)
         .execute(pool)
         .await?
         .rows_affected();
@@ -317,6 +379,7 @@ async fn apply_transition(
 async fn apply_transition_by_awbs(
     pool: &PgPool,
     awbs: &[String],
+    tenant_id: Uuid,
     new_status: &str,
     deny: &[&str],
     event_type: &str,
@@ -329,6 +392,7 @@ async fn apply_transition_by_awbs(
         .bind(&deny)
         .bind(event_type)
         .bind(&extra_metadata)
+        .bind(tenant_id)
         .execute(pool)
         .await?
         .rows_affected();
@@ -339,11 +403,12 @@ async fn apply_transition_by_awbs(
 // destination city for the delivery leg. Precise GPS lives in the POP/POD
 // evidence records, surfaced separately on the detail/tracking pages.
 
-/// $1 id, $2 new_status, $3 allow[], $4 deny[], $5 event_type, $6 actor_type, $7 metadata
+/// $1 id, $2 new_status, $3 allow[], $4 deny[], $5 event_type, $6 actor_type, $7 metadata,
+/// $8 event tenant: a shipment of another tenant is never selected.
 const TRANSITION_BY_ID_SQL: &str = concat!(
     "WITH cur AS (\
         SELECT id, tenant_id, status AS from_status, origin_city, dest_city \
-        FROM order_intake.shipments WHERE id = $1 FOR UPDATE\
+        FROM order_intake.shipments WHERE id = $1 AND tenant_id = $8 FOR UPDATE\
      ), upd AS (\
         UPDATE order_intake.shipments s SET status = $2, updated_at = NOW() \
         FROM cur WHERE s.id = cur.id \
@@ -361,11 +426,11 @@ const TRANSITION_BY_ID_SQL: &str = concat!(
      FROM cur JOIN upd ON upd.id = cur.id",
 );
 
-/// $1 awbs[], $2 new_status, $3 deny[], $4 event_type, $5 metadata
+/// $1 awbs[], $2 new_status, $3 deny[], $4 event_type, $5 metadata, $6 event tenant
 const TRANSITION_BY_AWBS_SQL: &str = concat!(
     "WITH cur AS (\
         SELECT id, tenant_id, status AS from_status, origin_city, dest_city \
-        FROM order_intake.shipments WHERE awb = ANY($1) FOR UPDATE\
+        FROM order_intake.shipments WHERE awb = ANY($1) AND tenant_id = $6 FOR UPDATE\
      ), upd AS (\
         UPDATE order_intake.shipments s SET status = $2, updated_at = NOW() \
         FROM cur WHERE s.id = cur.id AND NOT (cur.from_status = ANY($3)) \
@@ -388,6 +453,7 @@ async fn apply_hub_status(
     pool: &PgPool,
     topic: &str,
     payload: &[u8],
+    tenant: Uuid,
     new_status: &str,
     key: MatchKey,
 ) -> anyhow::Result<()> {
@@ -396,7 +462,7 @@ async fn apply_hub_status(
         MatchKey::ShipmentId => {
             let envelope: Event<HubShipmentEvt> = serde_json::from_slice(payload)?;
             apply_transition(
-                pool, envelope.data.shipment_id, new_status,
+                pool, envelope.data.shipment_id, tenant, new_status,
                 &[], TERMINAL_STATUSES,
                 "status_changed", "system", metadata,
             ).await?
@@ -409,13 +475,13 @@ async fn apply_hub_status(
                 return Ok(());
             }
             apply_transition_by_awbs(
-                pool, &awbs, new_status, TERMINAL_STATUSES,
+                pool, &awbs, tenant, new_status, TERMINAL_STATUSES,
                 "status_changed", metadata,
             ).await?
         }
     };
     if rows == 0 {
-        tracing::warn!(topic, new_status, "hub status: no shipment updated (unknown id/awb or terminal)");
+        tracing::warn!(topic, new_status, event_tenant = %tenant, "hub status: no shipment updated (unknown id/awb, another tenant's, or terminal)");
     } else {
         tracing::info!(topic, new_status, rows, "hub status applied");
     }
@@ -460,6 +526,37 @@ mod tests {
             hub_status_mapping(topics::HUB_CARRIER_BOOKING_REQUESTED),
             Some(("out_for_delivery", MatchKey::ShipmentId))
         );
+    }
+
+    #[test]
+    fn tenant_is_read_from_the_envelope_not_the_payload() {
+        let t = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let evt = Event::new("t", "driver.delivery.completed", t, serde_json::json!({ "shipment_id": Uuid::new_v4(), "tenant_id": other }));
+        let bytes = serde_json::to_vec(&evt).expect("serialize");
+        assert_eq!(envelope_tenant(&bytes), Some(t));
+    }
+
+    #[test]
+    fn missing_nil_or_garbage_tenant_is_unusable() {
+        assert_eq!(envelope_tenant(br#"{"data":{"shipment_id":"x"}}"#), None);
+        assert_eq!(envelope_tenant(br#"{"tenant_id":"00000000-0000-0000-0000-000000000000"}"#), None);
+        assert_eq!(envelope_tenant(br#"{"tenant_id":"nope"}"#), None);
+        assert_eq!(envelope_tenant(b"not json"), None);
+    }
+
+    #[test]
+    fn only_the_owning_tenant_passes_the_gate() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        assert_eq!(tenant_gate(a, Some(a)), TenantGate::Owned);
+        assert_eq!(tenant_gate(a, Some(b)), TenantGate::Mismatch { shipment_tenant: b });
+        assert_eq!(tenant_gate(a, None), TenantGate::UnknownShipment);
+    }
+
+    #[test]
+    fn every_transition_statement_selects_by_tenant() {
+        assert!(TRANSITION_BY_ID_SQL.contains("id = $1 AND tenant_id = $8"));
+        assert!(TRANSITION_BY_AWBS_SQL.contains("awb = ANY($1) AND tenant_id = $6"));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! No database row is created for a quote nobody completes.
 
 use base64::Engine as _;
+use crate::application::commands::AddressInput;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -22,8 +23,24 @@ pub struct TokenDiscount {
     pub amount_cents: i64,
 }
 
+/// Current token format. Version 2 binds the route the quote was priced on
+/// (`QuoteTokenPayload::route`). Tokens signed before it deserialize with
+/// `v == 0` and are refused by `verify()`: the TTL is minutes, so asking the
+/// caller to re-quote costs one request, whereas honouring them would keep
+/// the unbound-destination hole open for a full TTL after deploy.
+pub const TOKEN_VERSION: u8 = 2;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuoteTokenPayload {
+    /// Format version; `0` (absent) for tokens from before route binding.
+    #[serde(default)]
+    pub v: u8,
+    /// `route_fingerprint` of the origin and destination the price was
+    /// computed on. `Some` for any quote whose price depends on the route
+    /// (rate-card and home-move); `None` only for the flat parcel tariff,
+    /// which is priced on service type and weight alone.
+    #[serde(default)]
+    pub route: Option<String>,
     pub tenant_id: Uuid,
     pub service_type: String,
     pub weight_grams: u32,
@@ -68,6 +85,21 @@ pub struct QuoteTokenPayload {
 }
 
 impl QuoteTokenPayload {
+    /// The booking must be for the route the quote was priced on. A token with
+    /// no route is accepted only when it is the flat parcel tariff; a
+    /// rate-card or home-move quote without one is refused, so stripping the
+    /// binding is no way round it.
+    pub fn check_route(&self, origin: &AddressInput, destination: &AddressInput) -> Result<(), RouteMismatch> {
+        match &self.route {
+            Some(fp) if *fp == route_fingerprint(origin, destination) => Ok(()),
+            Some(_) => Err(RouteMismatch::Different),
+            None if matches!(self.pricing_mode.as_deref(), Some("rate_card") | Some("home_move")) => {
+                Err(RouteMismatch::Unbound)
+            }
+            None => Ok(()),
+        }
+    }
+
     /// The lines this quote's booking must spend.
     pub fn discount_lines(&self) -> Vec<TokenDiscount> {
         match (&self.discounts, &self.promo_code, self.discount_cents) {
@@ -88,6 +120,61 @@ pub enum QuoteTokenError {
     BadSignature,
     #[error("quote token has expired")]
     Expired,
+    #[error("quote was issued by an older version of the service - request a new quote")]
+    Outdated,
+}
+
+/// A booking whose origin/destination are not the ones the quote was priced on.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RouteMismatch {
+    #[error("this quote was priced for a different origin or destination - request a new quote for this route")]
+    Different,
+    #[error("this quote carries no route but its pricing needs one - request a new quote")]
+    Unbound,
+}
+
+/// Lowercased, punctuation and spacing folded to single spaces, so
+/// "12  Rizal Ave." and "12 rizal ave" are one address.
+fn fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut gap = true;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+            gap = false;
+        } else if !gap {
+            out.push(' ');
+            gap = true;
+        }
+    }
+    out.trim_end().to_owned()
+}
+
+/// Postal codes compare without any separator ("1605", "1605 ", "SW1A 1AA" = "sw1a1aa").
+fn fold_compact(s: &str) -> String {
+    fold(s).replace(' ', "")
+}
+
+/// A stable digest of the address fields a distance-based price depends on:
+/// street line, city, postal code and country, for both ends. Province,
+/// barangay, line 2 and the UAE building/unit/area parts are left out: they
+/// are formatting-variable across callers (several send province = city) and
+/// do not move the geocoded point. The customer pin is left out too: the
+/// quote geocodes the text and never reads it.
+pub fn route_fingerprint(origin: &AddressInput, destination: &AddressInput) -> String {
+    use sha2::Digest as _;
+    let leg = |a: &AddressInput| {
+        format!(
+            "{}|{}|{}|{}",
+            fold(&a.line1),
+            fold(&a.city),
+            fold_compact(&a.postal_code),
+            a.country_code.trim().to_ascii_uppercase(),
+        )
+    };
+    let canonical = format!("o:{}\nd:{}", leg(origin), leg(destination));
+    let digest = Sha256::digest(canonical.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Sign a payload into `base64(json).base64(hmac-sha256)`.
@@ -117,6 +204,9 @@ pub fn verify(secret: &[u8], token: &str) -> Result<QuoteTokenPayload, QuoteToke
     let payload: QuoteTokenPayload = verify_payload(secret, token)?;
     if payload.expires_at < Utc::now() {
         return Err(QuoteTokenError::Expired);
+    }
+    if payload.v < TOKEN_VERSION {
+        return Err(QuoteTokenError::Outdated);
     }
     Ok(payload)
 }
@@ -151,6 +241,8 @@ mod tests {
 
     fn make_payload(ttl_minutes: i64) -> QuoteTokenPayload {
         QuoteTokenPayload {
+            v: TOKEN_VERSION,
+            route: None,
             tenant_id: Uuid::new_v4(),
             service_type: "standard".into(),
             weight_grams: 1_500,
@@ -179,6 +271,81 @@ mod tests {
         p.discounts = Some(vec![TokenDiscount { kind: "credit".into(), label: "Credit".into(), amount_cents: 300 }]);
         assert_eq!(p.discount_lines().len(), 1);
         assert_eq!(p.discount_lines()[0].kind, "credit");
+    }
+
+    fn addr(line1: &str, city: &str, postal: &str, country: &str) -> AddressInput {
+        AddressInput {
+            line1: line1.into(),
+            line2: None,
+            barangay: None,
+            city: city.into(),
+            province: "Metro Manila".into(),
+            postal_code: postal.into(),
+            country_code: country.into(),
+            pin_lat: None,
+            pin_lng: None,
+            building: None,
+            unit: None,
+            area: None,
+        }
+    }
+
+    fn route_token(origin: &AddressInput, dest: &AddressInput) -> QuoteTokenPayload {
+        QuoteTokenPayload {
+            route: Some(route_fingerprint(origin, dest)),
+            pricing_mode: Some("rate_card".into()),
+            ..make_payload(15)
+        }
+    }
+
+    #[test]
+    fn a_quote_for_one_destination_is_refused_at_another() {
+        let origin = addr("123 Warehouse Road", "Pasig", "1605", "PH");
+        let near = addr("456 Customer Street", "Quezon City", "1100", "PH");
+        let far = addr("9 Harbour Drive", "Davao City", "8000", "PH");
+        let p = route_token(&origin, &near);
+        assert_eq!(p.check_route(&origin, &far), Err(RouteMismatch::Different));
+        assert_eq!(p.check_route(&far, &near), Err(RouteMismatch::Different), "origin is bound too");
+        assert_eq!(p.check_route(&origin, &near), Ok(()));
+    }
+
+    #[test]
+    fn formatting_noise_does_not_break_a_legitimate_redemption() {
+        let origin = addr("123 Warehouse Road", "Pasig", "1605", "PH");
+        let dest = addr("456 Customer Street", "Quezon City", "1100", "PH");
+        let p = route_token(&origin, &dest);
+        let mut noisy = addr("  456  CUSTOMER street. ", "quezon  city", "1100 ", " ph");
+        noisy.province = "Quezon City".into(); // callers set province = city
+        noisy.line2 = Some("Unit 4".into());
+        noisy.pin_lat = Some(14.6);
+        noisy.pin_lng = Some(121.0);
+        assert_eq!(p.check_route(&origin, &noisy), Ok(()));
+    }
+
+    #[test]
+    fn a_rate_card_or_home_token_without_a_route_is_refused() {
+        let a = addr("123 Warehouse Road", "Pasig", "1605", "PH");
+        for mode in ["rate_card", "home_move"] {
+            let p = QuoteTokenPayload { pricing_mode: Some(mode.into()), ..make_payload(15) };
+            assert_eq!(p.check_route(&a, &a), Err(RouteMismatch::Unbound), "{mode}");
+        }
+        // The flat parcel tariff is not priced on the route.
+        assert_eq!(make_payload(15).check_route(&a, &a), Ok(()));
+    }
+
+    #[test]
+    fn a_token_from_before_route_binding_is_refused_with_a_clear_error() {
+        let secret = b"test-secret";
+        let legacy = QuoteTokenPayload { v: 0, ..make_payload(15) };
+        let err = verify(secret, &sign(secret, &legacy)).expect_err("legacy format must not verify");
+        assert!(matches!(err, QuoteTokenError::Outdated));
+        assert!(err.to_string().contains("request a new quote"));
+        // A token serialized without the field at all reads as v0.
+        let mut json = serde_json::to_value(make_payload(15)).expect("json");
+        json.as_object_mut().expect("object").remove("v");
+        json.as_object_mut().expect("object").remove("route");
+        let token = sign_payload(secret, &json);
+        assert!(matches!(verify(secret, &token), Err(QuoteTokenError::Outdated)));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::Deserialize;
 use uuid::Uuid;
+use validator::Validate;
 use sqlx::{PgPool, Row};
 
 use logisticos_auth::middleware::AuthClaims;
@@ -71,6 +72,7 @@ async fn create_shipment(
     Json(mut cmd): Json<CreateShipmentCommand>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_CREATE)?;
+    cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
     cmd.tenant_id   = claims.tenant_id;
     cmd.merchant_id = claims.user_id; // merchant uses their user UUID as merchant_id
     // Derive 3-char AWB tenant code from the tenant slug (first 3 alphanumeric chars, uppercased)
@@ -544,6 +546,7 @@ async fn internal_create_shipment(
     State(s): State<AppState>,
     Json(cmd): Json<InternalCreateShipmentCommand>,
 ) -> impl IntoResponse {
+    cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
     // Derive AWB tenant code from slug (same algorithm as the authenticated handler).
     let tenant_code: String = cmd.tenant_slug
         .chars()
@@ -552,12 +555,27 @@ async fn internal_create_shipment(
         .collect::<String>()
         .to_uppercase();
 
+    // Connector orders are never refused over phone format: normalise, and if
+    // the result is still out of range keep the phone as given and say so.
+    let normalized = crate::application::commands::normalize_phone(&cmd.customer_phone);
+    let customer_phone = if crate::application::commands::phone_in_range(&normalized) {
+        normalized
+    } else {
+        tracing::warn!(
+            tenant_id = %cmd.tenant_id, source_platform = %cmd.source_platform,
+            external_order_id = ?cmd.external_order_id,
+            "connector order has an unusable phone ({} chars after normalising) - accepted as given",
+            normalized.chars().count()
+        );
+        cmd.customer_phone.clone()
+    };
+
     let create_cmd = CreateShipmentCommand {
         tenant_id:         cmd.tenant_id,
         merchant_id:       cmd.merchant_id,
         tenant_code,
         customer_name:     cmd.customer_name,
-        customer_phone:    cmd.customer_phone,
+        customer_phone,
         customer_email:    cmd.customer_email,
         sender_name:       None,
         sender_phone:      None,
