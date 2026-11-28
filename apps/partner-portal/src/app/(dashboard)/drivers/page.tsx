@@ -18,7 +18,8 @@ import { useCarrier } from "@/contexts/carrier-context";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
-const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+// Gateway origin (the only NEXT_PUBLIC build arg); /v1/drivers and /v1/tasks route to driver-ops there.
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const API_BASE       = process.env.NEXT_PUBLIC_API_URL        ?? "http://localhost:8000";
 
 // ── Types ──────────────────────────────────────────────────────────────────────

@@ -22,7 +22,8 @@ import { type ManifestEntry } from "@/lib/api/carriers";
 import { useCarrier } from "@/contexts/carrier-context";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
-const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+// Gateway origin (the only NEXT_PUBLIC build arg); /v1/drivers and /v1/tasks route to driver-ops there.
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 async function fetchManifest(date: string, carrierId: string): Promise<ManifestEntry[]> {
   const params = new URLSearchParams({ date, carrier_id: carrierId });
