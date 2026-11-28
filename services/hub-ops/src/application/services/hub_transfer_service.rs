@@ -28,15 +28,17 @@ use logisticos_events::{
     producer::KafkaProducer,
     topics,
 };
-use logisticos_types::ContainerId;
+use logisticos_types::{ContainerId, TenantId};
 use uuid::Uuid;
 
 use crate::application::services::hub_transfer_repositories::{
     HubInventoryRepository, HubLocationRepository, HubRoutingConfigRepository, HubScanRepository,
     HubTransferManifestRepository,
 };
-use crate::application::services::pallet_service::ContainerRepository;
+use crate::application::services::pallet_service::{ContainerRepository, PalletRepository};
+use crate::application::services::HubRepository;
 use crate::domain::entities::{
+    HubId,
     container::Container, HubInventory, HubLocation, HubRoutingConfig, HubScan, HubTransferManifest,
     RoutingType, ScanType,
 };
@@ -45,6 +47,8 @@ use crate::domain::entities::{
 
 #[derive(Debug)]
 pub struct ClearCustomsCommand {
+    /// From the validated JWT, never the request body.
+    pub tenant_id:          TenantId,
     pub container_id:       ContainerId,
     /// Hub agent who approved clearance — mandatory human gate.
     pub cleared_by:         Uuid,
@@ -58,6 +62,8 @@ pub struct ClearCustomsCommand {
 
 #[derive(Debug)]
 pub struct DeconsolidateCommand {
+    /// From the validated JWT, never the request body.
+    pub tenant_id:        TenantId,
     pub container_id:     ContainerId,
     /// Last-mile zone for routing-rule lookup at the destination hub.
     pub destination_zone: String,
@@ -72,6 +78,8 @@ pub struct DeconsolidateCommand {
 // ── Service ─────────────────────────────────────────────────────────────────────
 
 pub struct HubTransferService {
+    hub_repo:       Arc<dyn HubRepository>,
+    pallet_repo:    Arc<dyn PalletRepository>,
     container_repo: Arc<dyn ContainerRepository>,
     scan_repo:      Arc<dyn HubScanRepository>,
     location_repo:  Arc<dyn HubLocationRepository>,
@@ -84,6 +92,8 @@ pub struct HubTransferService {
 impl HubTransferService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        hub_repo:       Arc<dyn HubRepository>,
+        pallet_repo:    Arc<dyn PalletRepository>,
         container_repo: Arc<dyn ContainerRepository>,
         scan_repo:      Arc<dyn HubScanRepository>,
         location_repo:  Arc<dyn HubLocationRepository>,
@@ -93,6 +103,8 @@ impl HubTransferService {
         kafka:          Arc<KafkaProducer>,
     ) -> Self {
         Self {
+            hub_repo,
+            pallet_repo,
             container_repo,
             scan_repo,
             location_repo,
@@ -108,6 +120,18 @@ impl HubTransferService {
     /// Append an immutable scan. On `InboundReceive` emits `hub.piece.scanned_inbound`
     /// so order-intake marks the shipment `AtHub`.
     pub async fn record_scan(&self, scan: HubScan) -> AppResult<HubScan> {
+        let tenant = scan.tenant_id.clone();
+        self.require_hub(&tenant, scan.hub_id.inner()).await?;
+        if let Some(p) = &scan.pallet_id {
+            self.pallet_repo
+                .find_by_id(p, &tenant)
+                .await
+                .map_err(AppError::Internal)?
+                .ok_or_else(|| AppError::NotFound { resource: "Pallet", id: p.inner().to_string() })?;
+        }
+        if let Some(c) = &scan.container_id {
+            self.load_container(&tenant, c).await?;
+        }
         self.scan_repo.append(&scan).await.map_err(AppError::Internal)?;
 
         if scan.scan_type == ScanType::InboundReceive {
@@ -153,10 +177,11 @@ impl HubTransferService {
     /// `hub.container.arrived_at_port`.
     pub async fn arrive_at_port(
         &self,
+        tenant_id:    &TenantId,
         container_id: ContainerId,
         details:      Vec<ShipmentMilestoneDetail>,
     ) -> AppResult<Container> {
-        let mut container = self.load_container(&container_id).await?;
+        let mut container = self.load_container(tenant_id, &container_id).await?;
         container.arrive_at_port().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
         self.load_or_create_manifest(&container).await?;
@@ -184,10 +209,11 @@ impl HubTransferService {
     /// ArrivedAtPort → Customs. Holds the manifest and emits `hub.container.customs_hold`.
     pub async fn enter_customs(
         &self,
+        tenant_id:    &TenantId,
         container_id: ContainerId,
         details:      Vec<ShipmentMilestoneDetail>,
     ) -> AppResult<Container> {
-        let mut container = self.load_container(&container_id).await?;
+        let mut container = self.load_container(tenant_id, &container_id).await?;
         container.enter_customs().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
 
@@ -217,7 +243,7 @@ impl HubTransferService {
     /// Customs → Released (human gate). Records duties/filing + `cleared_by` on the
     /// manifest and emits `hub.container.customs_cleared`.
     pub async fn clear_customs(&self, cmd: ClearCustomsCommand) -> AppResult<Container> {
-        let mut container = self.load_container(&cmd.container_id).await?;
+        let mut container = self.load_container(&cmd.tenant_id, &cmd.container_id).await?;
         container.clear_customs().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
 
@@ -255,8 +281,12 @@ impl HubTransferService {
     }
 
     /// InTransit → Released (road, skips port/customs). Emits `hub.container.released_domestic`.
-    pub async fn release_domestic(&self, container_id: ContainerId) -> AppResult<Container> {
-        let mut container = self.load_container(&container_id).await?;
+    pub async fn release_domestic(
+        &self,
+        tenant_id:    &TenantId,
+        container_id: ContainerId,
+    ) -> AppResult<Container> {
+        let mut container = self.load_container(tenant_id, &container_id).await?;
         container.release_domestic().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
 
@@ -281,7 +311,7 @@ impl HubTransferService {
     /// Released → Deconsolidated. Emits `hub.container.deconsolidated` then fans out a
     /// last-mile routing request per shipment based on the destination-zone routing rule.
     pub async fn deconsolidate(&self, cmd: DeconsolidateCommand) -> AppResult<Container> {
-        let mut container = self.load_container(&cmd.container_id).await?;
+        let mut container = self.load_container(&cmd.tenant_id, &cmd.container_id).await?;
         let children = container.deconsolidate().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
 
@@ -293,7 +323,7 @@ impl HubTransferService {
             let awbs = master_awb_strings(&container);
             resolved_ids = self
                 .container_repo
-                .resolve_awbs_to_shipment_ids(&awbs)
+                .resolve_awbs_to_shipment_ids(&awbs, &cmd.tenant_id)
                 .await
                 .map_err(AppError::Internal)?;
             tracing::info!(
@@ -416,19 +446,29 @@ impl HubTransferService {
 
     // ── Manifests / routing / locations / inventory (read + admin) ───────────────
 
-    pub async fn get_manifest(&self, container_id: Uuid) -> AppResult<Option<HubTransferManifest>> {
-        self.manifest_repo.find_by_container(container_id).await.map_err(AppError::Internal)
+    /// Transfer manifest for one of the caller's containers. `None` when the
+    /// container has no manifest yet, or is not the caller's.
+    pub async fn get_manifest(
+        &self,
+        tenant_id:    &TenantId,
+        container_id: Uuid,
+    ) -> AppResult<Option<HubTransferManifest>> {
+        self.manifest_repo
+            .find_by_container(container_id, tenant_id.inner())
+            .await
+            .map_err(AppError::Internal)
     }
 
     /// Container + its transfer manifest — backs the `get_container_status` MCP tool.
     pub async fn get_container_status(
         &self,
+        tenant_id:    &TenantId,
         container_id: ContainerId,
     ) -> AppResult<(Container, Option<HubTransferManifest>)> {
-        let container = self.load_container(&container_id).await?;
+        let container = self.load_container(tenant_id, &container_id).await?;
         let manifest  = self
             .manifest_repo
-            .find_by_container(container_id.inner())
+            .find_by_container(container_id.inner(), tenant_id.inner())
             .await
             .map_err(AppError::Internal)?;
         Ok((container, manifest))
@@ -439,10 +479,12 @@ impl HubTransferService {
         hub_id:    Uuid,
         tenant_id: Uuid,
     ) -> AppResult<Vec<HubTransferManifest>> {
+        self.require_hub(&TenantId::from_uuid(tenant_id), hub_id).await?;
         self.manifest_repo.list_in_customs(hub_id, tenant_id).await.map_err(AppError::Internal)
     }
 
     pub async fn upsert_routing_config(&self, config: &HubRoutingConfig) -> AppResult<()> {
+        self.require_hub(&config.tenant_id, config.hub_id.inner()).await?;
         self.routing_repo.save(config).await.map_err(AppError::Internal)
     }
 
@@ -451,34 +493,72 @@ impl HubTransferService {
         hub_id:    Uuid,
         tenant_id: Uuid,
     ) -> AppResult<Vec<HubRoutingConfig>> {
+        self.require_hub(&TenantId::from_uuid(tenant_id), hub_id).await?;
         self.routing_repo.list_for_hub(hub_id, tenant_id).await.map_err(AppError::Internal)
     }
 
     pub async fn create_location(&self, location: &HubLocation) -> AppResult<()> {
+        self.require_hub(&location.tenant_id, location.hub_id.inner()).await?;
         self.location_repo.save(location).await.map_err(AppError::Internal)
     }
 
     pub async fn list_locations(
         &self,
-        hub_id:  Uuid,
-        zone_id: Option<&str>,
+        tenant_id: &TenantId,
+        hub_id:    Uuid,
+        zone_id:   Option<&str>,
     ) -> AppResult<Vec<HubLocation>> {
-        self.location_repo.list_for_hub(hub_id, zone_id).await.map_err(AppError::Internal)
+        self.require_hub(tenant_id, hub_id).await?;
+        self.location_repo
+            .list_for_hub(hub_id, tenant_id.inner(), zone_id)
+            .await
+            .map_err(AppError::Internal)
     }
 
     pub async fn check_in_inventory(&self, inventory: &HubInventory) -> AppResult<()> {
+        self.require_hub(&inventory.tenant_id, inventory.hub_id.inner()).await?;
+        // The location is a request-body id: it must be the caller's.
+        self.location_repo
+            .find_by_id(inventory.location_id, inventory.tenant_id.inner())
+            .await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "HubLocation",
+                id: inventory.location_id.to_string(),
+            })?;
         self.inventory_repo.upsert(inventory).await.map_err(AppError::Internal)
     }
 
-    pub async fn list_inventory_at(&self, location_id: Uuid) -> AppResult<Vec<HubInventory>> {
-        self.inventory_repo.list_at_location(location_id).await.map_err(AppError::Internal)
+    pub async fn list_inventory_at(
+        &self,
+        tenant_id:   &TenantId,
+        location_id: Uuid,
+    ) -> AppResult<Vec<HubInventory>> {
+        self.location_repo
+            .find_by_id(location_id, tenant_id.inner())
+            .await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "HubLocation",
+                id: location_id.to_string(),
+            })?;
+        self.inventory_repo
+            .list_at_location(location_id, tenant_id.inner())
+            .await
+            .map_err(AppError::Internal)
     }
 
-    /// Move a unit to a new location in place (single-row update).
-    pub async fn move_inventory(&self, inventory_id: Uuid, to_location_id: Uuid) -> AppResult<()> {
+    /// Move a unit to a new location in place (single-row update). Both the
+    /// inventory record and the destination location must be the caller's.
+    pub async fn move_inventory(
+        &self,
+        tenant_id:      &TenantId,
+        inventory_id:   Uuid,
+        to_location_id: Uuid,
+    ) -> AppResult<()> {
         let rows = self
             .inventory_repo
-            .move_to(inventory_id, to_location_id)
+            .move_to(inventory_id, to_location_id, tenant_id.inner())
             .await
             .map_err(AppError::Internal)?;
         if rows == 0 {
@@ -492,9 +572,20 @@ impl HubTransferService {
 
     // ── Internal helpers ──────────────────────────────────────────────────────────
 
-    async fn load_container(&self, id: &ContainerId) -> AppResult<Container> {
+    /// 404 unless `hub_id` is one of `tenant_id`'s hubs. Every hub id that
+    /// arrives in a path, query or body goes through here.
+    pub async fn require_hub(&self, tenant_id: &TenantId, hub_id: Uuid) -> AppResult<()> {
+        self.hub_repo
+            .find_by_id(&HubId::from_uuid(hub_id), tenant_id)
+            .await
+            .map_err(AppError::Internal)?
+            .map(|_| ())
+            .ok_or_else(|| AppError::NotFound { resource: "Hub", id: hub_id.to_string() })
+    }
+
+    async fn load_container(&self, tenant_id: &TenantId, id: &ContainerId) -> AppResult<Container> {
         self.container_repo
-            .find_by_id(id)
+            .find_by_id(id, tenant_id)
             .await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
@@ -506,7 +597,7 @@ impl HubTransferService {
     async fn load_or_create_manifest(&self, container: &Container) -> AppResult<HubTransferManifest> {
         if let Some(m) = self
             .manifest_repo
-            .find_by_container(container.id.inner())
+            .find_by_container(container.id.inner(), container.tenant_id.inner())
             .await
             .map_err(AppError::Internal)?
         {

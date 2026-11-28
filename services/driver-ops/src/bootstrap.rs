@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, watch};
 use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
-use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer, start_offer_consumer, start_shipment_cancelled_consumer};
+use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer, start_offer_consumer, start_shipment_cancelled_consumer, start_feedback_consumer};
 use crate::infrastructure::external::FcmClient;
 use crate::api::http::{router, AppState, RosterEvent};
 use logisticos_auth::jwt::JwtService;
@@ -132,6 +132,22 @@ pub async fn run() -> anyhow::Result<()> {
             shutdown_rx_rejections,
         ).await {
             tracing::error!("Assignment-rejected consumer crashed: {e}");
+        }
+    });
+
+    // Spawn DELIVERY_FEEDBACK_SUBMITTED consumer: customer ratings into rating_avg/rating_count.
+    let pool_for_feedback    = pool.clone();
+    let brokers_for_feedback = cfg.kafka.brokers.clone();
+    let group_for_feedback   = cfg.kafka.group_id.clone();
+    let shutdown_rx_feedback = shutdown_rx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_feedback_consumer(
+            &brokers_for_feedback,
+            &group_for_feedback,
+            pool_for_feedback,
+            shutdown_rx_feedback,
+        ).await {
+            tracing::error!("Feedback consumer crashed: {e}");
         }
     });
 

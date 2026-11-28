@@ -15,7 +15,7 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<McpState>) -> Re
     let location_id = req_uuid(args, "location_id")?;
     let items = state
         .hub_transfer_svc
-        .list_inventory_at(location_id)
+        .list_inventory_at(&logisticos_types::TenantId::from_uuid(ctx.tenant_id), location_id)
         .await
         .map_err(|e| format!("failed to list inventory: {e}"))?;
     Ok(json!({ "location_id": location_id, "inventory": to_value(&items)? }))

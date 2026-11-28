@@ -145,18 +145,19 @@ impl PgHubRepository {
 
 #[async_trait]
 impl HubRepository for PgHubRepository {
-    /// Look up a single hub by its UUID primary key.
-    async fn find_by_id(&self, id: &HubId) -> anyhow::Result<Option<Hub>> {
+    /// Look up a single hub by its UUID primary key, within the caller's tenant.
+    async fn find_by_id(&self, id: &HubId, tenant_id: &TenantId) -> anyhow::Result<Option<Hub>> {
         let row = sqlx::query_as::<_, HubRow>(
             r#"
             SELECT id, tenant_id, name, address,
                    lat, lng, capacity, current_load,
                    serving_zones, is_active, created_at, updated_at
             FROM hub_ops.hubs
-            WHERE id = $1
+            WHERE id = $1 AND tenant_id = $2
             "#
         )
         .bind(id.inner())
+        .bind(tenant_id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -204,6 +205,7 @@ impl HubRepository for PgHubRepository {
                 serving_zones = EXCLUDED.serving_zones,
                 is_active     = EXCLUDED.is_active,
                 updated_at    = EXCLUDED.updated_at
+            WHERE hub_ops.hubs.tenant_id = EXCLUDED.tenant_id
             "#
         )
         .bind(hub.id.inner())
@@ -243,17 +245,18 @@ impl PgInductionRepository {
 #[async_trait]
 impl InductionRepository for PgInductionRepository {
     /// Look up a single parcel induction by primary key.
-    async fn find_by_id(&self, id: &InductionId) -> anyhow::Result<Option<ParcelInduction>> {
+    async fn find_by_id(&self, id: &InductionId, tenant_id: &TenantId) -> anyhow::Result<Option<ParcelInduction>> {
         let row = sqlx::query_as::<_, InductionRow>(
             r#"
             SELECT id, hub_id, tenant_id, shipment_id, tracking_number,
                    status, zone, bay, inducted_by,
                    inducted_at, sorted_at, dispatched_at
             FROM hub_ops.parcel_inductions
-            WHERE id = $1
+            WHERE id = $1 AND tenant_id = $2
             "#
         )
         .bind(id.inner())
+        .bind(tenant_id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -263,19 +266,20 @@ impl InductionRepository for PgInductionRepository {
     /// Find the most recent induction record for a given shipment, regardless
     /// of which hub it was inducted into.  Returns the first row (LIMIT 1)
     /// ordered by `inducted_at DESC` so newer records take precedence.
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ParcelInduction>> {
+    async fn find_by_shipment(&self, shipment_id: Uuid, tenant_id: &TenantId) -> anyhow::Result<Option<ParcelInduction>> {
         let row = sqlx::query_as::<_, InductionRow>(
             r#"
             SELECT id, hub_id, tenant_id, shipment_id, tracking_number,
                    status, zone, bay, inducted_by,
                    inducted_at, sorted_at, dispatched_at
             FROM hub_ops.parcel_inductions
-            WHERE shipment_id = $1
+            WHERE shipment_id = $1 AND tenant_id = $2
             ORDER BY inducted_at DESC
             LIMIT 1
             "#
         )
         .bind(shipment_id)
+        .bind(tenant_id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -284,7 +288,7 @@ impl InductionRepository for PgInductionRepository {
 
     /// Return all active (inducted or sorted) induction records for a hub,
     /// ordered with most recently inducted parcels first.
-    async fn list_active(&self, hub_id: &HubId) -> anyhow::Result<Vec<ParcelInduction>> {
+    async fn list_active(&self, hub_id: &HubId, tenant_id: &TenantId) -> anyhow::Result<Vec<ParcelInduction>> {
         let rows = sqlx::query_as::<_, InductionRow>(
             r#"
             SELECT id, hub_id, tenant_id, shipment_id, tracking_number,
@@ -292,11 +296,13 @@ impl InductionRepository for PgInductionRepository {
                    inducted_at, sorted_at, dispatched_at
             FROM hub_ops.parcel_inductions
             WHERE hub_id = $1
+              AND tenant_id = $2
               AND status IN ('inducted', 'sorted')
             ORDER BY inducted_at DESC
             "#
         )
         .bind(hub_id.inner())
+        .bind(tenant_id.inner())
         .fetch_all(&self.pool)
         .await?;
 
@@ -328,6 +334,7 @@ impl InductionRepository for PgInductionRepository {
                 bay           = EXCLUDED.bay,
                 sorted_at     = EXCLUDED.sorted_at,
                 dispatched_at = EXCLUDED.dispatched_at
+            WHERE hub_ops.parcel_inductions.tenant_id = EXCLUDED.tenant_id
             "#
         )
         .bind(i.id.inner())
@@ -446,11 +453,13 @@ pub struct PgPalletRepository {
 impl PgPalletRepository {
     pub fn new(pool: PgPool) -> Self { Self { pool } }
 
-    async fn load_pieces(&self, pallet_id: Uuid) -> anyhow::Result<Vec<ChildAwb>> {
+    async fn load_pieces(&self, pallet_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Vec<ChildAwb>> {
         let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT piece_awb FROM hub_ops.pallet_pieces WHERE pallet_id = $1 ORDER BY loaded_at"
+            "SELECT piece_awb FROM hub_ops.pallet_pieces \
+             WHERE pallet_id = $1 AND tenant_id = $2 ORDER BY loaded_at"
         )
         .bind(pallet_id)
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
@@ -477,21 +486,22 @@ impl PgPalletRepository {
 
 #[async_trait]
 impl PalletRepository for PgPalletRepository {
-    async fn find_by_id(&self, id: &PalletId) -> anyhow::Result<Option<Pallet>> {
+    async fn find_by_id(&self, id: &PalletId, tenant_id: &TenantId) -> anyhow::Result<Option<Pallet>> {
         let row = sqlx::query_as::<_, PalletRow>(
             r#"SELECT id, tenant_id, origin_hub_id, destination_hub_id,
                       total_weight_grams, status, sealed_at, sealed_by,
                       created_at, updated_at
-               FROM hub_ops.pallets WHERE id = $1"#
+               FROM hub_ops.pallets WHERE id = $1 AND tenant_id = $2"#
         )
         .bind(id.inner())
+        .bind(tenant_id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
         match row {
             None    => Ok(None),
             Some(r) => {
-                let pieces = self.load_pieces(r.id).await?;
+                let pieces = self.load_pieces(r.id, r.tenant_id).await?;
                 Ok(Some(self.row_to_pallet(r, pieces)))
             }
         }
@@ -501,6 +511,7 @@ impl PalletRepository for PgPalletRepository {
         &self,
         hub_id:             &logisticos_types::HubId,
         destination_hub_id: Option<&logisticos_types::HubId>,
+        tenant_id:          &TenantId,
     ) -> anyhow::Result<Option<Pallet>> {
         let row = match destination_hub_id {
             Some(dest) => sqlx::query_as::<_, PalletRow>(
@@ -509,9 +520,10 @@ impl PalletRepository for PgPalletRepository {
                           created_at, updated_at
                    FROM hub_ops.pallets
                    WHERE origin_hub_id = $1 AND destination_hub_id = $2 AND status = 'open'
+                     AND tenant_id = $3
                    ORDER BY created_at ASC LIMIT 1"#
             )
-            .bind(hub_id.inner()).bind(dest.inner())
+            .bind(hub_id.inner()).bind(dest.inner()).bind(tenant_id.inner())
             .fetch_optional(&self.pool)
             .await?,
 
@@ -521,9 +533,11 @@ impl PalletRepository for PgPalletRepository {
                           created_at, updated_at
                    FROM hub_ops.pallets
                    WHERE origin_hub_id = $1 AND destination_hub_id IS NULL AND status = 'open'
+                     AND tenant_id = $2
                    ORDER BY created_at ASC LIMIT 1"#
             )
             .bind(hub_id.inner())
+            .bind(tenant_id.inner())
             .fetch_optional(&self.pool)
             .await?,
         };
@@ -531,7 +545,7 @@ impl PalletRepository for PgPalletRepository {
         match row {
             None    => Ok(None),
             Some(r) => {
-                let pieces = self.load_pieces(r.id).await?;
+                let pieces = self.load_pieces(r.id, r.tenant_id).await?;
                 Ok(Some(self.row_to_pallet(r, pieces)))
             }
         }
@@ -549,7 +563,8 @@ impl PalletRepository for PgPalletRepository {
                 status             = EXCLUDED.status,
                 sealed_at          = EXCLUDED.sealed_at,
                 sealed_by          = EXCLUDED.sealed_by,
-                updated_at         = EXCLUDED.updated_at"#
+                updated_at         = EXCLUDED.updated_at
+               WHERE hub_ops.pallets.tenant_id = EXCLUDED.tenant_id"#
         )
         .bind(pallet.id.inner())
         .bind(pallet.tenant_id.inner())
@@ -609,21 +624,25 @@ pub struct PgPalletContainerRepository {
 impl PgPalletContainerRepository {
     pub fn new(pool: PgPool) -> Self { Self { pool } }
 
-    async fn load_pallet_ids(&self, container_id: Uuid) -> anyhow::Result<Vec<PalletId>> {
+    async fn load_pallet_ids(&self, container_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Vec<PalletId>> {
         let rows: Vec<(Uuid,)> = sqlx::query_as(
-            "SELECT pallet_id FROM hub_ops.container_pallets WHERE container_id = $1"
+            "SELECT pallet_id FROM hub_ops.container_pallets \
+             WHERE container_id = $1 AND tenant_id = $2"
         )
         .bind(container_id)
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id,)| PalletId::from_uuid(id)).collect())
     }
 
-    async fn load_loose_pieces(&self, container_id: Uuid) -> anyhow::Result<Vec<ChildAwb>> {
+    async fn load_loose_pieces(&self, container_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Vec<ChildAwb>> {
         let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT piece_awb FROM hub_ops.container_loose_pieces WHERE container_id = $1"
+            "SELECT piece_awb FROM hub_ops.container_loose_pieces \
+             WHERE container_id = $1 AND tenant_id = $2"
         )
         .bind(container_id)
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
@@ -658,15 +677,16 @@ impl PgPalletContainerRepository {
 
 #[async_trait]
 impl ContainerRepository for PgPalletContainerRepository {
-    async fn find_by_id(&self, id: &ContainerId) -> anyhow::Result<Option<Container>> {
+    async fn find_by_id(&self, id: &ContainerId, tenant_id: &TenantId) -> anyhow::Result<Option<Container>> {
         let row = sqlx::query_as::<_, ContainerRow2>(
             r#"SELECT id, tenant_id, transport_mode, carrier_ref,
                       origin_hub_id, destination_hub_id, master_awbs,
                       status, departed_at, estimated_arrival, arrived_at,
                       created_at, updated_at
-               FROM hub_ops.containers WHERE id = $1"#
+               FROM hub_ops.containers WHERE id = $1 AND tenant_id = $2"#
         )
         .bind(id.inner())
+        .bind(tenant_id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -674,8 +694,8 @@ impl ContainerRepository for PgPalletContainerRepository {
             None    => Ok(None),
             Some(r) => {
                 let id_uuid = r.id;
-                let pallets = self.load_pallet_ids(id_uuid).await?;
-                let loose   = self.load_loose_pieces(id_uuid).await?;
+                let pallets = self.load_pallet_ids(id_uuid, r.tenant_id).await?;
+                let loose   = self.load_loose_pieces(id_uuid, r.tenant_id).await?;
                 Ok(Some(self.row_to_container(r, pallets, loose)))
             }
         }
@@ -699,7 +719,8 @@ impl ContainerRepository for PgPalletContainerRepository {
                 departed_at       = EXCLUDED.departed_at,
                 estimated_arrival = EXCLUDED.estimated_arrival,
                 arrived_at        = EXCLUDED.arrived_at,
-                updated_at        = EXCLUDED.updated_at"#
+                updated_at        = EXCLUDED.updated_at
+               WHERE hub_ops.containers.tenant_id = EXCLUDED.tenant_id"#
         )
         .bind(c.id.inner())
         .bind(c.tenant_id.inner())
@@ -747,13 +768,18 @@ impl ContainerRepository for PgPalletContainerRepository {
         Ok(())
     }
 
-    async fn resolve_awbs_to_shipment_ids(&self, awbs: &[String]) -> anyhow::Result<Vec<uuid::Uuid>> {
+    async fn resolve_awbs_to_shipment_ids(
+        &self,
+        awbs: &[String],
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<uuid::Uuid>> {
         if awbs.is_empty() { return Ok(vec![]); }
         let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT DISTINCT shipment_id FROM hub_ops.parcel_inductions \
-             WHERE tracking_number = ANY($1)"
+             WHERE tracking_number = ANY($1) AND tenant_id = $2"
         )
         .bind(awbs)
+        .bind(tenant_id.inner())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())

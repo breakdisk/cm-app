@@ -38,7 +38,7 @@ pub trait ConsolidationPlanRepository: Send + Sync {
     async fn insert_loading(
         &self, plan_id: Uuid, tenant_id: Uuid, awb: &str, scanned_by: Option<Uuid>,
     ) -> anyhow::Result<bool>;
-    async fn loading_count(&self, plan_id: Uuid) -> anyhow::Result<i64>;
+    async fn loading_count(&self, plan_id: Uuid, tenant_id: Uuid) -> anyhow::Result<i64>;
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -284,8 +284,8 @@ impl ConsolidationService {
         self.plans.insert_loading(plan_id, tenant_id, awb, scanned_by).await
     }
 
-    pub async fn loading_count(&self, plan_id: Uuid) -> anyhow::Result<i64> {
-        self.plans.loading_count(plan_id).await
+    pub async fn loading_count(&self, plan_id: Uuid, tenant_id: Uuid) -> anyhow::Result<i64> {
+        self.plans.loading_count(plan_id, tenant_id).await
     }
 
     pub async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {

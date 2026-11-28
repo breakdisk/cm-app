@@ -47,6 +47,9 @@ struct BillingContextResponse {
     /// The booking's tenant. Absent from an order-intake that predates it.
     #[serde(default)]
     tenant_id:            Option<Uuid>,
+    /// The booker (`shipment.merchant_id`).
+    #[serde(default)]
+    merchant_id:          Option<Uuid>,
 }
 
 #[async_trait]
@@ -112,6 +115,7 @@ fn context_from_response(
         service_code,
         declared_value_cents: resp.declared_value_cents,
         customer_phone:       resp.customer_phone,
+        merchant_id:          resp.merchant_id,
     })
 }
 
@@ -125,6 +129,7 @@ mod tests {
             declared_value_cents: None,
             customer_phone: Some("+639171234567".into()),
             tenant_id: tenant,
+            merchant_id: None,
         }
     }
 

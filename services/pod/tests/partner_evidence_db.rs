@@ -25,7 +25,9 @@ use logisticos_pod::api::http::{pod as h, AppState};
 use logisticos_events::producer::KafkaProducer;
 use logisticos_pod::application::services::PodService;
 use logisticos_pod::domain::entities::{ProofOfDelivery, ProofOfPickup};
-use logisticos_pod::domain::repositories::{PickupRepository, PodRepository};
+use logisticos_pod::domain::repositories::{
+    PickupRepository, PodRepository, ShipmentBillingContext, ShipmentBillingContextSource, ShipmentNotFound,
+};
 use logisticos_pod::domain::value_objects::delivery_pin::DeliveryPinPolicy;
 use logisticos_pod::infrastructure::db::{
     PgOtpRepository, PgPickupRepository, PgPodRepository, PgTelemetryRepository,
@@ -63,6 +65,10 @@ async fn pool() -> Option<PgPool> {
 }
 
 fn service(pool: &PgPool) -> PodService {
+    service_with(pool, None)
+}
+
+fn service_with(pool: &PgPool, source: Option<Arc<dyn ShipmentBillingContextSource>>) -> PodService {
     PodService::new(
         Arc::new(PgPodRepository::new(pool.clone())),
         Arc::new(PgOtpRepository::new(pool.clone())),
@@ -72,9 +78,36 @@ fn service(pool: &PgPool) -> PodService {
         Arc::new(NoStorage),
         Arc::new(NoOpSmsAdapter),
         Arc::new(KafkaProducer::new("localhost:9092").expect("producer")),
-        None,
+        source,
         DeliveryPinPolicy::default(),
     )
+}
+
+/// order-intake stand-in: every shipment of `tenant` was booked by `booker`.
+/// `booker: None` models an order-intake that cannot name one; `down` an outage.
+struct Booked { tenant: Uuid, booker: Option<Uuid>, down: bool }
+
+#[async_trait]
+impl ShipmentBillingContextSource for Booked {
+    async fn fetch(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<ShipmentBillingContext> {
+        if self.down { anyhow::bail!("order-intake unreachable"); }
+        if tenant_id != self.tenant {
+            return Err(anyhow::Error::new(ShipmentNotFound(shipment_id)));
+        }
+        Ok(ShipmentBillingContext {
+            service_code: "standard".into(),
+            declared_value_cents: None,
+            customer_phone: None,
+            merchant_id: self.booker,
+        })
+    }
+}
+
+fn state_booked(pool: &PgPool, src: Booked) -> State<Arc<AppState>> {
+    State(Arc::new(AppState {
+        pod_service: Arc::new(service_with(pool, Some(Arc::new(src)))),
+        jwt: Arc::new(JwtService::new("test-secret-test-secret-test-secret", 3600, 86400)),
+    }))
 }
 
 
@@ -204,5 +237,80 @@ async fn a_partner_role_token_that_captured_nothing_reads_nothing() {
     }
     for pop in [&s.my_pop, &s.their_pop] {
         assert!(empty(&h::list_pops(p(), q(pop.shipment_id), state(&pool)).await.expect("list")));
+    }
+}
+
+// ── Role / ownership scoping inside a tenant (no partner binding) ─────────────
+
+/// A merchant or customer reads the proofs of shipments they booked and nothing
+/// else in the tenant. A foreign shipment is "not found" by id, empty by shipment.
+#[tokio::test]
+async fn merchants_and_customers_read_only_shipments_they_booked() {
+    let Some(pool) = pool().await else { return };
+    let s = seed(&pool).await;
+    for role in ["merchant", "customer"] {
+        let me = Uuid::new_v4();
+        let mine = || state_booked(&pool, Booked { tenant: s.tenant, booker: Some(me), down: false });
+        let theirs = || state_booked(&pool, Booked { tenant: s.tenant, booker: Some(Uuid::new_v4()), down: false });
+        let c = || claims(s.tenant, me, &[role], None);
+
+        let _ = h::get_pod(c(), Path(s.their_pod.id), mine()).await.expect("own POD by id");
+        let _ = h::get_pop(c(), Path(s.their_pop.id), mine()).await.expect("own POP by id");
+        assert!(!empty(&h::list_pods(c(), q(s.their_pod.shipment_id), mine()).await.expect("list")));
+
+        let e = h::get_pod(c(), Path(s.my_pod.id), theirs()).await.expect_err("foreign POD by id");
+        assert!(is_not_found(&e), "{role}: {e:?}");
+        let e = h::get_pop(c(), Path(s.my_pop.id), theirs()).await.expect_err("foreign POP by id");
+        assert!(is_not_found(&e), "{role}: {e:?}");
+        assert!(empty(&h::list_pods(c(), q(s.my_pod.shipment_id), theirs()).await.expect("list")), "{role}");
+        assert!(empty(&h::list_pops(c(), q(s.my_pop.shipment_id), theirs()).await.expect("list")), "{role}");
+    }
+}
+
+/// An unverifiable owner is refused (503), never read as "owned".
+#[tokio::test]
+async fn an_owner_is_refused_when_order_intake_cannot_confirm_the_booker() {
+    let Some(pool) = pool().await else { return };
+    let s = seed(&pool).await;
+    let c = || claims(s.tenant, Uuid::new_v4(), &["merchant"], None);
+    for src in [
+        Booked { tenant: s.tenant, booker: None, down: false },
+        Booked { tenant: s.tenant, booker: None, down: true },
+    ] {
+        let e = h::get_pod(c(), Path(s.my_pod.id), state_booked(&pool, src)).await.expect_err("must refuse");
+        assert!(matches!(e, AppError::ServiceUnavailable(_)), "{e:?}");
+    }
+}
+
+/// A plain (non-partner) driver reads the proofs they captured, and no one else's.
+#[tokio::test]
+async fn a_driver_reads_only_proofs_they_captured() {
+    let Some(pool) = pool().await else { return };
+    let s = seed(&pool).await;
+    let me = || claims(s.tenant, s.mine, &["driver"], None);
+
+    let _ = h::get_pod(me(), Path(s.my_pod.id), state(&pool)).await.expect("own POD");
+    let _ = h::get_pop(me(), Path(s.my_pop.id), state(&pool)).await.expect("own POP");
+    let e = h::get_pod(me(), Path(s.their_pod.id), state(&pool)).await.expect_err("other POD");
+    assert!(is_not_found(&e), "{e:?}");
+    let e = h::get_pop(me(), Path(s.their_pop.id), state(&pool)).await.expect_err("other POP");
+    assert!(is_not_found(&e), "{e:?}");
+    assert!(empty(&h::list_pods(me(), q(s.their_pod.shipment_id), state(&pool)).await.expect("list")));
+    assert!(empty(&h::list_pops(me(), q(s.their_pop.shipment_id), state(&pool)).await.expect("list")));
+}
+
+/// Operators read the tenant; roles outside the policy read nothing.
+#[tokio::test]
+async fn operators_read_the_tenant_and_other_roles_read_nothing() {
+    let Some(pool) = pool().await else { return };
+    let s = seed(&pool).await;
+    for role in ["admin", "tenant_admin", "dispatcher", "ops", "support"] {
+        let c = claims(s.tenant, Uuid::new_v4(), &[role], None);
+        let _ = h::get_pod(c, Path(s.their_pod.id), state(&pool)).await.unwrap_or_else(|e| panic!("{role}: {e:?}"));
+    }
+    for role in ["finance", "readonly", "hub_scanner", "mystery"] {
+        let c = claims(s.tenant, s.mine, &[role], None);
+        let e = h::get_pod(c, Path(s.my_pod.id), state(&pool)).await.expect_err(role);
+        assert!(is_not_found(&e), "{role}: {e:?}");
     }
 }

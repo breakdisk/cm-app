@@ -314,7 +314,7 @@ pub async fn run() -> anyhow::Result<()> {
         jwt: Arc::clone(&jwt),
         adapter_registry,
         storage,
-        booking_repo: Some(booking_repo),
+        booking_repo: Some(booking_repo as Arc<dyn crate::infrastructure::db::CarrierBookingStore>),
     };
 
     // Compose the app:
@@ -323,7 +323,7 @@ pub async fn run() -> anyhow::Result<()> {
     //   • Unauthenticated webhook routes (/v1/webhooks/*)
     // Both share AppState; `propagate_request_id` and TraceLayer wrap the whole app.
     let app = http::router()
-        .merge(mcp_router())
+        .merge(crate::mcp::router::mcp_router())
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .merge(http::observability_router())
         .merge(http::webhook_router())
@@ -363,62 +363,6 @@ pub async fn run() -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
-
-// ── MCP router ───────────────────────────────────────────────────────────────
-
-fn mcp_router() -> axum::Router<AppState> {
-    use axum::{
-        extract::State,
-        http::{HeaderMap, StatusCode},
-        response::{IntoResponse, Json},
-        routing::{get, post},
-        Router,
-    };
-    use serde_json::{json, Value};
-    use std::time::Instant;
-    use crate::mcp::{auth, audit, tools};
-
-    async fn tools_list() -> impl IntoResponse {
-        Json(json!({ "tools": tools::list() }))
-    }
-
-    async fn tools_call(
-        State(state): State<AppState>,
-        headers: HeaderMap,
-        Json(body): Json<Value>,
-    ) -> impl IntoResponse {
-        let state = Arc::new(state);
-        let ctx = match auth::extract_context(&headers, &state.jwt) {
-            Ok(c)  => c,
-            Err(e) => return (StatusCode::UNAUTHORIZED, Json(json!({ "error": e }))).into_response(),
-        };
-
-        let tool_name = match body["params"]["name"].as_str() {
-            Some(n) => n.to_string(),
-            None    => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "params.name is required" }))).into_response(),
-        };
-
-        let args  = body["params"]["arguments"].clone();
-        let start = Instant::now();
-
-        match tools::dispatch(&tool_name, &args, &ctx, &state).await {
-            Ok(result) => {
-                audit::audit_tool_call(&ctx, &tool_name, true, start);
-                Json(json!({ "result": result })).into_response()
-            }
-            Err(e) => {
-                audit::audit_tool_call(&ctx, &tool_name, false, start);
-                (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": e }))).into_response()
-            }
-        }
-    }
-
-    Router::new()
-        .route("/mcp/tools",      get(tools_list))
-        .route("/mcp/tools/call", post(tools_call))
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
     use tokio::signal;

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use logisticos_errors::AppError;
 
 use crate::api::http::AppState;
-use crate::application::services::payment_intent_service::CreateIntentCommand;
+use crate::application::services::payment_intent_service::{CreateIntentCommand, IntentConflict};
 use crate::domain::repositories::payment_gateway::PaymentAction;
 
 #[derive(Deserialize)]
@@ -95,7 +95,7 @@ pub async fn capture_intent(
     // Optional body: a bare POST with no body at all still means "capture it
     // all", so an existing caller does not have to learn a new shape.
     body: Option<Json<CaptureRequest>>,
-) -> Result<StatusCode, AppError> {
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
     let payment_intent_service = state.payment_intent_service.as_ref().ok_or_else(|| {
         AppError::ServiceUnavailable(
             "Online card payment is not configured for this deployment (Network \
@@ -104,8 +104,22 @@ pub async fn capture_intent(
         )
     })?;
     let amount_cents = body.and_then(|Json(b)| b.amount_cents);
-    payment_intent_service.capture_intent(id, amount_cents).await?;
-    Ok(StatusCode::OK)
+    let capture_ref = payment_intent_service
+        .capture_intent(id, amount_cents)
+        .await
+        .map_err(intent_error)?;
+    // Idempotent: a retry of an already-captured intent returns the same body.
+    Ok((StatusCode::OK, Json(serde_json::json!({ "capture_ref": capture_ref }))))
+}
+
+/// Maps a capture/void failure to an HTTP error: a state conflict (already
+/// captured/voided, or held by another in-flight caller) is a 409; anything
+/// else keeps its existing internal-error mapping.
+fn intent_error(e: anyhow::Error) -> AppError {
+    match e.downcast::<IntentConflict>() {
+        Ok(conflict) => AppError::Conflict(conflict.0),
+        Err(other) => AppError::from(other),
+    }
 }
 
 /// `POST /v1/internal/payments/intents/:id/void` — releases an
@@ -122,7 +136,7 @@ pub async fn void_intent(
                 .into(),
         )
     })?;
-    payment_intent_service.void_intent(id).await?;
+    payment_intent_service.void_intent(id).await.map_err(intent_error)?;
     Ok(StatusCode::OK)
 }
 
@@ -321,5 +335,15 @@ mod tests {
 
         let resp = app.oneshot(req).await.expect("oneshot request");
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn a_state_conflict_maps_to_409_and_anything_else_stays_internal() {
+        use axum::response::IntoResponse;
+        use crate::application::services::payment_intent_service::IntentConflict;
+        let conflict = super::intent_error(IntentConflict("already voided".into()).into());
+        assert_eq!(conflict.into_response().status(), StatusCode::CONFLICT);
+        let other = super::intent_error(anyhow::anyhow!("db down"));
+        assert_eq!(other.into_response().status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

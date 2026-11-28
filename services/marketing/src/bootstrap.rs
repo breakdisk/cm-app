@@ -134,7 +134,7 @@ pub async fn run() -> anyhow::Result<()> {
         ).await;
     });
 
-    let state = AppState { campaign_svc, ab_test_repo, journey_repo, jwt: Arc::clone(&jwt), cdp_client };
+    let state = AppState { campaign_svc, ab_test_lookup: ab_test_repo.clone(), ab_test_repo, journey_repo, jwt: Arc::clone(&jwt), cdp_client };
 
     // A probe cannot present a JWT, so /health lives outside the authenticated
     // merge. marketing had no health route at all — note it answered 404 rather

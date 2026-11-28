@@ -296,7 +296,8 @@ impl HubLocationRepository for PgHubLocationRepository {
                  bin          = EXCLUDED.bin,
                  location_tag = EXCLUDED.location_tag,
                  capacity_cbm = EXCLUDED.capacity_cbm,
-                 is_active    = EXCLUDED.is_active"#,
+                 is_active    = EXCLUDED.is_active
+               WHERE hub_ops.hub_locations.tenant_id = EXCLUDED.tenant_id"#,
         )
         .bind(location.id)
         .bind(location.tenant_id.inner())
@@ -315,13 +316,14 @@ impl HubLocationRepository for PgHubLocationRepository {
         Ok(())
     }
 
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<HubLocation>> {
+    async fn find_by_id(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<HubLocation>> {
         let row: Option<HubLocationRow> = sqlx::query_as(
             r#"SELECT id, tenant_id, hub_id, zone_id, aisle, rack, shelf, bin,
                       location_tag, capacity_cbm, is_active, created_at
-               FROM hub_ops.hub_locations WHERE id = $1"#,
+               FROM hub_ops.hub_locations WHERE id = $1 AND tenant_id = $2"#,
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Into::into))
@@ -329,29 +331,32 @@ impl HubLocationRepository for PgHubLocationRepository {
 
     async fn list_for_hub(
         &self,
-        hub_id:  Uuid,
-        zone_id: Option<&str>,
+        hub_id:    Uuid,
+        tenant_id: Uuid,
+        zone_id:   Option<&str>,
     ) -> anyhow::Result<Vec<HubLocation>> {
         let rows: Vec<HubLocationRow> = match zone_id {
             Some(zone) => sqlx::query_as(
                 r#"SELECT id, tenant_id, hub_id, zone_id, aisle, rack, shelf, bin,
                           location_tag, capacity_cbm, is_active, created_at
                    FROM hub_ops.hub_locations
-                   WHERE hub_id = $1 AND zone_id = $2
+                   WHERE hub_id = $1 AND tenant_id = $3 AND zone_id = $2
                    ORDER BY location_tag"#,
             )
             .bind(hub_id)
             .bind(zone)
+            .bind(tenant_id)
             .fetch_all(&self.pool)
             .await?,
             None => sqlx::query_as(
                 r#"SELECT id, tenant_id, hub_id, zone_id, aisle, rack, shelf, bin,
                           location_tag, capacity_cbm, is_active, created_at
                    FROM hub_ops.hub_locations
-                   WHERE hub_id = $1
+                   WHERE hub_id = $1 AND tenant_id = $2
                    ORDER BY zone_id, location_tag"#,
             )
             .bind(hub_id)
+            .bind(tenant_id)
             .fetch_all(&self.pool)
             .await?,
         };
@@ -429,26 +434,42 @@ impl HubInventoryRepository for PgHubInventoryRepository {
         Ok(())
     }
 
-    async fn move_to(&self, inventory_id: Uuid, to_location_id: Uuid) -> anyhow::Result<u64> {
+    async fn move_to(
+        &self,
+        inventory_id:   Uuid,
+        to_location_id: Uuid,
+        tenant_id:      Uuid,
+    ) -> anyhow::Result<u64> {
+        // The destination is a request-body id, so it is checked in the same
+        // statement: a location in another tenant moves nothing.
         let result = sqlx::query(
-            "UPDATE hub_ops.hub_inventory SET location_id = $2, updated_at = NOW() WHERE id = $1",
+            "UPDATE hub_ops.hub_inventory SET location_id = $2, updated_at = NOW() \
+              WHERE id = $1 AND tenant_id = $3 \
+                AND EXISTS (SELECT 1 FROM hub_ops.hub_locations l \
+                             WHERE l.id = $2 AND l.tenant_id = $3)",
         )
         .bind(inventory_id)
         .bind(to_location_id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
 
-    async fn list_at_location(&self, location_id: Uuid) -> anyhow::Result<Vec<HubInventory>> {
+    async fn list_at_location(
+        &self,
+        location_id: Uuid,
+        tenant_id:   Uuid,
+    ) -> anyhow::Result<Vec<HubInventory>> {
         let rows: Vec<HubInventoryRow> = sqlx::query_as(
             r#"SELECT id, tenant_id, hub_id, location_id, unit_kind, unit_ref,
                       batch_number, checked_in_by, checked_in_at, updated_at
                FROM hub_ops.hub_inventory
-               WHERE location_id = $1
+               WHERE location_id = $1 AND tenant_id = $2
                ORDER BY checked_in_at"#,
         )
         .bind(location_id)
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(HubInventoryRow::into_entity).collect()
@@ -543,7 +564,8 @@ impl HubTransferManifestRepository for PgHubTransferManifestRepository {
                  broker_payload      = EXCLUDED.broker_payload,
                  cleared_by          = EXCLUDED.cleared_by,
                  cleared_at          = EXCLUDED.cleared_at,
-                 updated_at          = EXCLUDED.updated_at"#,
+                 updated_at          = EXCLUDED.updated_at
+               WHERE hub_ops.hub_transfer_manifests.tenant_id = EXCLUDED.tenant_id"#,
         )
         .bind(m.id)
         .bind(m.tenant_id.inner())
@@ -568,14 +590,17 @@ impl HubTransferManifestRepository for PgHubTransferManifestRepository {
     async fn find_by_container(
         &self,
         container_id: Uuid,
+        tenant_id:    Uuid,
     ) -> anyhow::Result<Option<HubTransferManifest>> {
         let row: Option<ManifestRow> = sqlx::query_as(
             r#"SELECT id, tenant_id, container_id, origin_hub_id, destination_hub_id, transport_mode,
                       carrier_booking_ref, customs_filing_ref, customs_status, duties_total_cents,
                       broker_payload, cleared_by, cleared_at, created_at, updated_at
-               FROM hub_ops.hub_transfer_manifests WHERE container_id = $1"#,
+               FROM hub_ops.hub_transfer_manifests
+               WHERE container_id = $1 AND tenant_id = $2"#,
         )
         .bind(container_id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Into::into))

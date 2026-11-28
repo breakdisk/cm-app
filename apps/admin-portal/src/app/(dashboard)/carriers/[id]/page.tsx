@@ -98,7 +98,6 @@ function CarrierDetailInner() {
   const [inviteLastName,  setInviteLastName]  = useState("");
   const [inviting,        setInviting]        = useState(false);
   const [inviteResult,    setInviteResult]    = useState<InviteUserResult | null>(null);
-  const [inviteCopied,    setInviteCopied]    = useState(false);
 
   // Carrier approval
   const [approveOpen,  setApproveOpen]  = useState(false);
@@ -209,19 +208,12 @@ function CarrierDetailInner() {
       });
       setInviteResult(result.data);
       setInviteOpen(false);
-      setActionMsg(`Partner user ${result.data.email} created — share the temporary password.`);
+      setActionMsg(`Partner user ${result.data.email} created — ask them to sign in to the Partner Portal with this email.`);
     } catch (e) {
       setActionMsg(`Invite failed: ${e instanceof Error ? e.message : "unknown error"}`);
     } finally {
       setInviting(false);
     }
-  };
-
-  const handleCopyInvite = () => {
-    if (!inviteResult) return;
-    navigator.clipboard.writeText(inviteResult.temp_password);
-    setInviteCopied(true);
-    setTimeout(() => setInviteCopied(false), 2500);
   };
 
   const handleApprove = async () => {
@@ -753,7 +745,7 @@ function CarrierDetailInner() {
             )}
           </AnimatePresence>
 
-          {/* Temp password reveal */}
+          {/* Invite confirmation: no credential is issued */}
           <AnimatePresence>
             {inviteResult && (
               <motion.div
@@ -763,37 +755,18 @@ function CarrierDetailInner() {
                 className="overflow-hidden"
               >
                 <div className="px-5 py-4">
-                  <div className="rounded-xl border border-amber-signal/30 bg-amber-signal/5 p-5 space-y-4">
-                    <div className="flex items-start gap-3">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-signal/10 flex-shrink-0">
-                        <AlertTriangle size={14} className="text-amber-signal" />
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold text-amber-signal">Copy this password now</p>
-                        <p className="text-2xs font-mono text-white/40 mt-0.5">
-                          Share with <span className="text-white/70">{inviteResult.email}</span> — it is not stored and cannot be recovered after you dismiss this.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 rounded-xl bg-black/50 border border-white/10 px-4 py-3.5">
-                      <code className="flex-1 text-base font-mono font-bold text-cyan-neon break-all select-all tracking-wider">
-                        {inviteResult.temp_password}
-                      </code>
-                      <button
-                        onClick={handleCopyInvite}
-                        title="Copy password"
-                        className="flex-shrink-0 flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-1.5 text-2xs font-mono text-white/40 hover:text-white hover:border-cyan-neon/30 transition-colors"
-                      >
-                        {inviteCopied
-                          ? <><Check size={12} className="text-green-signal" /> Copied</>
-                          : <><Copy size={12} /> Copy</>}
-                      </button>
+                  <div className="rounded-xl border border-green-signal/30 bg-green-signal/5 p-5 space-y-4">
+                    <div>
+                      <p className="text-xs font-semibold text-green-signal">Partner user created</p>
+                      <p className="text-2xs font-mono text-white/40 mt-0.5">
+                        Ask <span className="text-white/70">{inviteResult.email}</span> to sign in to the Partner Portal with this email. No password is issued.
+                      </p>
                     </div>
                     <button
                       onClick={() => setInviteResult(null)}
                       className="w-full rounded-xl border border-glass-border py-2.5 text-2xs font-mono text-white/30 hover:text-white/60 hover:border-white/20 transition-colors"
                     >
-                      I have copied the password — dismiss
+                      Dismiss
                     </button>
                   </div>
                 </div>

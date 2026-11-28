@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use logisticos_types::TenantId;
 
-use crate::domain::{entities::TrackingRecord, repositories::TrackingRepository};
+use crate::domain::{entities::TrackingRecord, repositories::{NewFeedback, TrackingRepository}};
 
 #[derive(sqlx::FromRow)]
 struct TrackingRow {
@@ -277,25 +277,25 @@ impl TrackingRepository for PgTrackingRepository {
         Ok(())
     }
 
-    async fn save_feedback(
-        &self,
-        tracking_number: &str,
-        rating: i16,
-        tags: &[String],
-        comments: Option<&str>,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
+    async fn save_feedback(&self, f: &NewFeedback) -> anyhow::Result<bool> {
+        // One row per shipment: the partial unique index from migration 0010
+        // turns a second submission into a no-op instead of an overwrite.
+        let res = sqlx::query(
             r#"INSERT INTO delivery_experience.feedback
-                   (tracking_number, rating, tags, comments)
-               VALUES ($1, $2, $3, $4)"#,
+                   (tenant_id, shipment_id, driver_id, tracking_number, rating, tags, comments)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (shipment_id) WHERE shipment_id IS NOT NULL DO NOTHING"#,
         )
-        .bind(tracking_number)
-        .bind(rating)
-        .bind(tags)
-        .bind(comments)
+        .bind(f.tenant_id)
+        .bind(f.shipment_id)
+        .bind(f.driver_id)
+        .bind(&f.tracking_number)
+        .bind(f.rating)
+        .bind(&f.tags)
+        .bind(f.comments.as_deref())
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(res.rows_affected() == 1)
     }
 
     async fn confirm_customer_receipt(&self, tracking_number: &str) -> anyhow::Result<()> {

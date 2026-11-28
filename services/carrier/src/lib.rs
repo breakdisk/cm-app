@@ -5,12 +5,14 @@ pub mod config;
 pub mod domain;
 pub mod infrastructure;
 pub mod mcp;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use std::sync::Arc;
 use application::services::{CarrierService, MarketplaceService};
 use infrastructure::{
     adapters::AdapterRegistry,
-    db::PgCarrierBookingRepository,
+    db::CarrierBookingStore,
     storage::StorageAdapter,
 };
 use logisticos_auth::jwt::JwtService;
@@ -31,5 +33,5 @@ pub struct AppState {
     /// None when storage env vars are absent (dev without R2 credentials).
     pub storage:          Option<Arc<dyn StorageAdapter>>,
     /// Append-only audit log for all 3PL carrier API bookings.
-    pub booking_repo:     Option<Arc<PgCarrierBookingRepository>>,
+    pub booking_repo:     Option<Arc<dyn CarrierBookingStore>>,
 }

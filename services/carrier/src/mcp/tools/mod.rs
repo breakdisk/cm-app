@@ -7,24 +7,41 @@ pub mod track_carrier_shipment;
 use serde_json::Value;
 use std::sync::Arc;
 use crate::AppState;
+use crate::mcp::access::{self, Denied};
 use crate::mcp::context::McpContext;
+
+/// Why a tool call did not return a result.
+#[derive(Debug)]
+pub enum DispatchError {
+    /// Refused by `access::authorize` before anything ran.
+    Denied(Denied),
+    /// Authorised, but the tool itself failed or rejected its arguments.
+    Failed(String),
+}
 
 pub async fn dispatch(
     name: &str,
     args: &Value,
     ctx: &McpContext,
     state: &Arc<AppState>,
-) -> Result<Value, String> {
-    match name {
+) -> Result<Value, DispatchError> {
+    // The one gate. Nothing below runs, and no argument is read, until the
+    // caller's own token has passed it.
+    access::authorize(ctx, name).map_err(DispatchError::Denied)?;
+
+    let ran = match name {
         "get_carrier_rates"       => get_carrier_rates::handle(args, ctx, state).await,
         "book_carrier_shipment"   => book_carrier_shipment::handle(args, ctx, state).await,
         "track_carrier_shipment"  => track_carrier_shipment::handle(args, ctx, state).await,
         "cancel_carrier_shipment" => cancel_carrier_shipment::handle(args, ctx, state).await,
         "get_carrier_label"       => get_carrier_label::handle(args, ctx, state).await,
         other                     => Err(format!("Unknown carrier MCP tool: {other}")),
-    }
+    };
+    ran.map_err(DispatchError::Failed)
 }
 
+/// Every tool definition, regardless of caller. Use [`list_for`] to answer a
+/// client; this exists so the access table can be checked against it.
 pub fn list() -> Value {
     serde_json::json!([
         {
@@ -53,4 +70,21 @@ pub fn list() -> Value {
             "inputSchema": get_carrier_label::schema()
         }
     ])
+}
+
+/// The definitions this caller may run: exactly those `access::authorize` allows.
+pub fn list_for(ctx: &McpContext) -> Value {
+    let all = list();
+    let allowed: Vec<Value> = all
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|t| {
+                    t["name"].as_str().is_some_and(|n| access::authorize(ctx, n).is_ok())
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    Value::Array(allowed)
 }

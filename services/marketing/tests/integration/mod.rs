@@ -24,7 +24,7 @@ use logisticos_marketing::{
     application::services::{CampaignService, EventPublisher},
     domain::{
         entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus},
-        repositories::CampaignRepository,
+        repositories::{AbTestLookup, CampaignRepository},
     },
     infrastructure::db::{PgAbTestRepository, PgJourneyRepository},
     AppState,
@@ -115,6 +115,25 @@ impl EventPublisher for MockPublisher {
     }
 }
 
+/// A/B-test lookup stub: `Ok(None)` by default, or a database error.
+#[derive(Default)]
+struct MockAbLookup {
+    fail: bool,
+}
+
+#[async_trait]
+impl AbTestLookup for MockAbLookup {
+    async fn find_by_campaign(
+        &self,
+        _campaign_id: Uuid,
+    ) -> anyhow::Result<Option<logisticos_marketing::domain::entities::AbTest>> {
+        if self.fail {
+            anyhow::bail!("connection refused");
+        }
+        Ok(None)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test app factory
 // ---------------------------------------------------------------------------
@@ -129,6 +148,10 @@ struct TestApp {
 
 impl TestApp {
     fn new() -> Self {
+        Self::with_ab_lookup(MockAbLookup::default())
+    }
+
+    fn with_ab_lookup(ab_lookup: MockAbLookup) -> Self {
         let tenant_id = TenantId::new();
         let user_id   = Uuid::new_v4();
 
@@ -141,10 +164,10 @@ impl TestApp {
         // types. A lazy pool opens no connection until first use, and it is
         // pointed at a closed port with a short acquire timeout: every query
         // fails fast with a connection error. The campaign routes under test
-        // never need these two, except `activate`, which reads the A/B test with
-        // `.ok().flatten()` and so treats an unreachable database as "no A/B
-        // test configured". A/B fan-out and the journey routes need a real
-        // Postgres and are not covered here.
+        // need these two. `activate` reads the A/B test through `ab_test_lookup`,
+        // stubbed below so both "no A/B test" and "lookup failed" are testable.
+        // A/B fan-out and the journey routes need a real Postgres and are not
+        // covered here.
         let pool = PgPoolOptions::new()
             .acquire_timeout(std::time::Duration::from_millis(500))
             .connect_lazy("postgres://nobody:nobody@127.0.0.1:1/none")
@@ -152,6 +175,7 @@ impl TestApp {
         let state = AppState {
             campaign_svc:  svc,
             ab_test_repo:  Arc::new(PgAbTestRepository::new(pool.clone())),
+            ab_test_lookup: Arc::new(ab_lookup),
             journey_repo:  Arc::new(PgJourneyRepository::new(pool)),
             jwt:           Arc::clone(&jwt),
             cdp_client:    None,
@@ -539,5 +563,31 @@ mod activate_publishes_event {
 
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert!(app.publisher.published.lock().await.is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Activate must fail closed when the A/B-test lookup errors
+// ---------------------------------------------------------------------------
+
+mod activate_ab_lookup_failure {
+    use super::*;
+
+    #[tokio::test]
+    async fn db_error_on_ab_lookup_aborts_activation_and_sends_nothing() {
+        let app = TestApp::with_ab_lookup(MockAbLookup { fail: true });
+
+        let req = app.post_json("/v1/campaigns", activatable_payload("Fail Closed"));
+        let resp = app.request(req).await;
+        let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+        let req = app.post_json(&format!("/v1/campaigns/{}/activate", id), json!({}));
+        let resp = app.request(req).await;
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            app.publisher.published.lock().await.is_empty(),
+            "nothing may be published when the A/B lookup failed"
+        );
     }
 }

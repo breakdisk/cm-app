@@ -9,56 +9,38 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use crate::AppState;
 use crate::mcp::context::McpContext;
+use crate::mcp::ids::carrier_ref;
+use crate::mcp::ownership::require_own_tracking_number;
 
-pub async fn handle(args: &Value, _ctx: &McpContext, state: &Arc<AppState>) -> Result<Value, String> {
-    let tracking_number = args["tracking_number"]
-        .as_str()
-        .ok_or("tracking_number is required")?;
+pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Result<Value, String> {
+    let tracking_number = carrier_ref(args, "tracking_number")?;
 
-    let carrier_code = args["carrier_code"].as_str().map(str::to_uppercase);
+    let requested = args["carrier_code"].as_str().map(str::to_uppercase);
 
-    if let Some(code) = carrier_code {
-        let adapter = state.adapter_registry
-            .get(&code)
-            .ok_or_else(|| format!("Carrier '{code}' is not configured"))?;
+    // The booking must be this tenant's. Its own carrier is then the only one
+    // asked, so a tenant never fans a foreign tracking number out to every 3PL.
+    let code = require_own_tracking_number(state, ctx, requested.as_deref(), tracking_number).await?;
 
-        let info = adapter.track_shipment(tracking_number).await
-            .map_err(|e| format!("{code} tracking failed: {e}"))?;
+    let adapter = state.adapter_registry
+        .get(&code)
+        .ok_or_else(|| format!("Carrier '{code}' is not configured"))?;
 
-        Ok(json!({
-            "carrier_code":      code,
-            "tracking_number":   info.tracking_number,
-            "current_status":    info.current_status,
-            "current_location":  info.current_location,
-            "estimated_delivery": info.estimated_delivery,
-            "events":            info.events.iter().map(|e| json!({
-                "timestamp":   e.timestamp,
-                "status":      e.status,
-                "description": e.description,
-                "location":    e.location,
-            })).collect::<Vec<_>>(),
-        }))
-    } else {
-        // Fan-out: try all carriers, return first success
-        for adapter in state.adapter_registry.all() {
-            if let Ok(info) = adapter.track_shipment(tracking_number).await {
-                return Ok(json!({
-                    "carrier_code":      adapter.carrier_code(),
-                    "tracking_number":   info.tracking_number,
-                    "current_status":    info.current_status,
-                    "current_location":  info.current_location,
-                    "estimated_delivery": info.estimated_delivery,
-                    "events":            info.events.iter().map(|e| json!({
-                        "timestamp":   e.timestamp,
-                        "status":      e.status,
-                        "description": e.description,
-                        "location":    e.location,
-                    })).collect::<Vec<_>>(),
-                }));
-            }
-        }
-        Err(format!("No configured carrier recognised tracking number: {tracking_number}"))
-    }
+    let info = adapter.track_shipment(tracking_number).await
+        .map_err(|e| format!("{code} tracking failed: {e}"))?;
+
+    Ok(json!({
+        "carrier_code":      code,
+        "tracking_number":   info.tracking_number,
+        "current_status":    info.current_status,
+        "current_location":  info.current_location,
+        "estimated_delivery": info.estimated_delivery,
+        "events":            info.events.iter().map(|e| json!({
+            "timestamp":   e.timestamp,
+            "status":      e.status,
+            "description": e.description,
+            "location":    e.location,
+        })).collect::<Vec<_>>(),
+    }))
 }
 
 pub fn schema() -> Value {

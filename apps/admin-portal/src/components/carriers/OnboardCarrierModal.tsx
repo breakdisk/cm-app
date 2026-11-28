@@ -4,7 +4,7 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, GitBranch, UserPlus, Zap, CheckCircle2,
-  ChevronRight, Loader2, Eye, EyeOff,
+  ChevronRight, Loader2,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { createCarriersApi } from "@/lib/api/carriers";
@@ -32,7 +32,6 @@ interface OnboardResult {
   carrier_code: string;
   user_id: string;
   partner_email: string;
-  temp_password: string;
   activated: boolean;
 }
 
@@ -61,7 +60,6 @@ export function OnboardCarrierModal({ open, onClose, onSuccess }: Props) {
   const [step,    setStep]    = useState<1 | 2 | 3 | 4>(1);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
-  const [showPw,  setShowPw]  = useState(false);
 
   const [s1, setS1] = useState<Step1Fields>({
     name: "", code: "", contact_email: "", sla_target: "90", max_delivery_days: "3",
@@ -72,7 +70,7 @@ export function OnboardCarrierModal({ open, onClose, onSuccess }: Props) {
   const [result, setResult] = useState<OnboardResult | null>(null);
 
   function reset() {
-    setStep(1); setLoading(false); setError(null); setResult(null); setShowPw(false);
+    setStep(1); setLoading(false); setError(null); setResult(null);
     setS1({ name: "", code: "", contact_email: "", sla_target: "90", max_delivery_days: "3" });
     setS2({ first_name: "", last_name: "", partner_email: "" });
   }
@@ -110,7 +108,6 @@ export function OnboardCarrierModal({ open, onClose, onSuccess }: Props) {
         carrier_code:  res.code,
         user_id:       "",
         partner_email: "",
-        temp_password: "",
         activated:     false,
       });
       // Pre-fill partner email from contact email
@@ -143,7 +140,6 @@ export function OnboardCarrierModal({ open, onClose, onSuccess }: Props) {
         ...prev,
         user_id:       res.data.user_id,
         partner_email: res.data.email,
-        temp_password: res.data.temp_password,
       } : null);
       setStep(3);
     } catch (err: unknown) {
@@ -425,17 +421,6 @@ export function OnboardCarrierModal({ open, onClose, onSuccess }: Props) {
                       <span className="text-xs text-white/40 font-mono">Partner Email</span>
                       <span className="text-xs text-white/70 font-mono">{result.partner_email}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs text-white/40 font-mono">Temp Password</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-amber-signal font-mono font-semibold">
-                          {showPw ? result.temp_password : "••••••••••••"}
-                        </span>
-                        <button onClick={() => setShowPw((p) => !p)} className="text-white/30 hover:text-white/60 transition-colors">
-                          {showPw ? <EyeOff size={12} /> : <Eye size={12} />}
-                        </button>
-                      </div>
-                    </div>
                   </div>
 
                   <div className="rounded-lg border border-amber-signal/20 bg-amber-signal/5 px-3 py-3 space-y-1">
@@ -507,21 +492,10 @@ export function OnboardCarrierModal({ open, onClose, onSuccess }: Props) {
                       <span className="text-xs text-white/40 font-mono">Partner Login</span>
                       <span className="text-xs text-white/70 font-mono">{result.partner_email}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs text-white/40 font-mono">Temp Password</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-amber-signal font-mono font-semibold">
-                          {showPw ? result.temp_password : "••••••••••••"}
-                        </span>
-                        <button onClick={() => setShowPw((p) => !p)} className="text-white/30 hover:text-white/60 transition-colors">
-                          {showPw ? <EyeOff size={12} /> : <Eye size={12} />}
-                        </button>
-                      </div>
-                    </div>
                   </div>
 
                   <p className="text-2xs text-white/30 text-center font-mono">
-                    Share credentials securely. Partner must change password on first login.
+                    No password is issued. The partner signs in with the invited email through the Partner Portal login.
                   </p>
 
                   <div className="flex gap-2">

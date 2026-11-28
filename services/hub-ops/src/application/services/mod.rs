@@ -24,16 +24,18 @@ use crate::domain::entities::{Hub, HubId, InductionId, ParcelInduction};
 
 #[async_trait::async_trait]
 pub trait HubRepository: Send + Sync {
-    async fn find_by_id(&self, id: &HubId) -> anyhow::Result<Option<Hub>>;
+    /// Tenant-scoped: a hub owned by another tenant is `None`, never returned.
+    async fn find_by_id(&self, id: &HubId, tenant_id: &TenantId) -> anyhow::Result<Option<Hub>>;
     async fn list(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Hub>>;
     async fn save(&self, hub: &Hub) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
 pub trait InductionRepository: Send + Sync {
-    async fn find_by_id(&self, id: &InductionId) -> anyhow::Result<Option<ParcelInduction>>;
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ParcelInduction>>;
-    async fn list_active(&self, hub_id: &HubId) -> anyhow::Result<Vec<ParcelInduction>>;
+    /// Every lookup is tenant-scoped in SQL: another tenant's row is `None`.
+    async fn find_by_id(&self, id: &InductionId, tenant_id: &TenantId) -> anyhow::Result<Option<ParcelInduction>>;
+    async fn find_by_shipment(&self, shipment_id: Uuid, tenant_id: &TenantId) -> anyhow::Result<Option<ParcelInduction>>;
+    async fn list_active(&self, hub_id: &HubId, tenant_id: &TenantId) -> anyhow::Result<Vec<ParcelInduction>>;
     async fn save(&self, induction: &ParcelInduction) -> anyhow::Result<()>;
 }
 
@@ -140,7 +142,7 @@ impl HubService {
     pub async fn get_hub(&self, tenant_id: &TenantId, hub_id: Uuid) -> AppResult<Hub> {
         let id = HubId::from_uuid(hub_id);
         self.hub_repo
-            .find_by_id(&id)
+            .find_by_id(&id, tenant_id)
             .await
             .map_err(AppError::internal)?
             .filter(|h| h.tenant_id == *tenant_id)
@@ -150,13 +152,13 @@ impl HubService {
     pub async fn induct_parcel(&self, tenant_id: &TenantId, cmd: InductParcelCommand) -> AppResult<ParcelInduction> {
         let hub_id = HubId::from_uuid(cmd.hub_id);
         let mut hub = self.hub_repo
-            .find_by_id(&hub_id)
+            .find_by_id(&hub_id, tenant_id)
             .await
             .map_err(AppError::internal)?
             .filter(|h| h.tenant_id == *tenant_id)
             .ok_or_else(|| AppError::NotFound { resource: "Hub", id: cmd.hub_id.to_string() })?;
 
-        if let Some(existing) = self.induction_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::internal)? {
+        if let Some(existing) = self.induction_repo.find_by_shipment(cmd.shipment_id, tenant_id).await.map_err(AppError::internal)? {
             if existing.hub_id == hub_id && existing.tenant_id == *tenant_id {
                 return Ok(existing);
             }
@@ -180,7 +182,7 @@ impl HubService {
 
     pub async fn sort_parcel(&self, tenant_id: &TenantId, cmd: SortParcelCommand) -> AppResult<ParcelInduction> {
         let mut induction = self.induction_repo
-            .find_by_id(&InductionId::from_uuid(cmd.induction_id))
+            .find_by_id(&InductionId::from_uuid(cmd.induction_id), tenant_id)
             .await
             .map_err(AppError::internal)?
             .filter(|i| i.tenant_id == *tenant_id)
@@ -193,14 +195,14 @@ impl HubService {
 
     pub async fn dispatch_parcel(&self, tenant_id: &TenantId, induction_id: Uuid) -> AppResult<ParcelInduction> {
         let mut induction = self.induction_repo
-            .find_by_id(&InductionId::from_uuid(induction_id))
+            .find_by_id(&InductionId::from_uuid(induction_id), tenant_id)
             .await
             .map_err(AppError::internal)?
             .filter(|i| i.tenant_id == *tenant_id)
             .ok_or_else(|| AppError::NotFound { resource: "Induction", id: induction_id.to_string() })?;
 
         let mut hub = self.hub_repo
-            .find_by_id(&induction.hub_id)
+            .find_by_id(&induction.hub_id, tenant_id)
             .await
             .map_err(AppError::internal)?
             .filter(|h| h.tenant_id == *tenant_id)
@@ -220,14 +222,12 @@ impl HubService {
         hub_id:    Uuid,
         tenant_id: &TenantId,
     ) -> AppResult<Vec<ParcelInduction>> {
-        let all = self.induction_repo
-            .list_active(&HubId::from_uuid(hub_id))
+        // A hub that is not the caller's is a 404, not an empty manifest.
+        self.get_hub(tenant_id, hub_id).await?;
+        self.induction_repo
+            .list_active(&HubId::from_uuid(hub_id), tenant_id)
             .await
-            .map_err(AppError::internal)?;
-        // Filter by tenant to prevent cross-tenant data leakage.
-        // list_active queries by hub_id only; the tenant guard is applied here
-        // until the InductionRepository trait grows a tenant-scoped variant.
-        Ok(all.into_iter().filter(|p| p.tenant_id == *tenant_id).collect())
+            .map_err(AppError::internal)
     }
 }
 
@@ -281,7 +281,7 @@ mod tenant_isolation_tests {
     struct FakeHubs { hubs: Mutex<Vec<Hub>>, saves: Mutex<u32> }
     #[async_trait::async_trait]
     impl HubRepository for FakeHubs {
-        async fn find_by_id(&self, id: &HubId) -> anyhow::Result<Option<Hub>> {
+        async fn find_by_id(&self, id: &HubId, _t: &TenantId) -> anyhow::Result<Option<Hub>> {
             Ok(self.hubs.lock().unwrap().iter().find(|h| h.id.inner() == id.inner()).cloned())
         }
         async fn list(&self, _t: &TenantId) -> anyhow::Result<Vec<Hub>> { Ok(vec![]) }
@@ -297,13 +297,13 @@ mod tenant_isolation_tests {
     struct FakeInductions { items: Mutex<Vec<ParcelInduction>>, saves: Mutex<u32> }
     #[async_trait::async_trait]
     impl InductionRepository for FakeInductions {
-        async fn find_by_id(&self, id: &InductionId) -> anyhow::Result<Option<ParcelInduction>> {
+        async fn find_by_id(&self, id: &InductionId, _t: &TenantId) -> anyhow::Result<Option<ParcelInduction>> {
             Ok(self.items.lock().unwrap().iter().find(|i| i.id.inner() == id.inner()).cloned())
         }
-        async fn find_by_shipment(&self, sid: Uuid) -> anyhow::Result<Option<ParcelInduction>> {
+        async fn find_by_shipment(&self, sid: Uuid, _t: &TenantId) -> anyhow::Result<Option<ParcelInduction>> {
             Ok(self.items.lock().unwrap().iter().find(|i| i.shipment_id == sid).cloned())
         }
-        async fn list_active(&self, _h: &HubId) -> anyhow::Result<Vec<ParcelInduction>> { Ok(vec![]) }
+        async fn list_active(&self, _h: &HubId, _t: &TenantId) -> anyhow::Result<Vec<ParcelInduction>> { Ok(vec![]) }
         async fn save(&self, i: &ParcelInduction) -> anyhow::Result<()> {
             *self.saves.lock().unwrap() += 1;
             self.items.lock().unwrap().push(i.clone());

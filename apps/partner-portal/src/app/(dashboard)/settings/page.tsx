@@ -23,7 +23,8 @@ import { variants } from "@/lib/design-system/tokens";
 import { carriersApi, carrierIdOf, fmtPhp, type Carrier } from "@/lib/api/carriers";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
-const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost:8010";
+// Gateway routes /v1/carriers to the carrier service; NEXT_PUBLIC_CARRIER_URL was never a build arg.
+const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function gradeBadge(grade: string): "green" | "cyan" | "amber" | "red" {
   switch (grade) {

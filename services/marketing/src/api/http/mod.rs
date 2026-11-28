@@ -230,7 +230,10 @@ async fn activate_campaign(
     // A/B test fan-out: split the resolved audience by variant weight *before*
     // activating, so each variant's slice is published to Kafka under its own
     // template_id instead of everyone silently receiving the base template.
-    let ab_test = state.ab_test_repo.find_by_campaign(id).await.ok().flatten();
+    // A DB error must abort activation. Swallowing it (`.ok().flatten()`) made
+    // a failed lookup look like "no A/B test" and sent the whole audience the
+    // base template. `Ok(None)` still means "no A/B test".
+    let ab_test = state.ab_test_lookup.find_by_campaign(id).await.map_err(AppError::internal)?;
     let recipients = pre_activate.targeting.recipients.clone();
 
     let variant_plan = ab_test.as_ref().and_then(|ab_test| {

@@ -18,7 +18,8 @@ import { useCarrier } from "@/contexts/carrier-context";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
-const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+// Gateway origin (the only NEXT_PUBLIC build arg); /v1/drivers and /v1/tasks route to driver-ops there.
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const API_BASE       = process.env.NEXT_PUBLIC_API_URL        ?? "http://localhost:8000";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -102,12 +103,10 @@ async function patchDriver(id: string, patch: Record<string, unknown>): Promise<
 /**
  * Two-step driver registration: invite user in identity (returns user_id +
  * temp password), then register the driver profile in driver-ops under that
- * user_id. The temp password is surfaced to the admin so they can hand it
- * off until out-of-band email delivery is wired up.
+ * user_id. No credential is issued: drivers sign in with phone OTP.
  */
 interface RegisterResult {
   driverId:     string;
-  tempPassword: string | null;
   error?:       string;
 }
 
@@ -133,12 +132,11 @@ async function registerDriverApi(input: {
     });
     if (!inviteRes.ok) {
       const body = await inviteRes.text();
-      return { driverId: "", tempPassword: null, error: `Identity error: ${body || inviteRes.status}` };
+      return { driverId: "", error: `Identity error: ${body || inviteRes.status}` };
     }
     const inviteJson = await inviteRes.json();
     const userId       = inviteJson?.data?.user_id;
-    const tempPassword = inviteJson?.data?.temp_password ?? null;
-    if (!userId) return { driverId: "", tempPassword: null, error: "Identity did not return a user_id" };
+    if (!userId) return { driverId: "", error: "Identity did not return a user_id" };
 
     const regRes = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`, {
       method: "POST",
@@ -152,12 +150,12 @@ async function registerDriverApi(input: {
     });
     if (!regRes.ok) {
       const body = await regRes.text();
-      return { driverId: "", tempPassword, error: `Driver profile error: ${body || regRes.status}` };
+      return { driverId: "", error: `Driver profile error: ${body || regRes.status}` };
     }
     const regJson = await regRes.json();
-    return { driverId: regJson?.data?.driver_id ?? userId, tempPassword };
+    return { driverId: regJson?.data?.driver_id ?? userId };
   } catch (e) {
-    return { driverId: "", tempPassword: null, error: (e as Error).message };
+    return { driverId: "", error: (e as Error).message };
   }
 }
 
@@ -477,6 +475,7 @@ function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => vo
   const [phone,     setPhone]     = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result,    setResult]    = useState<RegisterResult | null>(null);
+  const registered = !!result && !result.error && !!result.driverId;
 
   const canSubmit = firstName.trim() && lastName.trim() && email.trim() && phone.trim() && !submitting;
 
@@ -518,7 +517,7 @@ function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => vo
           </button>
         </div>
 
-        {!result?.tempPassword && (
+        {!registered && (
           <div className="space-y-3 mb-6">
             <div className="grid grid-cols-2 gap-3">
               <LabeledInput label="First Name"  value={firstName} onChange={setFirstName} placeholder="Juan" />
@@ -532,7 +531,7 @@ function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => vo
           </div>
         )}
 
-        {result?.tempPassword && !result.error && (
+        {registered && (
           <div className="mb-6 space-y-3">
             {/* Driver App login instructions */}
             <div className="rounded-xl border border-green-signal/30 bg-green-signal/10 p-4 space-y-2">
@@ -548,14 +547,6 @@ function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => vo
                 They will receive a one-time code via SMS each time they log in — no password needed.
               </p>
             </div>
-            {/* Admin-portal email credentials (for portal access if ever needed) */}
-            <div className="rounded-xl border border-glass-border bg-glass-100 p-3 space-y-1">
-              <p className="text-xs text-white/30 font-mono uppercase tracking-wider">Portal credentials (admin use only)</p>
-              <div className="text-xs font-mono text-white/50">
-                <div>Email: <span className="text-white/70">{email}</span></div>
-                <div>Temp password: <span className="text-amber-400">{result.tempPassword}</span></div>
-              </div>
-            </div>
           </div>
         )}
 
@@ -564,9 +555,9 @@ function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => vo
             onClick={onClose}
             className="flex-1 rounded-xl border border-glass-border bg-glass-100 py-2.5 text-sm text-white/50 hover:text-white/70 hover:bg-glass-200 transition-all"
           >
-            {result?.tempPassword ? "Close" : "Cancel"}
+            {registered ? "Close" : "Cancel"}
           </button>
-          {!result?.tempPassword && (
+          {!registered && (
             <button
               onClick={handleSubmit}
               disabled={!canSubmit}

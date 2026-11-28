@@ -26,11 +26,12 @@ pub trait HubScanRepository: Send + Sync {
 #[async_trait]
 pub trait HubLocationRepository: Send + Sync {
     async fn save(&self, location: &HubLocation) -> anyhow::Result<()>;
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<HubLocation>>;
+    async fn find_by_id(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<HubLocation>>;
     async fn list_for_hub(
         &self,
-        hub_id:  Uuid,
-        zone_id: Option<&str>,
+        hub_id:    Uuid,
+        tenant_id: Uuid,
+        zone_id:   Option<&str>,
     ) -> anyhow::Result<Vec<HubLocation>>;
 }
 
@@ -38,10 +39,20 @@ pub trait HubLocationRepository: Send + Sync {
 pub trait HubInventoryRepository: Send + Sync {
     /// Insert or update in place (location moves are a single row update).
     async fn upsert(&self, inventory: &HubInventory) -> anyhow::Result<()>;
-    /// Re-point an existing inventory record to a new location. Returns rows affected
-    /// (0 = unknown id).
-    async fn move_to(&self, inventory_id: Uuid, to_location_id: Uuid) -> anyhow::Result<u64>;
-    async fn list_at_location(&self, location_id: Uuid) -> anyhow::Result<Vec<HubInventory>>;
+    /// Re-point an existing inventory record to a new location. Both the record
+    /// and the destination location must belong to `tenant_id`. Returns rows
+    /// affected (0 = unknown id, or not the caller's).
+    async fn move_to(
+        &self,
+        inventory_id:   Uuid,
+        to_location_id: Uuid,
+        tenant_id:      Uuid,
+    ) -> anyhow::Result<u64>;
+    async fn list_at_location(
+        &self,
+        location_id: Uuid,
+        tenant_id:   Uuid,
+    ) -> anyhow::Result<Vec<HubInventory>>;
     async fn find_by_unit(
         &self,
         tenant_id: Uuid,
@@ -52,8 +63,11 @@ pub trait HubInventoryRepository: Send + Sync {
 #[async_trait]
 pub trait HubTransferManifestRepository: Send + Sync {
     async fn save(&self, manifest: &HubTransferManifest) -> anyhow::Result<()>;
-    async fn find_by_container(&self, container_id: Uuid)
-        -> anyhow::Result<Option<HubTransferManifest>>;
+    async fn find_by_container(
+        &self,
+        container_id: Uuid,
+        tenant_id:    Uuid,
+    ) -> anyhow::Result<Option<HubTransferManifest>>;
     /// Containers currently in customs hold at a hub (the Customs Queue).
     async fn list_in_customs(
         &self,

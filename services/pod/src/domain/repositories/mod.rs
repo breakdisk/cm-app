@@ -95,6 +95,11 @@ pub struct ShipmentBillingContext {
     /// nowhere else -- a caller-supplied phone is what let a driver mint their
     /// own PIN. `None` only against an order-intake predating the field.
     pub customer_phone:       Option<String>,
+    /// The user who booked the shipment (`shipment.merchant_id`, stamped from
+    /// `claims.user_id` for merchants and customers alike). Evidence reads by an
+    /// owner-role caller are allowed only when this is the caller. `None` only
+    /// against an order-intake predating the field: unverifiable, so refused.
+    pub merchant_id:          Option<Uuid>,
 }
 
 /// order-intake said, explicitly, that the shipment is not this tenant's: it

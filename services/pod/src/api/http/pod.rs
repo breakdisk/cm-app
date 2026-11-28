@@ -9,7 +9,7 @@ use logisticos_types::awb::TenantCode;
 use crate::{
     api::http::AppState,
     application::commands::*,
-    domain::value_objects::delivery_pin::IssuedPin,
+    domain::value_objects::{delivery_pin::IssuedPin, evidence_access::EvidenceAccess},
 };
 
 #[derive(serde::Deserialize)]
@@ -193,18 +193,34 @@ pub async fn submit(
     Ok(Json(serde_json::json!({ "data": { "pod_id": pod_id, "status": "submitted" } })))
 }
 
-/// May this caller read evidence that `recorded_driver` captured?
+/// May this caller read the proof (captured by `recorded_driver`) of `shipment_id`?
 ///
-/// The Phase 0 gate says a partner token cannot read another partner's shipment
-/// data, and POD/POP evidence is exactly that: recipient photos, signature and
-/// GPS. Neither record carries a partner id, so a pid-bound caller is limited
-/// to what it captured itself (`driver_id` is set from `claims.user_id` at
-/// capture). Everyone else keeps the ordinary tenant-level rule.
-fn evidence_visible_to(access: PartnerAccess, caller: Uuid, recorded_driver: Uuid) -> bool {
-    match access {
-        PartnerAccess::Unscoped => true,
-        PartnerAccess::Scoped(_) => caller == recorded_driver,
+/// Two layers, both applied:
+///
+/// 1. A partner-bound token (`pid`) is limited to what it captured itself: neither
+///    record carries a partner id (the Phase 0 gate).
+/// 2. Everyone else is decided by role (see [`EvidenceAccess`]): operators read the
+///    tenant, drivers what they captured, merchants and customers the shipments
+///    they booked, any other role nothing.
+///
+/// A `false` is reported as "not found" (by id) or an empty result (by shipment),
+/// indistinguishable from a missing proof, so ids cannot be probed.
+async fn may_view_evidence(
+    state: &AppState,
+    claims: &logisticos_auth::claims::Claims,
+    access: PartnerAccess,
+    recorded_driver: Uuid,
+    shipment_id: Uuid,
+) -> Result<bool, AppError> {
+    if let PartnerAccess::Scoped(_) = access {
+        return Ok(claims.user_id == recorded_driver);
     }
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    EvidenceAccess::from_roles(&claims.roles)
+        .may_view(claims.user_id, recorded_driver, || {
+            state.pod_service.shipment_booker(&tenant_id, shipment_id)
+        })
+        .await
 }
 
 /// GET /v1/pods?shipment_id=<uuid> — fetch POD for the admin portal panel.
@@ -219,7 +235,7 @@ pub async fn list_pods(
 
     let access = partner_access(&claims)?;
     match state.pod_service.get_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
-        Some(pod) if evidence_visible_to(access, claims.user_id, pod.driver_id) => {
+        Some(pod) if may_view_evidence(&state, &claims, access, pod.driver_id, pod.shipment_id).await? => {
             let view = state.pod_service.pod_to_view(&pod).await;
             Ok(Json(serde_json::json!({ "data": [view] })))
         }
@@ -234,7 +250,7 @@ pub async fn get_pod(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let access = partner_access(&claims)?;
     let pod = state.pod_service.get_by_id(&TenantId::from_uuid(claims.tenant_id), pod_id).await?;
-    if !evidence_visible_to(access, claims.user_id, pod.driver_id) {
+    if !may_view_evidence(&state, &claims, access, pod.driver_id, pod.shipment_id).await? {
         // Indistinguishable from a missing id, so ids cannot be probed.
         return Err(AppError::NotFound { resource: "POD", id: pod_id.to_string() });
     }
@@ -401,7 +417,7 @@ pub async fn get_pop(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let access = partner_access(&claims)?;
     let pop = state.pod_service.get_pop_by_id(&TenantId::from_uuid(claims.tenant_id), pop_id).await?;
-    if !evidence_visible_to(access, claims.user_id, pop.driver_id) {
+    if !may_view_evidence(&state, &claims, access, pop.driver_id, pop.shipment_id).await? {
         return Err(AppError::NotFound { resource: "POP", id: pop_id.to_string() });
     }
     let view = state.pod_service.pop_to_view(&pop).await;
@@ -420,7 +436,7 @@ pub async fn list_pops(
 
     let access = partner_access(&claims)?;
     match state.pod_service.get_pop_by_shipment(&TenantId::from_uuid(claims.tenant_id), shipment_id).await? {
-        Some(pop) if evidence_visible_to(access, claims.user_id, pop.driver_id) => {
+        Some(pop) if may_view_evidence(&state, &claims, access, pop.driver_id, pop.shipment_id).await? => {
             let view = state.pod_service.pop_to_view(&pop).await;
             Ok(Json(serde_json::json!({ "data": view })))
         }

@@ -23,6 +23,14 @@ pub struct AutomationRule {
     pub created_at: DateTime<Utc>,
 }
 
+/// Largest `ShipmentDelayed.minutes_late` that can ever fire.
+///
+/// The only source is `shipment.sla_breached`, which order-intake's sweep
+/// publishes once, at detection time (default sweep every 300 s), so the
+/// lateness it reports is at most about one sweep interval. A larger threshold
+/// would be accepted and then never fire, so it is refused at creation.
+pub const SHIPMENT_DELAYED_MAX_MINUTES: u32 = 5;
+
 // ── Triggers ─────────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RuleTrigger {
@@ -51,11 +59,14 @@ impl RuleTrigger {
     /// that can never fire is never saved.
     pub fn is_available(&self) -> bool {
         match self {
-            // No publisher exists for these.
+            // DeliveryAttempted: counted here from `delivery.failed`.
+            // PaymentReceived: `payments.intent.captured`.
+            // ShipmentDelayed: `order.shipment.sla_breached` (see
+            // `SHIPMENT_DELAYED_MAX_MINUTES` for the bound on its threshold).
             RuleTrigger::DeliveryAttempted { .. }
             | RuleTrigger::PaymentReceived
-            | RuleTrigger::ShipmentDelayed { .. } => false,
-            RuleTrigger::DeliveryFailed
+            | RuleTrigger::ShipmentDelayed { .. }
+            | RuleTrigger::DeliveryFailed
             | RuleTrigger::DeliveryCompleted
             | RuleTrigger::ShipmentCreated
             | RuleTrigger::ShipmentRescheduled
@@ -283,13 +294,13 @@ mod tests {
         let cases: Vec<(RuleTrigger, bool)> = vec![
             (RuleTrigger::DeliveryFailed, true),
             (RuleTrigger::DeliveryCompleted, true),
-            (RuleTrigger::DeliveryAttempted { attempts: 2 }, false),
+            (RuleTrigger::DeliveryAttempted { attempts: 2 }, true),
             (RuleTrigger::ShipmentCreated, true),
             (RuleTrigger::ShipmentRescheduled, true),
-            (RuleTrigger::ShipmentDelayed { minutes_late: 30 }, false),
+            (RuleTrigger::ShipmentDelayed { minutes_late: 30 }, true),
             (RuleTrigger::PickupCompleted, true),
             (RuleTrigger::CodCollected, true),
-            (RuleTrigger::PaymentReceived, false),
+            (RuleTrigger::PaymentReceived, true),
             (RuleTrigger::CustomerInactive { days: 30 }, true),
             (RuleTrigger::DriverIdleExceeded { minutes: 45 }, true),
             (RuleTrigger::HubCapacityExceeded { threshold_pct: 80 }, true),

@@ -169,6 +169,7 @@ pub trait ShipmentRepository: Send + Sync {
     /// Idempotent. Default no-op for test doubles.
     fn settle_home_addendum<'a>(
         &'a self,
+        _tenant_id: uuid::Uuid,
         _addendum_id: uuid::Uuid,
         _captured: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<SettledAddendum>>> + Send + 'a>> {
@@ -738,6 +739,8 @@ impl ShipmentService {
                         "Quote token does not match this booking's service type or weight".into(),
                     ));
                 }
+                payload.check_route(&cmd.origin, &cmd.destination)
+                    .map_err(|e| AppError::Validation(e.to_string()))?;
                 let lines = payload.discount_lines();
                 if !lines.is_empty() {
                     // A code, a tier and credit are all one account's, so the
@@ -1301,6 +1304,12 @@ impl ShipmentService {
 
         for (i, row) in cmd.rows.into_iter().enumerate() {
             let reference = row.merchant_reference.clone();
+            // A row that breaks the request's own rules fails alone, reported
+            // against its index like any other bad row.
+            if let Err(e) = validator::Validate::validate(&row) {
+                failed.push(BulkRowError { row_index: i, merchant_reference: reference, error: e.to_string() });
+                continue;
+            }
             match self.create(row).await {
                 Ok(result) => created.push(result.shipment.id.inner()),
                 Err(e) => failed.push(BulkRowError {

@@ -114,6 +114,9 @@ pub const PAYMENT_INTENT_FAILED:          &str = "logisticos.payments.intent.fai
 /// webhook parsing (see `network_international.rs`), which would have
 /// published this as a false "money taken" signal.
 pub const PAYMENT_INTENT_AUTHORIZED:      &str = "logisticos.payments.intent.authorized";
+/// Emitted when an authorization hold is released without ever being captured
+/// (OmniDeliv's no-courier path). Must be pre-created on the broker.
+pub const PAYMENT_INTENT_VOIDED:          &str = "logisticos.payments.intent.voided";
 
 // Engagement
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
@@ -125,6 +128,8 @@ pub const CUSTOMER_SEGMENT_UPDATED:  &str = "logisticos.cdp.segment.updated";
 
 // Tracking / customer-facing
 pub const RECEIPT_EMAIL_REQUESTED:   &str = "logisticos.tracking.receipt.email.requested";
+/// A customer rated a delivery. Published by delivery-experience, consumed by driver-ops.
+pub const DELIVERY_FEEDBACK_SUBMITTED: &str = "logisticos.delivery.feedback.submitted";
 
 // Support tickets
 pub const SUPPORT_TICKET_OPENED:     &str = "logisticos.support.ticket.opened";
@@ -230,10 +235,10 @@ mod tests {
             INVOICE_GENERATED, PAYMENT_RECEIVED,
             COD_COLLECTED, WEIGHT_ADJUSTMENT_INVOICED,
             WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,
-            PAYMENT_INTENT_CAPTURED, PAYMENT_INTENT_FAILED, PAYMENT_INTENT_AUTHORIZED,
+            PAYMENT_INTENT_CAPTURED, PAYMENT_INTENT_FAILED, PAYMENT_INTENT_AUTHORIZED, PAYMENT_INTENT_VOIDED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CAMPAIGN_COMPLETED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
-            RECEIPT_EMAIL_REQUESTED,
+            RECEIPT_EMAIL_REQUESTED, DELIVERY_FEEDBACK_SUBMITTED,
             SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED, AGENT_ESCALATION_RESOLVED,
             WHATSAPP_INBOUND,
             TIER_CHANGED,

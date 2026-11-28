@@ -194,6 +194,12 @@ pub struct InMemoryShipmentRepository {
     links: Mutex<Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid)>>,
 }
 
+impl Default for InMemoryShipmentRepository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryShipmentRepository {
     pub fn new() -> Self {
         Self { shipments: Mutex::new(Vec::new()), fail_save: false, links: Mutex::new(Vec::new()) }
@@ -830,6 +836,96 @@ mod create_shipment {
             "expected 201 (current) or 422 (if validation is added), got {}",
             resp.status_code()
         );
+    }
+
+    async fn post_body(body: Value) -> (u16, Value, usize) {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+        let token = mint_merchant_token(&jwt, uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+        let stored = repo.shipments.lock().unwrap().len();
+        (resp.status_code().as_u16(), resp.json(), stored)
+    }
+
+    /// The request's `#[validate]` rules run at the boundary: a bad phone,
+    /// empty name or zero weight is a 422 and nothing is stored.
+    #[tokio::test]
+    async fn returns_422_when_the_requests_own_validation_rules_fail() {
+        for (field, value) in [
+            ("customer_phone", json!("123")),
+            ("customer_phone", json!("1".repeat(21))),
+            ("customer_name", json!("")),
+            ("weight_grams", json!(0u32)),
+            ("weight_grams", json!(70_001u32)),
+        ] {
+            let mut body = valid_shipment_body();
+            body[field] = value.clone();
+            let (status, resp, stored) = post_body(body).await;
+            assert_eq!(status, 422, "{field}={value}: {resp}");
+            assert_eq!(resp["error"]["code"], "VALIDATION_ERROR", "{field}={value}");
+            assert_eq!(stored, 0, "{field}={value}: nothing may be stored");
+        }
+    }
+
+    /// Connector orders are paid for already: a formatted phone with an
+    /// extension is normalised, and an unusable one is accepted as given
+    /// (with a warn), never refused.
+    async fn connector_post(phone: &str) -> (u16, usize, Option<String>) {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, _jwt) = build_test_server(Arc::clone(&repo));
+        let mut body = valid_shipment_body();
+        body["tenant_id"] = json!(uuid::Uuid::new_v4());
+        body["merchant_id"] = json!(uuid::Uuid::new_v4());
+        body["tenant_slug"] = json!("tst");
+        body["source_platform"] = json!("shopify");
+        body["customer_phone"] = json!(phone);
+        let resp = server.post("/v1/internal/shipments").json(&body).await;
+        let stored = repo.shipments.lock().unwrap();
+        (resp.status_code().as_u16(), stored.len(), stored.first().map(|s| s.customer_phone.clone()))
+    }
+
+    #[tokio::test]
+    async fn connector_path_accepts_a_formatted_phone_with_an_extension() {
+        let (status, n, phone) = connector_post("+971 (50) 123-4567 ext. 12").await;
+        assert_eq!(status, 201);
+        assert_eq!((n, phone.as_deref()), (1, Some("+971501234567")));
+    }
+
+    #[tokio::test]
+    async fn connector_path_accepts_a_garbage_phone_as_given() {
+        let (status, n, phone) = connector_post("call me").await;
+        assert_eq!(status, 201);
+        assert_eq!((n, phone.as_deref()), (1, Some("call me")));
+    }
+
+    #[tokio::test]
+    async fn merchant_path_accepts_a_formatted_phone_and_still_refuses_garbage() {
+        let mut ok = valid_shipment_body();
+        ok["customer_phone"] = json!("+63 917 123 4567 ext 8");
+        assert_eq!(post_body(ok).await.0, 201);
+        let mut bad = valid_shipment_body();
+        bad["customer_phone"] = json!("call me");
+        assert_eq!(post_body(bad).await.0, 422);
+    }
+
+    /// A multi-box Balikbayan declaration is priced on the sum of its boxes and
+    /// legitimately passes 70 kg; the merchant portal sends exactly this.
+    #[tokio::test]
+    async fn per_piece_balikbayan_over_70kg_in_total_is_not_rejected_by_validation() {
+        let mut body = valid_shipment_body();
+        body["service_type"] = json!("balikbayan");
+        body["weight_grams"] = json!(80_000u32);
+        body["pieces"] = json!([{ "weight_grams": 40_000u32 }, { "weight_grams": 40_000u32 }]);
+        let (status, resp, stored) = post_body(body).await;
+        assert_eq!(status, 201, "{resp}");
+        assert_eq!(stored, 1);
     }
 
     #[tokio::test]
@@ -2161,6 +2257,8 @@ mod payment_aware_create {
     /// cross-checks against the booking request.
     fn sign_quote_token(tenant_id: uuid::Uuid, service_type: &str, weight_grams: u32, amount_cents: i64) -> String {
         let payload = QuoteTokenPayload {
+            v: quote_token::TOKEN_VERSION,
+            route: None,
             tenant_id,
             service_type: service_type.to_string(),
             weight_grams,
@@ -2520,6 +2618,114 @@ mod payment_aware_create {
         assert_eq!(store.len(), 0, "a rejected quote token must not create a shipment");
     }
 
+    /// A rate-card quote priced on `body`'s own origin and destination.
+    fn route_bound_token(tenant_id: uuid::Uuid, body: &Value, version: u8) -> String {
+        use logisticos_order_intake::application::commands::AddressInput;
+        let origin: AddressInput = serde_json::from_value(body["origin"].clone()).expect("origin");
+        let dest: AddressInput = serde_json::from_value(body["destination"].clone()).expect("destination");
+        let payload = QuoteTokenPayload {
+            v: version,
+            route: Some(quote_token::route_fingerprint(&origin, &dest)),
+            pricing_mode: Some("rate_card".to_string()),
+            ..serde_json::from_str::<QuoteTokenPayload>(&sign_then_open(tenant_id)).expect("base")
+        };
+        quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+    }
+
+    /// The JSON body of a freshly signed parcel token, to build variants from.
+    fn sign_then_open(tenant_id: uuid::Uuid) -> String {
+        let token = sign_quote_token(tenant_id, "standard", 1_500, 2_200);
+        let (b64, _) = token.split_once('.').expect("token shape");
+        use base64::Engine as _;
+        String::from_utf8(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64).expect("b64")).expect("utf8")
+    }
+
+    async fn book_with(
+        repo: &Arc<InMemoryShipmentRepository>,
+        quote_for: impl FnOnce(uuid::Uuid, &Value) -> String,
+        mutate: impl FnOnce(&mut Value),
+    ) -> (u16, Value) {
+        let (payments_url, _calls) = spawn_mock_payments_server("https://checkout.test/pay/route").await;
+        let (server, jwt, _publisher) = build_test_server_with_publisher_and_payments(
+            Arc::clone(repo),
+            Arc::new(RecordingEventPublisher::new()) as Arc<dyn EventPublisher>,
+            &payments_url,
+        );
+        let tenant_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, uuid::Uuid::new_v4(), Some("AED"));
+        let mut body = valid_shipment_body();
+        body["quote_token"] = json!(quote_for(tenant_id, &body));
+        mutate(&mut body);
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+        (resp.status_code().as_u16(), resp.json())
+    }
+
+    #[tokio::test]
+    async fn a_quote_for_one_destination_cannot_book_another() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (status, body) = book_with(
+            &repo,
+            |t, b| route_bound_token(t, b, quote_token::TOKEN_VERSION),
+            |b| b["destination"]["city"] = json!("Davao City"),
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0, "nothing may be stored");
+    }
+
+    #[tokio::test]
+    async fn a_quote_books_the_destination_it_was_priced_on_despite_formatting_noise() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (status, body) = book_with(
+            &repo,
+            |t, b| route_bound_token(t, b, quote_token::TOKEN_VERSION),
+            |b| {
+                b["destination"]["line1"] = json!("  456  CUSTOMER street. ");
+                b["destination"]["postal_code"] = json!("1100 ");
+            },
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+        assert_eq!(repo.shipments.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_quote_in_the_old_format_is_refused_with_a_clear_message() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (status, body) = book_with(&repo, |t, b| route_bound_token(t, b, 0), |_| {}).await;
+        assert_eq!(status, 422, "{body}");
+        assert!(body.to_string().contains("request a new quote"), "{body}");
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_rate_card_quote_with_its_route_stripped_is_refused() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (status, body) = book_with(
+            &repo,
+            |t, _| {
+                let payload = QuoteTokenPayload {
+                    route: None,
+                    pricing_mode: Some("rate_card".to_string()),
+                    ..serde_json::from_str::<QuoteTokenPayload>(&sign_then_open(t)).expect("base")
+                };
+                quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+            },
+            |_| {},
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
+        assert_eq!(repo.shipments.lock().unwrap().len(), 0);
+    }
+
     #[tokio::test]
     async fn create_is_idempotent_on_a_repeated_idempotency_key() {
         let repo = Arc::new(InMemoryShipmentRepository::new());
@@ -2651,11 +2857,11 @@ mod payment_consumer_tests {
         }
     }
 
-    fn captured_event(reference_id: uuid::Uuid, purpose: &str) -> Value {
+    fn captured_event(tenant: uuid::Uuid, reference_id: uuid::Uuid, purpose: &str) -> Value {
         let evt = Event::new(
             "logisticos/payments",
             "payment.intent.captured",
-            uuid::Uuid::new_v4(),
+            tenant,
             PaymentIntentCaptured {
                 intent_id: uuid::Uuid::new_v4(),
                 purpose: purpose.to_string(),
@@ -2668,11 +2874,11 @@ mod payment_consumer_tests {
         serde_json::to_value(&evt).expect("serialize PaymentIntentCaptured envelope")
     }
 
-    fn failed_event(reference_id: uuid::Uuid, purpose: &str, reason: &str) -> Value {
+    fn failed_event(tenant: uuid::Uuid, reference_id: uuid::Uuid, purpose: &str, reason: &str) -> Value {
         let evt = Event::new(
             "logisticos/payments",
             "payment.intent.failed",
-            uuid::Uuid::new_v4(),
+            tenant,
             PaymentIntentFailed {
                 intent_id: uuid::Uuid::new_v4(),
                 purpose: purpose.to_string(),
@@ -2709,7 +2915,7 @@ mod payment_consumer_tests {
         // Same reference_id as a real held shipment, but a purpose this
         // consumer doesn't own — proves the filter runs before any lookup
         // or mutation, not just that an unrelated id is skipped.
-        let json = captured_event(shipment_id, "subscription");
+        let json = captured_event(tenant_id, shipment_id, "subscription");
         let result = handle(topics::PAYMENT_INTENT_CAPTURED, json, &svc).await;
 
         assert!(result.is_ok(), "a non-shipping_fee purpose must not error: {result:?}");
@@ -2735,7 +2941,7 @@ mod payment_consumer_tests {
         let shipment_id = shipment.id.inner();
         repo.shipments.lock().unwrap().push(shipment);
 
-        let json = captured_event(shipment_id, "shipping_fee");
+        let json = captured_event(tenant_id, shipment_id, "shipping_fee");
         let result = handle(topics::PAYMENT_INTENT_CAPTURED, json, &svc).await;
         assert!(result.is_ok(), "captured handling must succeed: {result:?}");
 
@@ -2783,7 +2989,7 @@ mod payment_consumer_tests {
         let shipment_id = shipment.id.inner();
         repo.shipments.lock().unwrap().push(shipment);
 
-        let result = handle(topics::PAYMENT_INTENT_CAPTURED, captured_event(shipment_id, "shipping_fee"), &svc).await;
+        let result = handle(topics::PAYMENT_INTENT_CAPTURED, captured_event(tenant_id, shipment_id, "shipping_fee"), &svc).await;
         assert!(result.is_err(), "a failed republish must fail the message so Kafka redelivers");
 
         let stored = find(&repo, shipment_id);
@@ -2809,13 +3015,13 @@ mod payment_consumer_tests {
         repo.shipments.lock().unwrap().push(shipment);
 
         // First delivery: Kafka is partly down, so this fails and retains.
-        let first = handle_captured(shipment_id, &svc).await;
+        let first = handle_captured(shipment_id, tenant_id, &svc).await;
         assert!(first.is_err());
         assert!(find(&repo, shipment_id).pending_dispatch_events.is_some());
 
         // Kafka recovers; the redelivered message completes the handoff.
         recorder.clear_failures();
-        let second = handle_captured(shipment_id, &svc).await;
+        let second = handle_captured(shipment_id, tenant_id, &svc).await;
         assert!(second.is_ok(), "redelivery must resume, not skip: {second:?}");
 
         let stored = find(&repo, shipment_id);
@@ -2846,7 +3052,7 @@ mod payment_consumer_tests {
 
         // Exercises handle_captured directly (rather than via handle) since
         // this is specifically a redelivery-idempotency guard on that function.
-        let result = handle_captured(shipment_id, &svc).await;
+        let result = handle_captured(shipment_id, tenant_id, &svc).await;
 
         assert!(result.is_ok(), "a redelivered captured event must not error: {result:?}");
         assert_eq!(
@@ -2867,7 +3073,7 @@ mod payment_consumer_tests {
         let shipment_id = shipment.id.inner();
         repo.shipments.lock().unwrap().push(shipment);
 
-        let json = failed_event(shipment_id, "shipping_fee", "gateway_declined");
+        let json = failed_event(tenant_id, shipment_id, "shipping_fee", "gateway_declined");
         let result = handle(topics::PAYMENT_INTENT_FAILED, json, &svc).await;
         assert!(result.is_ok(), "failed handling must succeed: {result:?}");
 
@@ -2900,7 +3106,7 @@ mod payment_consumer_tests {
         let shipment_id = shipment.id.inner();
         repo.shipments.lock().unwrap().push(shipment);
 
-        let json = failed_event(shipment_id, "shipping_fee", "expired");
+        let json = failed_event(tenant_id, shipment_id, "shipping_fee", "expired");
         let result = handle(topics::PAYMENT_INTENT_FAILED, json, &svc).await;
 
         assert!(
@@ -2911,6 +3117,65 @@ mod payment_consumer_tests {
             recorder.published.lock().unwrap().len(), 0,
             "must not re-publish shipment.cancelled for an already-cancelled shipment"
         );
+    }
+
+    /// An event stamped by another tenant must not release another tenant's
+    /// held dispatch events or mark its shipment paid.
+    #[tokio::test]
+    async fn captured_from_another_tenant_moves_nothing() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let owner = uuid::Uuid::new_v4();
+        let intruder = uuid::Uuid::new_v4();
+        let shipment = awaiting_payment_shipment(owner, uuid::Uuid::new_v4());
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let json = captured_event(intruder, shipment_id, "shipping_fee");
+        let result = handle(topics::PAYMENT_INTENT_CAPTURED, json, &svc).await;
+
+        assert!(result.is_ok(), "a cross-tenant event is skipped, not an error (no poison loop): {result:?}");
+        assert_eq!(recorder.published.lock().unwrap().len(), 0, "nothing may be republished");
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.payment_status, PaymentRequirement::AwaitingPayment);
+        assert!(stored.pending_dispatch_events.is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_from_another_tenant_does_not_cancel() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let owner = uuid::Uuid::new_v4();
+        let intruder = uuid::Uuid::new_v4();
+        let shipment = awaiting_payment_shipment(owner, uuid::Uuid::new_v4());
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let json = failed_event(intruder, shipment_id, "shipping_fee", "gateway_declined");
+        let result = handle(topics::PAYMENT_INTENT_FAILED, json, &svc).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_ne!(find(&repo, shipment_id).status, ShipmentStatus::Cancelled);
+        assert_eq!(recorder.published.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn captured_with_a_nil_tenant_moves_nothing() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let shipment = awaiting_payment_shipment(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let json = captured_event(uuid::Uuid::nil(), shipment_id, "shipping_fee");
+        assert!(handle(topics::PAYMENT_INTENT_CAPTURED, json, &svc).await.is_ok());
+        assert_eq!(find(&repo, shipment_id).payment_status, PaymentRequirement::AwaitingPayment);
     }
 
     // ========================================================================
@@ -3356,6 +3621,8 @@ mod promo_booking {
     /// A quote discounted by MOVE20, priced for `account`.
     fn promo_token(tenant_id: uuid::Uuid, account: uuid::Uuid) -> String {
         let payload = QuoteTokenPayload {
+            v: quote_token::TOKEN_VERSION,
+            route: None,
             tenant_id,
             service_type: "standard".to_string(),
             weight_grams: 1_500,
@@ -3376,6 +3643,8 @@ mod promo_booking {
     /// A quote discounted by the Gold tier and 300 of account credit — no code.
     fn stacked_token(tenant_id: uuid::Uuid, account: uuid::Uuid) -> String {
         let payload = QuoteTokenPayload {
+            v: quote_token::TOKEN_VERSION,
+            route: None,
             tenant_id,
             service_type: "standard".to_string(),
             weight_grams: 1_500,

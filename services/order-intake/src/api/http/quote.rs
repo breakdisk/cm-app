@@ -398,7 +398,14 @@ pub async fn get_quote(
     })?;
 
     let expires_at = Utc::now() + Duration::minutes(QUOTE_TTL_MINUTES);
+    // A distance-priced quote is good for the route it was priced on only.
+    let route = match (&req.origin, &req.destination) {
+        (Some(o), Some(d)) if is_move => Some(quote_token::route_fingerprint(o, d)),
+        _ => None,
+    };
     let payload = QuoteTokenPayload {
+        v: quote_token::TOKEN_VERSION,
+        route,
         tenant_id: claims.tenant_id,
         service_type: req.service_type.clone(),
         weight_grams: req.weight_grams,

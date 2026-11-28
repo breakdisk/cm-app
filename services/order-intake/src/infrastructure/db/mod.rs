@@ -675,6 +675,7 @@ impl ShipmentRepository for PgShipmentRepository {
 
     fn settle_home_addendum<'a>(
         &'a self,
+        tenant_id: uuid::Uuid,
         addendum_id: uuid::Uuid,
         captured: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<crate::application::services::shipment_service::SettledAddendum>>> + Send + 'a>> {
@@ -684,9 +685,10 @@ impl ShipmentRepository for PgShipmentRepository {
                 sqlx::query(
                     "UPDATE order_intake.home_addenda
                         SET status = 'pending', payment_intent_id = NULL, checkout_url = NULL, decided_at = NULL
-                      WHERE id = $1 AND status = 'approved'",
+                      WHERE id = $1 AND tenant_id = $2 AND status = 'approved'",
                 )
                 .bind(addendum_id)
+                .bind(tenant_id)
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
@@ -697,11 +699,12 @@ impl ShipmentRepository for PgShipmentRepository {
             let paid = sqlx::query(
                 "UPDATE order_intake.home_addenda a SET status = 'paid', paid_at = NOW(),
                         trucks_before = (SELECT m.trucks FROM order_intake.home_moves m WHERE m.shipment_id = a.shipment_id)
-                  WHERE a.id = $1 AND a.status = 'approved'
+                  WHERE a.id = $1 AND a.tenant_id = $2 AND a.status = 'approved'
                   RETURNING a.shipment_id, a.tenant_id, a.items, a.total_cents, a.trucks, a.helpers, a.crew_total,
                             a.large_estate, a.trucks_before",
             )
             .bind(addendum_id)
+            .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
             let mut settled = None;

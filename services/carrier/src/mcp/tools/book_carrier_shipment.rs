@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use crate::AppState;
 use crate::mcp::context::McpContext;
+use crate::mcp::ids::optional_uuid;
 use crate::infrastructure::adapters::{Address, BookingRequest};
 use crate::infrastructure::db::CarrierBookingRecord;
 
@@ -15,6 +16,10 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Re
         .as_str()
         .ok_or("carrier_code is required")?
         .to_uppercase();
+
+    // Validate every id before anything is sent to the carrier: a booking that
+    // succeeds upstream and then loses its audit link is worse than a refusal.
+    let shipment_id = optional_uuid(args, "shipment_id")?;
 
     let adapter = state.adapter_registry
         .get(&carrier_code)
@@ -33,8 +38,6 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Re
         currency:             args["currency"].as_str().unwrap_or("USD").into(),
         reference:            args["reference"].as_str().map(String::from),
     };
-
-    let req_payload = serde_json::to_value(&req).unwrap_or_default();
 
     let mut confirmation = adapter.book_shipment(&req).await
         .map_err(|e| format!("{carrier_code} booking failed: {e}"))?;
@@ -63,24 +66,9 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Re
 
     // G1 — Write audit row to carrier.carrier_bookings.
     if let Some(booking_repo) = &state.booking_repo {
-        let shipment_id = args["shipment_id"].as_str()
-            .and_then(|s| uuid::Uuid::parse_str(s).ok());
-        let awb = args["reference"].as_str().map(String::from);
-
-        if let Err(e) = booking_repo.insert(&CarrierBookingRecord {
-            tenant_id:        ctx.tenant_id,
-            carrier_code:     carrier_code.clone(),
-            shipment_id,
-            awb,
-            service_code:     req.service_code.clone(),
-            booking_ref:      confirmation.booking_ref.clone(),
-            tracking_number:  confirmation.tracking_number.clone(),
-            label_url:        confirmation.label_url.clone(),
-            request_payload:  req_payload,
-            response_payload: resp_payload.clone(),
-            booked_by_actor:  Some(ctx.actor_uid),
-        }).await {
-            tracing::warn!("carrier_bookings insert failed: {e}");
+        let rec = booking_record(ctx, &carrier_code, shipment_id, &req, &confirmation, resp_payload);
+        if let Err(e) = booking_repo.insert(&rec).await {
+            tracing::error!("carrier_bookings insert failed; booking {} cannot be cancelled, labelled or tracked over MCP: {e}", rec.booking_ref);
         }
     }
 
@@ -91,6 +79,32 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Re
         "label_url":          confirmation.label_url,
         "estimated_delivery": confirmation.estimated_delivery,
     }))
+}
+
+/// The audit row for a successful booking. `tenant_id` and the actor come from
+/// the validated token (`ctx`) and from nowhere in `args`: a client-supplied
+/// `tenant_id` is never read.
+fn booking_record(
+    ctx:              &McpContext,
+    carrier_code:     &str,
+    shipment_id:      Option<uuid::Uuid>,
+    req:              &BookingRequest,
+    confirmation:     &crate::infrastructure::adapters::BookingConfirmation,
+    response_payload: Value,
+) -> CarrierBookingRecord {
+    CarrierBookingRecord {
+        tenant_id:        ctx.tenant_id,
+        carrier_code:     carrier_code.to_owned(),
+        shipment_id,
+        awb:              req.reference.clone(),
+        service_code:     req.service_code.clone(),
+        booking_ref:      confirmation.booking_ref.clone(),
+        tracking_number:  confirmation.tracking_number.clone(),
+        label_url:        confirmation.label_url.clone(),
+        request_payload:  serde_json::to_value(req).unwrap_or_default(),
+        response_payload,
+        booked_by_actor:  Some(ctx.actor_uid),
+    }
 }
 
 fn parse_address(args: &Value, field: &str) -> Result<Address, String> {
@@ -154,4 +168,45 @@ pub fn schema() -> Value {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::adapters::BookingConfirmation;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn audit_row_takes_tenant_and_actor_from_the_token_never_from_arguments() {
+        let ctx = McpContext {
+            tenant_id: Uuid::new_v4(), actor_uid: Uuid::new_v4(),
+            permissions: vec![], partner_id: None, trace_id: "t".into(),
+        };
+        let other_tenant = Uuid::new_v4();
+        let args = json!({
+            "tenant_id": other_tenant.to_string(), "actor_uid": other_tenant.to_string(),
+            "carrier_code": "DHL", "service_code": "S", "weight_kg": 1.0,
+        });
+        let addr = json!({"name":"A","street1":"1","city":"C","postal_code":"1","country":"PH"});
+        let mut a = args.clone();
+        a["shipper"] = addr.clone();
+        a["consignee"] = addr;
+        let req = BookingRequest {
+            service_code: "S".into(),
+            shipper:   parse_address(&a, "shipper").unwrap(),
+            consignee: parse_address(&a, "consignee").unwrap(),
+            weight_kg: 1.0, length_cm: None, width_cm: None, height_cm: None,
+            description: "d".into(), declared_value_cents: 0, currency: "USD".into(),
+            reference: None,
+        };
+        let conf = BookingConfirmation {
+            booking_ref: "BK".into(), tracking_number: "TN".into(),
+            label_url: None, label_bytes: None, estimated_delivery: None,
+        };
+        let rec = booking_record(&ctx, "DHL", None, &req, &conf, json!({}));
+        assert_eq!(rec.tenant_id, ctx.tenant_id);
+        assert_ne!(rec.tenant_id, other_tenant);
+        assert_eq!(rec.booked_by_actor, Some(ctx.actor_uid));
+    }
 }
