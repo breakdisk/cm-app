@@ -40,3 +40,13 @@ validator.workspace  = true
 rdkafka.workspace    = true
 tracing.workspace    = true
 reqwest           = { workspace = true, features = ["json"] }
+
+# Neither suite had a target, so cargo never compiled either one. They are
+# wired explicitly because `tests/<dir>/mod.rs` is not auto-discovered.
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
