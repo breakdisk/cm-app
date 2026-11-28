@@ -264,7 +264,12 @@ async fn proxy_handler(
     // x-forwarded-for is skipped here and rebuilt explicitly below (appending
     // the connecting peer) rather than passed through as-is.
     for (name, value) in headers.iter() {
-        if is_hop_by_hop(name) || name.as_str() == "x-forwarded-for" {
+        // x-tenant-id is also skipped: `.header()` appends, so a client-supplied
+        // value would reach upstreams ahead of the one injected below.
+        if is_hop_by_hop(name)
+            || name.as_str() == "x-forwarded-for"
+            || name.as_str() == "x-tenant-id"
+        {
             continue;
         }
         if let Ok(v) = value.to_str() {
