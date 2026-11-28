@@ -546,6 +546,24 @@ impl PodService {
             })
     }
 
+    /// The user who booked `shipment_id`, for the caller's tenant: `Some(id)`, or
+    /// `None` when order-intake says the shipment is not this tenant's. Used to
+    /// decide whether a merchant or customer may read the shipment's proofs.
+    ///
+    /// An outage, or an order-intake too old to name the booker, is a 503: an
+    /// owner that cannot be verified is refused, never assumed.
+    pub async fn shipment_booker(&self, tenant_id: &TenantId, shipment_id: Uuid) -> AppResult<Option<Uuid>> {
+        match self.verified_booking(tenant_id.inner(), shipment_id).await {
+            Ok(ctx) => ctx.merchant_id.map(Some).ok_or_else(|| {
+                AppError::ServiceUnavailable(
+                    "order-intake did not name the shipment's booker; ownership cannot be verified. Retry later.".into(),
+                )
+            }),
+            Err(AppError::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// The booking of a shipment, for the caller's tenant, or a refusal. Ownership is
     /// verified or refused, never assumed:
     ///

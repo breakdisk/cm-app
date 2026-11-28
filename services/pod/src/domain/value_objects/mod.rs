@@ -1,4 +1,5 @@
 pub mod delivery_pin;
+pub mod evidence_access;
 
 /// Maximum photo size allowed per delivery (5 MB).
 pub const MAX_PHOTO_SIZE_BYTES: u64 = 5 * 1024 * 1024;
