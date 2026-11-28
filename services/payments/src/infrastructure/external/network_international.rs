@@ -85,7 +85,7 @@ use subtle::ConstantTimeEq;
 
 use crate::config::NetworkInternationalConfig;
 use crate::domain::repositories::payment_gateway::{
-    CreateSessionRequest, GatewaySession, PaymentAction, PaymentGateway, WebhookEvent,
+    CreateSessionRequest, GatewayError, GatewaySession, PaymentAction, PaymentGateway, WebhookEvent,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -303,10 +303,13 @@ impl PaymentGateway for NetworkInternationalGateway {
             .bearer_auth(&self.cfg.api_key)
             .json(&serde_json::json!({ "amount": { "value": amount_cents } }))
             .send()
-            .await?;
+            .await
+            // Transport error / timeout: we cannot know whether NI acted.
+            .map_err(|e| GatewayError::Ambiguous(format!("NI capture transport error: {e}")))?;
         if let Err(e) = resp.error_for_status_ref() {
+            let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("NI capture failed: {e} — body: {body_text}");
+            return Err(classify_failure("NI capture", status, &e.to_string(), &body_text).into());
         }
         let body_text = resp.text().await.unwrap_or_default();
         let capture_ref = serde_json::from_str::<Value>(&body_text)
@@ -360,15 +363,46 @@ impl PaymentGateway for NetworkInternationalGateway {
             gateway_order_ref,
             gateway_payment_ref,
         );
-        let resp = self.http.delete(&url).bearer_auth(&self.cfg.api_key).send().await?;
+        let resp = self.http.delete(&url).bearer_auth(&self.cfg.api_key).send().await
+            .map_err(|e| GatewayError::Ambiguous(format!("NI void transport error: {e}")))?;
         if let Err(e) = resp.error_for_status_ref() {
+            let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
+            return Err(classify_failure(
                 "NI void (authorization reversal — UNVERIFIED endpoint, see \
-                 NetworkInternationalGateway::void's doc comment) failed: {e} — body: {body_text}"
-            );
+                 NetworkInternationalGateway::void's doc comment)",
+                status,
+                &e.to_string(),
+                &body_text,
+            ).into());
         }
         Ok(())
+    }
+}
+
+/// Classifies a non-2xx capture/void response. Conservative: `Rejected` (the
+/// claim may be released) only when NI positively did not act. Table:
+///
+/// | response                                           | class     |
+/// |----------------------------------------------------|-----------|
+/// | transport error / timeout (before this fn)         | Ambiguous |
+/// | 400, 401, 403, 404, 422 with a JSON-object body    | Rejected  |
+/// | 400, 401, 403, 404, 422 with empty/non-JSON body   | Ambiguous |
+/// | 408, 409, 429                                      | Ambiguous |
+/// | any other 4xx, 3xx                                 | Ambiguous |
+/// | 5xx                                                | Ambiguous |
+///
+/// 409 is Ambiguous on purpose: a conflict on capture may mean it already
+/// happened. NI's error-body schema is NOT confirmed against the docs or a
+/// sandbox, so "structured body" is only checked as "a JSON object".
+fn classify_failure(op: &str, status: u16, err: &str, body: &str) -> GatewayError {
+    let msg = format!("{op} failed: {err} — body: {body}");
+    let definite_status = matches!(status, 400 | 401 | 403 | 404 | 422);
+    let structured = matches!(serde_json::from_str::<Value>(body), Ok(Value::Object(_)));
+    if definite_status && structured {
+        GatewayError::Rejected(msg)
+    } else {
+        GatewayError::Ambiguous(msg)
     }
 }
 
@@ -516,6 +550,20 @@ fn extract_state(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_classification_is_conservative() {
+        let rej = |s, b| matches!(classify_failure("op", s, "e", b), GatewayError::Rejected(_));
+        // Definite refusals: client-error status AND a JSON-object body.
+        for s in [400, 401, 403, 404, 422] {
+            assert!(rej(s, r#"{"errors":[{"message":"declined"}]}"#), "{s} with body");
+            assert!(!rej(s, ""), "{s} with empty body is ambiguous");
+            assert!(!rej(s, "<html>bad gateway</html>"), "{s} non-JSON is ambiguous");
+        }
+        for s in [300, 408, 409, 410, 429, 500, 502, 503, 504] {
+            assert!(!rej(s, r#"{"errors":[]}"#), "{s} must be ambiguous");
+        }
+    }
 
     /// HMAC-signature verification mode — matches the 4 pre-existing tests
     /// below unchanged.

@@ -5,12 +5,12 @@
 use std::sync::Arc;
 
 use chrono::Duration;
-use logisticos_events::{envelope::Event, payloads::{PaymentIntentAuthorized, PaymentIntentCaptured, PaymentIntentFailed}, producer::KafkaProducer, topics};
+use logisticos_events::{envelope::Event, payloads::{PaymentIntentAuthorized, PaymentIntentCaptured, PaymentIntentFailed, PaymentIntentVoided}, producer::KafkaProducer, topics};
 use uuid::Uuid;
 
 use crate::domain::entities::{PaymentIntent, PaymentIntentStatus};
 use crate::domain::repositories::{
-    payment_gateway::{CreateSessionRequest, PaymentAction, PaymentGateway, WebhookEvent},
+    payment_gateway::{CreateSessionRequest, GatewayError, PaymentAction, PaymentGateway, WebhookEvent},
     PaymentIntentRepository,
 };
 
@@ -239,7 +239,14 @@ impl PaymentIntentService {
         // which would misclassify a harmless out-of-order redelivery as a
         // permanent Rejected/Internal failure.
         if let Some(existing) = self.repo.find_by_gateway_payment_ref(gateway_payment_ref).await? {
-            if matches!(existing.status, PaymentIntentStatus::Authorized | PaymentIntentStatus::Captured) {
+            if matches!(
+                existing.status,
+                PaymentIntentStatus::Authorized
+                    | PaymentIntentStatus::Captured
+                    | PaymentIntentStatus::Capturing
+                    | PaymentIntentStatus::Voiding
+                    | PaymentIntentStatus::Voided
+            ) {
                 return Ok(());
             }
         }
@@ -437,55 +444,77 @@ impl PaymentIntentService {
         Ok(refunded_count)
     }
 
-    /// Captures funds previously ring-fenced by `authorize()` — the "a
-    /// courier accepted the order" half of OmniDeliv's prepaid checkout.
+    /// Captures a ring-fenced hold, in full or in part. Returns the gateway's
+    /// capture reference.
     ///
-    /// Mirrors `refund()`'s structure: a cheap local status guard first
-    /// (zero repo/gateway calls for an obviously-wrong intent), then
-    /// `repo.claim_for_capture` — an atomic `authorized -> captured` DB
-    /// claim — as the actual concurrency guard, exactly the way
-    /// `claim_for_refund` is. Only the caller whose claim affects a row may
-    /// call the gateway; the loser bails before ever touching it (see
-    /// `capture_intent_does_not_call_the_gateway_when_another_caller_already_holds_the_claim`).
+    /// # State machine
     ///
-    /// Unlike `refund()`, there is no separate intermediate "claimed but not
-    /// yet resolved" status here — the claim writes directly to the target
-    /// terminal status (`captured`), and a definite gateway failure reverts
-    /// it back to `authorized` (same revert shape as `refund()`'s failure
-    /// branch) so the call is safely retryable. This is a deliberately
-    /// narrower guarantee than `refund()`'s lease-based reclaim: a process
-    /// that crashes AFTER winning the claim but BEFORE the gateway responds
-    /// leaves the row at `captured` with no sweep to reconcile it (there is
-    /// no `sweep_pending_captures` in this pass). That is a known, narrow
-    /// gap — not a silently-accepted one — left for the caller
-    /// (`POST /v1/internal/payments/intents/:id/capture`) and its own
-    /// retry/alerting story to close, since nothing in this task's scope
-    /// asked for a capture-retry sweep.
-    /// Captures a ring-fenced hold, in full or in part.
+    /// ```text
+    ///                 claim_for_capture            complete_capture
+    ///   authorized ───────────────────▶ capturing ─────────────────▶ captured
+    ///        ▲                              │   (gateway ok)
+    ///        └──────── release_claim ───────┘   (gateway error)
+    ///   authorized ──claim_for_void──▶ voiding ──complete_void──▶ voided
+    /// ```
     ///
-    /// `amount_cents` of `None` captures the whole authorization — the
-    /// behaviour every caller had before partial capture existed, and still
-    /// the right one for a single-vendor order.
+    /// * **Idempotent:** an already-`captured` intent returns its recorded
+    ///   capture reference with NO gateway call (same request, same result).
+    ///   A replay asking for a different amount is a conflict, not a silent
+    ///   success.
+    /// * **Mutually exclusive with void:** `voided`/`voiding` is a 409
+    ///   ([`IntentConflict`]) with no gateway call. The exclusion is the atomic
+    ///   conditional `UPDATE ... WHERE status = 'authorized'` in
+    ///   `claim_for_capture`/`claim_for_void`, taken BEFORE the gateway call,
+    ///   so two concurrent requests cannot both reach the gateway.
+    /// * **Crash window:** if the process dies after the claim but before the
+    ///   gateway answers, the row stays `capturing`. A fresh `capturing` row is
+    ///   reported as a 409 "in progress" (a live caller owns it); once its
+    ///   lease (5 min, `updated_at`) expires the next retry reclaims the claim
+    ///   and re-issues the gateway capture. There is no background sweep: the
+    ///   caller's own retry (omnideliv HTTP retry / recovery sweep) is the
+    ///   resolver. The re-issued capture is NOT keyed by an idempotency key —
+    ///   nothing in this codebase shows NI accepting one on captures — so if
+    ///   the first attempt reached NI but its response was lost, the retry
+    ///   relies on NI refusing a second capture of an already-captured payment
+    ///   (unverified; see the NI adapter's doc comment).
+    /// * **Gateway failure:** classified by `GatewayError`. A definite
+    ///   `Rejected` releases the claim back to `authorized` (retryable). An
+    ///   `Ambiguous` error (timeout, 5xx, transport, anything unclassified)
+    ///   KEEPS the `capturing` claim and records `last_gateway_error`: the
+    ///   gateway may have captured, so a void must not run. The opposite
+    ///   operation stays 409; only a capture retry after the lease re-drives it.
+    /// * **Events:** the captured event carries a deterministic id and is
+    ///   re-published on an idempotent replay, so a lost publish is recovered.
     ///
-    /// A partial capture exists for ADR-0017's acceptance barrier: a foodcourt
-    /// basket authorizes the whole table, then some stalls accept and some
-    /// refuse. Taking the full amount would charge for food nobody is making;
-    /// taking nothing would refuse the whole table because one stall was shut.
-    ///
-    /// The amount is validated BEFORE the gateway is called. A rejected amount
-    /// must cost a round trip to nobody, and must never leave a gateway capture
-    /// that the domain then refuses to record.
+    /// `amount_cents` of `None` captures the whole authorization. A partial
+    /// capture exists for ADR-0017's acceptance barrier: a foodcourt basket
+    /// authorizes the whole table, then some stalls accept and some refuse.
+    /// The amount is validated BEFORE the gateway is called.
     pub async fn capture_intent(
         &self,
         intent_id: Uuid,
         amount_cents: Option<i64>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<String> {
         let mut intent = self.repo.find_by_id(intent_id).await?
             .ok_or_else(|| anyhow::anyhow!("no payment_intent {intent_id}"))?;
-        if intent.status != PaymentIntentStatus::Authorized {
-            anyhow::bail!("Only an authorized intent can be captured");
-        }
+
         let to_capture = amount_cents.unwrap_or(intent.amount_cents);
+        match intent.status {
+            PaymentIntentStatus::Captured => return self.replayed_capture(&intent, amount_cents).await,
+            PaymentIntentStatus::Voided | PaymentIntentStatus::Voiding => {
+                return Err(IntentConflict(format!(
+                    "intent {intent_id} is voided or being voided and cannot be captured"
+                )).into());
+            }
+            // `Capturing` falls through: the claim below succeeds only if its
+            // lease expired (crash recovery).
+            PaymentIntentStatus::Authorized | PaymentIntentStatus::Capturing => {}
+            _ => {
+                return Err(IntentConflict(
+                    "Only an authorized intent can be captured".to_string(),
+                ).into());
+            }
+        }
         if to_capture <= 0 {
             anyhow::bail!(
                 "A capture must take a positive amount; void the hold instead of capturing zero"
@@ -497,17 +526,35 @@ impl PaymentIntentService {
                 intent.amount_cents
             );
         }
+        // A reclaimed claim must take the amount the first attempt asked for.
+        if intent.status == PaymentIntentStatus::Capturing {
+            if let Some(claimed) = intent.captured_amount_cents {
+                if claimed != to_capture {
+                    return Err(IntentConflict(format!(
+                        "intent {intent_id} has an in-flight capture of {claimed}; \
+                         refusing a conflicting capture of {to_capture}"
+                    )).into());
+                }
+            }
+        }
         let gateway_order_ref = intent.gateway_order_ref.clone()
             .ok_or_else(|| anyhow::anyhow!("intent {intent_id} has no gateway order reference"))?;
         let gateway_payment_ref = intent.gateway_payment_ref.clone()
             .ok_or_else(|| anyhow::anyhow!("intent {intent_id} has no authorized payment to capture"))?;
 
-        if !self.repo.claim_for_capture(intent_id).await? {
-            anyhow::bail!("intent {intent_id} is already being captured or voided (lost the claim race)");
+        if !self.repo.claim_for_capture(intent_id, to_capture).await? {
+            // Lost the race. If the winner already finished, this is a replay.
+            let current = self.repo.find_by_id(intent_id).await?
+                .ok_or_else(|| anyhow::anyhow!("no payment_intent {intent_id}"))?;
+            if current.status == PaymentIntentStatus::Captured {
+                return self.replayed_capture(&current, amount_cents).await;
+            }
+            return Err(IntentConflict(format!(
+                "intent {intent_id} is {} — another capture or void holds it",
+                current.status.as_str()
+            )).into());
         }
 
-        // `intent` is the pre-claim, still-`Authorized` snapshot (never
-        // mutated on the failure branch below) — same trick `refund()` uses.
         match self.gateway.capture(&gateway_order_ref, &gateway_payment_ref, to_capture).await {
             Ok(capture_ref) => {
                 tracing::info!(
@@ -515,74 +562,169 @@ impl PaymentIntentService {
                     capture_ref = %capture_ref,
                     "capture_intent: gateway capture succeeded",
                 );
+                if !self.repo.complete_capture(intent_id, &capture_ref).await? {
+                    // Our claim was reclaimed and completed by another caller
+                    // after the lease lapsed; they own the event.
+                    tracing::warn!(
+                        intent_id = %intent_id,
+                        "capture_intent: claim no longer held at completion; not re-publishing",
+                    );
+                    return Ok(capture_ref);
+                }
                 intent.capture_authorized(to_capture).map_err(|e| anyhow::anyhow!("{e}"))?;
-                self.repo.save(&intent).await?;
-
-                let evt = Event::new(
-                    "logisticos/payments",
-                    "payment.intent.captured",
-                    intent.tenant_id,
-                    PaymentIntentCaptured {
-                        intent_id: intent.id,
-                        purpose: intent.purpose.clone(),
-                        reference_type: intent.reference_type.clone(),
-                        reference_id: intent.reference_id,
-                        // What was TAKEN, not what was held. On a partial
-                        // capture these differ, and a consumer reconciling the
-                        // authorized figure against the bank would be short.
-                        amount_cents: intent.captured_or_full(),
-                        currency: intent.currency.clone(),
-                    },
-                );
-                self.kafka.publish_event(topics::PAYMENT_INTENT_CAPTURED, &evt).await?;
-                Ok(())
+                self.publish_captured(&intent).await?;
+                Ok(capture_ref)
             }
             Err(e) => {
-                // Revert the claim: write the still-`Authorized` snapshot
-                // back over the DB's `captured` row so the intent is
-                // retryable rather than stranded claiming money that was
-                // never actually taken.
-                intent.updated_at = chrono::Utc::now();
-                if let Err(save_err) = self.repo.save(&intent).await {
-                    tracing::error!(
-                        intent_id = %intent_id,
-                        gateway_error = %e,
-                        revert_error = %save_err,
-                        "capture_intent: gateway call failed AND reverting the claim also failed \
-                         — the intent is now stranded at 'captured' in the DB despite the gateway \
-                         call failing; requires manual investigation",
-                    );
-                }
+                self.settle_failed_claim(intent_id, "capture", &e).await;
                 Err(e)
             }
         }
     }
 
+    /// Deterministic envelope id (UUIDv5 of the intent id + event kind), so a
+    /// re-published event is recognised by id-deduping consumers as the same
+    /// event.
+    fn event_id(intent_id: Uuid, kind: &str) -> Uuid {
+        Uuid::new_v5(&intent_id, kind.as_bytes())
+    }
+
+    async fn publish_captured(&self, intent: &PaymentIntent) -> anyhow::Result<()> {
+        let evt = Event::with_id(
+            Self::event_id(intent.id, "captured"),
+            "logisticos/payments",
+            "payment.intent.captured",
+            intent.tenant_id,
+            PaymentIntentCaptured {
+                intent_id: intent.id,
+                purpose: intent.purpose.clone(),
+                reference_type: intent.reference_type.clone(),
+                reference_id: intent.reference_id,
+                // What was TAKEN, not what was held. On a partial capture
+                // these differ, and a consumer reconciling the authorized
+                // figure against the bank would be short.
+                amount_cents: intent.captured_or_full(),
+                currency: intent.currency.clone(),
+            },
+        );
+        self.kafka.publish_event(topics::PAYMENT_INTENT_CAPTURED, &evt).await?;
+        Ok(())
+    }
+
+    async fn publish_voided(&self, intent: &PaymentIntent) -> anyhow::Result<()> {
+        let evt = Event::with_id(
+            Self::event_id(intent.id, "voided"),
+            "logisticos/payments",
+            "payment.intent.voided",
+            intent.tenant_id,
+            PaymentIntentVoided {
+                intent_id: intent.id,
+                purpose: intent.purpose.clone(),
+                reference_type: intent.reference_type.clone(),
+                reference_id: intent.reference_id,
+                amount_cents: intent.amount_cents,
+                currency: intent.currency.clone(),
+            },
+        );
+        self.kafka.publish_event(topics::PAYMENT_INTENT_VOIDED, &evt).await?;
+        Ok(())
+    }
+
+    /// What to do with a held claim after a gateway failure.
+    ///
+    /// * `Rejected` (the gateway definitely did not act): release back to
+    ///   `authorized`.
+    /// * Anything else (ambiguous — the gateway may have acted): KEEP the
+    ///   claim and record the error. Releasing would let the opposite
+    ///   operation run against a capture/void that may have succeeded at the
+    ///   gateway. Only the same operation can reclaim it after the lease.
+    async fn settle_failed_claim(&self, intent_id: Uuid, op: &str, e: &anyhow::Error) {
+        if GatewayError::is_rejected(e) {
+            if let Err(release_err) = self.repo.release_claim(intent_id).await {
+                tracing::error!(
+                    intent_id = %intent_id,
+                    gateway_error = %e,
+                    release_error = %release_err,
+                    "{op}_intent: gateway rejected AND releasing the claim failed — the intent \
+                     stays claimed until its lease expires, then a retry reclaims it",
+                );
+            }
+            return;
+        }
+        tracing::warn!(
+            intent_id = %intent_id,
+            operation = op,
+            gateway_error = %e,
+            "payment claim ambiguous: gateway outcome unknown, claim kept; the opposite \
+             operation is blocked and the same operation may re-drive it after the lease",
+        );
+        if let Err(rec_err) = self.repo.record_claim_error(intent_id, &e.to_string()).await {
+            tracing::error!(
+                intent_id = %intent_id,
+                record_error = %rec_err,
+                "{op}_intent: could not record last_gateway_error",
+            );
+        }
+    }
+
+    /// The idempotent answer for an already-captured intent. A retry that
+    /// asks for a different amount than was taken is a conflict.
+    ///
+    /// The captured event is RE-PUBLISHED (deterministic envelope id, see
+    /// `event_id`) so an event lost to a publish failure on the first attempt
+    /// is recovered by the caller's retry. A publish failure here fails the
+    /// replay so the caller retries again.
+    async fn replayed_capture(&self, intent: &PaymentIntent, requested: Option<i64>) -> anyhow::Result<String> {
+        if let Some(req) = requested {
+            if req != intent.captured_or_full() {
+                return Err(IntentConflict(format!(
+                    "intent {} was already captured for {}; refusing a capture of {req}",
+                    intent.id,
+                    intent.captured_or_full()
+                )).into());
+            }
+        }
+        self.publish_captured(intent).await?;
+        Ok(intent.gateway_capture_ref.clone()
+            .or_else(|| intent.gateway_payment_ref.clone())
+            .unwrap_or_default())
+    }
+
     /// Releases an authorization hold that was never captured — the
     /// "no courier accepted this order" half of OmniDeliv's prepaid
-    /// checkout. Structure mirrors `capture_intent` exactly (same claim
-    /// mechanism, same revert-on-failure shape), with one addition specific
-    /// to void: on a definite gateway failure, this logs at `tracing::error!`
-    /// (not `warn!`) with an explicit callout that funds are STILL
-    /// ring-fenced on the customer's card — this is the money-safety-critical
-    /// direction (a failed capture just means "we didn't get paid"; a failed
-    /// void means "the customer's money is still held and we don't yet have
-    /// it back to them"). The claim is reverted back to `Authorized` (not
-    /// left stuck), so the error is loud (logged + propagated to the caller,
-    /// never swallowed) AND recoverable (a retry of this same call is safe
-    /// and will attempt the gateway void again).
+    /// checkout. Same claim mechanism as `capture_intent` (see its state
+    /// machine): idempotent when already `voided` (no gateway call), a 409
+    /// ([`IntentConflict`]) when `captured`/`capturing`, claim reclaimable
+    /// after its 5-minute lease when the holder crashed. On a gateway failure
+    /// the claim is released only for a definite `Rejected`; an ambiguous error
+    /// keeps `voiding` (a capture is then 409) and only a void retry after the
+    /// lease re-drives it. The voided event is re-published on replay.
+    ///
+    /// A failed void is the money-safety-critical direction: the customer's
+    /// funds stay ring-fenced. It is logged at `error!` and propagated, never
+    /// swallowed; the retry is safe. NI voids are same-day only, so the
+    /// retry must land the same day.
     ///
     /// See `NetworkInternationalGateway::void`'s doc comment: the wire-level
-    /// endpoint this calls is NOT confirmed against NI's docs (only "void a
-    /// capture" is confirmed; reversing an authorization that was never
-    /// captured is a best-reading extrapolation). A failure here is
-    /// therefore not necessarily "NI said no" — it may mean the endpoint
-    /// itself is wrong, which is exactly why it must never fail silently.
+    /// endpoint this calls is NOT confirmed against NI's docs. Publishes
+    /// `logisticos.payments.intent.voided` on success (not on an idempotent
+    /// replay).
     pub async fn void_intent(&self, intent_id: Uuid) -> anyhow::Result<()> {
         let mut intent = self.repo.find_by_id(intent_id).await?
             .ok_or_else(|| anyhow::anyhow!("no payment_intent {intent_id}"))?;
-        if intent.status != PaymentIntentStatus::Authorized {
-            anyhow::bail!("Only an authorized intent can be voided");
+        match intent.status {
+            PaymentIntentStatus::Voided => return self.publish_voided(&intent).await, // idempotent replay (re-emits)
+            PaymentIntentStatus::Captured | PaymentIntentStatus::Capturing => {
+                return Err(IntentConflict(format!(
+                    "intent {intent_id} is captured or being captured and cannot be voided"
+                )).into());
+            }
+            PaymentIntentStatus::Authorized | PaymentIntentStatus::Voiding => {}
+            _ => {
+                return Err(IntentConflict(
+                    "Only an authorized intent can be voided".to_string(),
+                ).into());
+            }
         }
         let gateway_order_ref = intent.gateway_order_ref.clone()
             .ok_or_else(|| anyhow::anyhow!("intent {intent_id} has no gateway order reference"))?;
@@ -590,45 +732,50 @@ impl PaymentIntentService {
             .ok_or_else(|| anyhow::anyhow!("intent {intent_id} has no authorized payment to void"))?;
 
         if !self.repo.claim_for_void(intent_id).await? {
-            anyhow::bail!("intent {intent_id} is already being captured or voided (lost the claim race)");
+            let current = self.repo.find_by_id(intent_id).await?
+                .ok_or_else(|| anyhow::anyhow!("no payment_intent {intent_id}"))?;
+            if current.status == PaymentIntentStatus::Voided {
+                return self.publish_voided(&current).await;
+            }
+            return Err(IntentConflict(format!(
+                "intent {intent_id} is {} — another capture or void holds it",
+                current.status.as_str()
+            )).into());
         }
 
         match self.gateway.void(&gateway_order_ref, &gateway_payment_ref).await {
             Ok(()) => {
+                if !self.repo.complete_void(intent_id).await? {
+                    tracing::warn!(
+                        intent_id = %intent_id,
+                        "void_intent: claim no longer held at completion; not re-publishing",
+                    );
+                    return Ok(());
+                }
                 intent.void().map_err(|e| anyhow::anyhow!("{e}"))?;
-                self.repo.save(&intent).await?;
-                Ok(())
+                self.publish_voided(&intent).await
             }
             Err(e) => {
-                intent.updated_at = chrono::Utc::now();
-                if let Err(save_err) = self.repo.save(&intent).await {
-                    tracing::error!(
-                        intent_id = %intent_id,
-                        gateway_error = %e,
-                        revert_error = %save_err,
-                        "void_intent: gateway void call failed AND reverting the claim also failed \
-                         — the intent is now stranded at 'voided' in the DB despite the gateway call \
-                         failing, and funds remain ring-fenced on the customer's card with NO \
-                         automatic recovery path. Requires IMMEDIATE manual investigation: check the \
-                         payment directly against NI and correct the DB row's status by hand if \
-                         necessary.",
-                    );
-                    return Err(e);
-                }
+                // Funds may remain ring-fenced on the customer's card; loud.
                 tracing::error!(
                     intent_id = %intent_id,
                     gateway_error = %e,
-                    "void_intent: gateway void call failed — funds remain ring-fenced (authorized, \
-                     not released) on the customer's card. The claim was reverted, so the intent is \
-                     back at 'authorized' and this call can be safely retried. NI's docs describe an \
-                     unreleased authorization hold as eventually expiring on the issuing bank's own \
-                     schedule, but that is not a substitute for an explicit retry or ops follow-up.",
+                    "void_intent: gateway void call failed — funds may remain ring-fenced \
+                     (NI voids are same-day only)",
                 );
+                self.settle_failed_claim(intent_id, "void", &e).await;
                 Err(e)
             }
         }
     }
 }
+
+/// A capture/void that the intent's current state forbids (already captured,
+/// already voided, or claimed by another in-flight caller). Carried inside the
+/// `anyhow::Error` so the HTTP layer can downcast it to a 409.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct IntentConflict(pub String);
 
 #[cfg(test)]
 mod tests {
@@ -652,6 +799,8 @@ mod tests {
 
     /// Must match the lease in `payment_intent_repo.rs`'s claim SQL.
     const LEASE_MINUTES: i64 = 15;
+    /// Must match the capture/void claim lease in `payment_intent_repo.rs`.
+    const CLAIM_LEASE_MINUTES: i64 = 5;
     use crate::domain::repositories::payment_gateway::GatewaySession;
 
     // ── Kafka: real producer over an in-process mock broker ────────────────
@@ -683,6 +832,8 @@ mod tests {
         /// test simulate a transient DB failure for exactly one row in a
         /// batch without a real database.
         fail_save_for: Mutex<Option<Uuid>>,
+        /// `last_gateway_error` per intent, as recorded by `record_claim_error`.
+        claim_errors: Mutex<HashMap<Uuid, String>>,
     }
 
     impl FakeRepo {
@@ -807,11 +958,18 @@ mod tests {
                 .collect())
         }
 
-        async fn claim_for_capture(&self, id: Uuid) -> anyhow::Result<bool> {
+        async fn claim_for_capture(&self, id: Uuid, amount_cents: i64) -> anyhow::Result<bool> {
             let mut intents = self.intents.lock().unwrap();
+            // Mirrors the SQL: `authorized`, or a `capturing` row past its lease.
+            let cutoff = Utc::now() - chrono::Duration::minutes(CLAIM_LEASE_MINUTES);
             match intents.get_mut(&id) {
-                Some(intent) if intent.status == PaymentIntentStatus::Authorized => {
-                    intent.status = PaymentIntentStatus::Captured;
+                Some(intent)
+                    if intent.status == PaymentIntentStatus::Authorized
+                        || (intent.status == PaymentIntentStatus::Capturing
+                            && intent.updated_at < cutoff) =>
+                {
+                    intent.status = PaymentIntentStatus::Capturing;
+                    intent.captured_amount_cents = Some(amount_cents);
                     intent.updated_at = Utc::now();
                     Ok(true)
                 }
@@ -821,9 +979,68 @@ mod tests {
 
         async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool> {
             let mut intents = self.intents.lock().unwrap();
+            let cutoff = Utc::now() - chrono::Duration::minutes(CLAIM_LEASE_MINUTES);
             match intents.get_mut(&id) {
-                Some(intent) if intent.status == PaymentIntentStatus::Authorized => {
+                Some(intent)
+                    if intent.status == PaymentIntentStatus::Authorized
+                        || (intent.status == PaymentIntentStatus::Voiding
+                            && intent.updated_at < cutoff) =>
+                {
+                    intent.status = PaymentIntentStatus::Voiding;
+                    intent.updated_at = Utc::now();
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
+        async fn complete_capture(&self, id: Uuid, capture_ref: &str) -> anyhow::Result<bool> {
+            let mut intents = self.intents.lock().unwrap();
+            match intents.get_mut(&id) {
+                Some(intent) if intent.status == PaymentIntentStatus::Capturing => {
+                    intent.status = PaymentIntentStatus::Captured;
+                    intent.gateway_capture_ref = Some(capture_ref.to_string());
+                    intent.updated_at = Utc::now();
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
+        async fn complete_void(&self, id: Uuid) -> anyhow::Result<bool> {
+            let mut intents = self.intents.lock().unwrap();
+            match intents.get_mut(&id) {
+                Some(intent) if intent.status == PaymentIntentStatus::Voiding => {
                     intent.status = PaymentIntentStatus::Voided;
+                    intent.updated_at = Utc::now();
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
+        async fn record_claim_error(&self, id: Uuid, error: &str) -> anyhow::Result<bool> {
+            let held = matches!(
+                self.intents.lock().unwrap().get(&id).map(|i| i.status),
+                Some(PaymentIntentStatus::Capturing | PaymentIntentStatus::Voiding)
+            );
+            if held {
+                self.claim_errors.lock().unwrap().insert(id, error.to_string());
+            }
+            Ok(held)
+        }
+
+        async fn release_claim(&self, id: Uuid) -> anyhow::Result<bool> {
+            let mut intents = self.intents.lock().unwrap();
+            match intents.get_mut(&id) {
+                Some(intent)
+                    if matches!(
+                        intent.status,
+                        PaymentIntentStatus::Capturing | PaymentIntentStatus::Voiding
+                    ) =>
+                {
+                    intent.status = PaymentIntentStatus::Authorized;
+                    intent.captured_amount_cents = None;
                     intent.updated_at = Utc::now();
                     Ok(true)
                 }
@@ -846,6 +1063,9 @@ mod tests {
         refund_should_fail: bool,
         refund_calls: Mutex<u32>,
         capture_should_fail: bool,
+        /// When a configured capture/void failure should classify as a definite
+        /// `GatewayError::Rejected` rather than `Ambiguous`.
+        failure_is_rejection: bool,
         capture_calls: Mutex<u32>,
         /// What the gateway was actually asked to take. A partial capture that
         /// counted a call but sent the full amount would pass a call-count
@@ -863,6 +1083,7 @@ mod tests {
                 refund_should_fail: false,
                 refund_calls: Mutex::new(0),
                 capture_should_fail: false,
+                failure_is_rejection: false,
                 capture_calls: Mutex::new(0),
                 capture_amounts: Mutex::new(Vec::new()),
                 void_should_fail: false,
@@ -878,6 +1099,20 @@ mod tests {
         fn with_refund_failure(mut self) -> Self {
             self.refund_should_fail = true;
             self
+        }
+
+        /// Makes a configured capture/void failure a definite rejection.
+        fn rejecting(mut self) -> Self {
+            self.failure_is_rejection = true;
+            self
+        }
+
+        fn failure(&self, msg: &str) -> anyhow::Error {
+            if self.failure_is_rejection {
+                GatewayError::Rejected(msg.into()).into()
+            } else {
+                GatewayError::Ambiguous(msg.into()).into()
+            }
         }
 
         fn with_capture_failure(mut self) -> Self {
@@ -949,7 +1184,7 @@ mod tests {
             self.capture_amounts.lock().unwrap().push(_amount_cents);
             *self.capture_calls.lock().unwrap() += 1;
             if self.capture_should_fail {
-                anyhow::bail!("gateway capture failed");
+                return Err(self.failure("gateway capture failed"));
             }
             Ok("ni-capture-ref".into())
         }
@@ -957,7 +1192,7 @@ mod tests {
         async fn void(&self, _gateway_order_ref: &str, _gateway_payment_ref: &str) -> anyhow::Result<()> {
             *self.void_calls.lock().unwrap() += 1;
             if self.void_should_fail {
-                anyhow::bail!("gateway void failed");
+                return Err(self.failure("gateway void failed"));
             }
             Ok(())
         }
@@ -1955,7 +2190,7 @@ mod tests {
         let intent_id = intent.id;
         repo.seed(intent);
 
-        let gateway = Arc::new(FakeGateway::new().with_capture_failure());
+        let gateway = Arc::new(FakeGateway::new().with_capture_failure().rejecting());
         let svc = service(repo.clone(), gateway.clone());
 
         let err = svc.capture_intent(intent_id, None).await.expect_err("gateway failure must propagate");
@@ -1977,7 +2212,7 @@ mod tests {
         // against the repo — same technique
         // `refund_does_not_call_the_gateway_when_another_caller_already_holds_the_claim`
         // uses above.
-        assert!(repo.claim_for_capture(intent_id).await.unwrap(), "setup: the winning claim must succeed");
+        assert!(repo.claim_for_capture(intent_id, 5_000).await.unwrap(), "setup: the winning claim must succeed");
 
         let gateway = Arc::new(FakeGateway::new());
         let svc = service(repo.clone(), gateway.clone());
@@ -1986,7 +2221,7 @@ mod tests {
         assert_eq!(gateway.capture_calls(), 0, "gateway must never be called by the caller that lost the claim race");
 
         let stored = repo.get(intent_id);
-        assert_eq!(stored.status, PaymentIntentStatus::Captured, "still owned by the winning (simulated) caller");
+        assert_eq!(stored.status, PaymentIntentStatus::Capturing, "still owned by the winning (simulated) caller");
     }
 
     // ── void_intent ──────────────────────────────────────────────────────────
@@ -2037,7 +2272,7 @@ mod tests {
         let intent_id = intent.id;
         repo.seed(intent);
 
-        let gateway = Arc::new(FakeGateway::new().with_void_failure());
+        let gateway = Arc::new(FakeGateway::new().with_void_failure().rejecting());
         let svc = service(repo.clone(), gateway.clone());
 
         let err = svc.void_intent(intent_id).await.expect_err("gateway void failure must propagate, never be swallowed");
@@ -2049,6 +2284,294 @@ mod tests {
             "must revert to Authorized (recoverable — a retry can safely call void_intent again), \
              not be left stuck claiming a void that never actually happened"
         );
+    }
+
+    // ── idempotency / mutual exclusion (retry-safe money path) ──────────────
+
+    #[tokio::test]
+    async fn double_capture_reaches_the_gateway_once_and_both_calls_succeed() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.capture_intent(intent_id, None).await.expect("first capture");
+        svc.capture_intent(intent_id, None).await.expect("a retried capture must succeed, not error");
+
+        assert_eq!(gateway.capture_calls(), 1, "a retry must never hit the gateway again");
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Captured);
+    }
+
+    #[tokio::test]
+    async fn double_void_reaches_the_gateway_once_and_both_calls_succeed() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.void_intent(intent_id).await.expect("first void");
+        svc.void_intent(intent_id).await.expect("a retried void must succeed, not error");
+
+        assert_eq!(gateway.void_calls(), 1, "a retry must never hit the gateway again");
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Voided);
+    }
+
+    #[tokio::test]
+    async fn void_after_capture_is_refused_and_never_reaches_the_gateway() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.capture_intent(intent_id, None).await.expect("capture");
+        svc.void_intent(intent_id).await.expect_err("a captured intent must not be voidable");
+
+        assert_eq!(gateway.void_calls(), 0);
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Captured);
+    }
+
+    #[tokio::test]
+    async fn capture_after_void_is_refused_and_never_reaches_the_gateway() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.void_intent(intent_id).await.expect("void");
+        svc.capture_intent(intent_id, None).await.expect_err("a voided intent must not be capturable");
+
+        assert_eq!(gateway.capture_calls(), 0);
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Voided);
+    }
+
+    #[tokio::test]
+    async fn a_capture_and_a_void_racing_reach_the_gateway_exactly_once_between_them() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = Arc::new(service(repo.clone(), gateway.clone()));
+
+        let a = { let s = svc.clone(); tokio::spawn(async move { s.capture_intent(intent_id, None).await }) };
+        let b = { let s = svc.clone(); tokio::spawn(async move { s.void_intent(intent_id).await }) };
+        let (ra, rb) = (a.await.unwrap(), b.await.unwrap());
+
+        assert_eq!(gateway.capture_calls() + gateway.void_calls(), 1, "only one side may reach the gateway");
+        assert!(ra.is_ok() != rb.is_ok(), "exactly one side wins");
+    }
+
+    fn is_conflict(e: &anyhow::Error) -> bool {
+        e.downcast_ref::<IntentConflict>().is_some()
+    }
+
+    #[tokio::test]
+    async fn the_exclusion_errors_are_409_conflicts() {
+        let repo = Arc::new(FakeRepo::default());
+        let a = make_authorized_intent(Uuid::new_v4());
+        let b = make_authorized_intent(Uuid::new_v4());
+        let (a_id, b_id) = (a.id, b.id);
+        repo.seed(a);
+        repo.seed(b);
+        let svc = service(repo.clone(), Arc::new(FakeGateway::new()));
+
+        svc.capture_intent(a_id, None).await.expect("capture");
+        assert!(is_conflict(&svc.void_intent(a_id).await.unwrap_err()), "void after capture");
+        svc.void_intent(b_id).await.expect("void");
+        assert!(is_conflict(&svc.capture_intent(b_id, None).await.unwrap_err()), "capture after void");
+    }
+
+    #[tokio::test]
+    async fn a_retried_capture_returns_the_original_capture_reference() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let svc = service(repo.clone(), Arc::new(FakeGateway::new()));
+
+        let first = svc.capture_intent(intent_id, None).await.expect("capture");
+        let second = svc.capture_intent(intent_id, None).await.expect("replay");
+        assert_eq!(first, "ni-capture-ref");
+        assert_eq!(second, first);
+    }
+
+    #[tokio::test]
+    async fn a_replayed_capture_for_a_different_amount_is_a_conflict_not_a_silent_success() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.capture_intent(intent_id, Some(1_000)).await.expect("partial capture");
+        let err = svc.capture_intent(intent_id, Some(2_000)).await.unwrap_err();
+        assert!(is_conflict(&err));
+        assert_eq!(gateway.capture_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_live_capturing_claim_is_a_409_in_progress_with_no_gateway_call() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        assert!(repo.claim_for_capture(intent_id, 5_000).await.unwrap());
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        assert!(is_conflict(&svc.capture_intent(intent_id, None).await.unwrap_err()));
+        assert!(is_conflict(&svc.void_intent(intent_id).await.unwrap_err()));
+        assert_eq!(gateway.capture_calls() + gateway.void_calls(), 0);
+    }
+
+    fn age_claim(repo: &FakeRepo, id: Uuid) {
+        repo.intents.lock().unwrap().get_mut(&id).unwrap().updated_at =
+            Utc::now() - chrono::Duration::minutes(CLAIM_LEASE_MINUTES + 1);
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_capture_error_keeps_the_claim_and_blocks_a_void() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        // Plain failure = Ambiguous (e.g. a timeout: NI may have captured).
+        let ambiguous = Arc::new(FakeGateway::new().with_capture_failure());
+        service(repo.clone(), ambiguous.clone())
+            .capture_intent(intent_id, None).await.expect_err("error is surfaced");
+
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Capturing, "claim must be KEPT");
+        assert!(repo.claim_errors.lock().unwrap().contains_key(&intent_id), "error recorded");
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+        // Void is a 409 with no gateway call — even after the lease expires.
+        assert!(is_conflict(&svc.void_intent(intent_id).await.unwrap_err()));
+        age_claim(&repo, intent_id);
+        assert!(is_conflict(&svc.void_intent(intent_id).await.unwrap_err()));
+        assert_eq!(gateway.void_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_capture_is_redriven_by_a_capture_retry_only_after_the_lease() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        service(repo.clone(), Arc::new(FakeGateway::new().with_capture_failure()))
+            .capture_intent(intent_id, None).await.expect_err("ambiguous");
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+        assert!(is_conflict(&svc.capture_intent(intent_id, None).await.unwrap_err()), "fresh claim");
+        assert_eq!(gateway.capture_calls(), 0);
+
+        age_claim(&repo, intent_id);
+        svc.capture_intent(intent_id, None).await.expect("stale claim is re-driven");
+        assert_eq!(gateway.capture_calls(), 1);
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Captured);
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_void_error_keeps_the_claim_and_blocks_a_capture() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        service(repo.clone(), Arc::new(FakeGateway::new().with_void_failure()))
+            .void_intent(intent_id).await.expect_err("ambiguous");
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Voiding);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+        age_claim(&repo, intent_id);
+        assert!(is_conflict(&svc.capture_intent(intent_id, None).await.unwrap_err()));
+        assert_eq!(gateway.capture_calls(), 0);
+        svc.void_intent(intent_id).await.expect("void retry after the lease re-drives it");
+        assert_eq!(gateway.void_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_capture_releases_the_claim_and_records_nothing() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        service(repo.clone(), Arc::new(FakeGateway::new().with_capture_failure().rejecting()))
+            .capture_intent(intent_id, None).await.expect_err("rejected");
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Authorized);
+        assert!(repo.claim_errors.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn event_ids_are_deterministic_per_intent_and_kind() {
+        let id = Uuid::new_v4();
+        assert_eq!(PaymentIntentService::event_id(id, "captured"), PaymentIntentService::event_id(id, "captured"));
+        assert_ne!(PaymentIntentService::event_id(id, "captured"), PaymentIntentService::event_id(id, "voided"));
+        assert_ne!(PaymentIntentService::event_id(id, "captured"), PaymentIntentService::event_id(Uuid::new_v4(), "captured"));
+    }
+
+    #[tokio::test]
+    async fn a_capture_claim_abandoned_by_a_crash_is_reclaimed_after_its_lease() {
+        let repo = Arc::new(FakeRepo::default());
+        let mut intent = make_authorized_intent(Uuid::new_v4());
+        // The crashed attempt: claimed `capturing` for the full amount, never answered.
+        intent.status = PaymentIntentStatus::Capturing;
+        intent.captured_amount_cents = Some(intent.amount_cents);
+        intent.updated_at = Utc::now() - chrono::Duration::minutes(CLAIM_LEASE_MINUTES + 1);
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.capture_intent(intent_id, None).await.expect("a retry must recover a stale claim");
+
+        assert_eq!(gateway.capture_calls(), 1);
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Captured);
+    }
+
+    #[tokio::test]
+    async fn a_void_claim_abandoned_by_a_crash_is_reclaimed_after_its_lease() {
+        let repo = Arc::new(FakeRepo::default());
+        let mut intent = make_authorized_intent(Uuid::new_v4());
+        intent.status = PaymentIntentStatus::Voiding;
+        intent.updated_at = Utc::now() - chrono::Duration::minutes(CLAIM_LEASE_MINUTES + 1);
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.void_intent(intent_id).await.expect("a retry must recover a stale void claim");
+
+        assert_eq!(gateway.void_calls(), 1);
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Voided);
+    }
+
+    #[tokio::test]
+    async fn gateway_failure_leaves_the_intent_retryable_and_a_retry_succeeds() {
+        let repo = Arc::new(FakeRepo::default());
+        let intent = make_authorized_intent(Uuid::new_v4());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        let failing = Arc::new(FakeGateway::new().with_capture_failure().rejecting());
+        service(repo.clone(), failing.clone())
+            .capture_intent(intent_id, None).await.expect_err("gateway failure is surfaced");
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Authorized);
+
+        let healthy = Arc::new(FakeGateway::new());
+        service(repo.clone(), healthy.clone())
+            .capture_intent(intent_id, None).await.expect("retry after a gateway failure must work");
+        assert_eq!(healthy.capture_calls(), 1);
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Captured);
     }
 
     #[tokio::test]
@@ -2066,7 +2589,7 @@ mod tests {
         assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Voided);
 
         let capture_err = svc.capture_intent(intent_id, None).await.expect_err("a voided intent must never be capturable");
-        assert!(capture_err.to_string().contains("Only an authorized intent can be captured"));
+        assert!(capture_err.downcast_ref::<IntentConflict>().is_some(), "must be a 409-class conflict");
 
         let refund_err = svc.refund(intent_id).await.expect_err("a voided intent must never be refundable");
         assert!(refund_err.to_string().contains("Only a captured intent can be refunded"));

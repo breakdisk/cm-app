@@ -39,6 +39,17 @@ pub enum PaymentIntentStatus {
     /// `Voided` intent can never be captured or refunded again — see the
     /// guards on `capture_authorized()` and `refund()`.
     Voided,
+    /// Claimed intermediate status between `Authorized` and `Captured`: the
+    /// conditional `UPDATE ... WHERE status = 'authorized'` in
+    /// `PaymentIntentRepository::claim_for_capture` serializes concurrent
+    /// captures/voids; only the winner may call the gateway. On gateway success
+    /// it advances to `Captured`; on definite failure it reverts to
+    /// `Authorized`. A claim whose holder crashed is reclaimable once its lease
+    /// (`updated_at`) expires.
+    Capturing,
+    /// Claimed intermediate status between `Authorized` and `Voided`; same
+    /// contract as `Capturing`, opposite target.
+    Voiding,
 }
 
 impl PaymentIntentStatus {
@@ -53,6 +64,8 @@ impl PaymentIntentStatus {
             Self::Refunding  => "refunding",
             Self::Authorized => "authorized",
             Self::Voided     => "voided",
+            Self::Capturing  => "capturing",
+            Self::Voiding    => "voiding",
         }
     }
 
@@ -67,6 +80,8 @@ impl PaymentIntentStatus {
             "refunding"  => Some(Self::Refunding),
             "authorized" => Some(Self::Authorized),
             "voided"     => Some(Self::Voided),
+            "capturing"  => Some(Self::Capturing),
+            "voiding"    => Some(Self::Voiding),
             _            => None,
         }
     }
@@ -112,6 +127,12 @@ pub struct PaymentIntent {
     pub refund_requested_cents: Option<i64>,
     /// What actually came back. `None` on a `Refunded` intent means in full.
     pub refunded_cents: Option<i64>,
+    /// The gateway's reference for the capture, recorded when a capture
+    /// completes so a retried capture can return the same reference without a
+    /// second gateway call. `None` for intents captured via the Sale/webhook
+    /// path or before this column existed (callers fall back to
+    /// `gateway_payment_ref`).
+    pub gateway_capture_ref: Option<String>,
 }
 
 impl PaymentIntent {
@@ -150,6 +171,7 @@ impl PaymentIntent {
             captured_amount_cents: None,
             refund_requested_cents: None,
             refunded_cents: None,
+            gateway_capture_ref: None,
         }
     }
 
@@ -293,7 +315,7 @@ impl PaymentIntent {
             // redelivered capture carrying a different figure must not rewrite
             // what was actually taken the first time.
             PaymentIntentStatus::Captured => return Ok(()),
-            PaymentIntentStatus::Authorized => {}
+            PaymentIntentStatus::Authorized | PaymentIntentStatus::Capturing => {}
             _ => return Err("Only an authorized intent can be captured via capture_authorized"),
         }
         if amount_cents <= 0 {
@@ -339,7 +361,7 @@ impl PaymentIntent {
     pub fn void(&mut self) -> Result<(), &'static str> {
         match self.status {
             PaymentIntentStatus::Voided => return Ok(()), // idempotent replay
-            PaymentIntentStatus::Authorized => {}
+            PaymentIntentStatus::Authorized | PaymentIntentStatus::Voiding => {}
             _ => return Err("Only an authorized intent can be voided"),
         }
         self.status = PaymentIntentStatus::Voided;

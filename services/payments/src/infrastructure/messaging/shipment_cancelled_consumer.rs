@@ -276,28 +276,31 @@ mod tests {
                 .collect())
         }
 
-        async fn claim_for_capture(&self, id: Uuid) -> anyhow::Result<bool> {
-            let mut intents = self.intents.lock().unwrap();
-            match intents.get_mut(&id) {
-                Some(intent) if intent.status == PaymentIntentStatus::Authorized => {
-                    intent.status = PaymentIntentStatus::Captured;
-                    intent.updated_at = Utc::now();
-                    Ok(true)
-                }
-                _ => Ok(false),
-            }
+        // The cancellation consumer never captures or voids; these exist only
+        // to satisfy the trait. The real claim semantics are exercised against
+        // the full fake in `payment_intent_service.rs`.
+        async fn claim_for_capture(&self, _id: Uuid, _amount_cents: i64) -> anyhow::Result<bool> {
+            Ok(false)
         }
 
-        async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool> {
-            let mut intents = self.intents.lock().unwrap();
-            match intents.get_mut(&id) {
-                Some(intent) if intent.status == PaymentIntentStatus::Authorized => {
-                    intent.status = PaymentIntentStatus::Voided;
-                    intent.updated_at = Utc::now();
-                    Ok(true)
-                }
-                _ => Ok(false),
-            }
+        async fn claim_for_void(&self, _id: Uuid) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn complete_capture(&self, _id: Uuid, _capture_ref: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn complete_void(&self, _id: Uuid) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn release_claim(&self, _id: Uuid) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn record_claim_error(&self, _id: Uuid, _error: &str) -> anyhow::Result<bool> {
+            Ok(false)
         }
     }
 

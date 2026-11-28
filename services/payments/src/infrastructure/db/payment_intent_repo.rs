@@ -38,6 +38,7 @@ struct PaymentIntentRow {
     captured_amount_cents: Option<i64>,
     refund_requested_cents: Option<i64>,
     refunded_cents: Option<i64>,
+    gateway_capture_ref: Option<String>,
 }
 
 impl TryFrom<PaymentIntentRow> for PaymentIntent {
@@ -65,6 +66,7 @@ impl TryFrom<PaymentIntentRow> for PaymentIntent {
             captured_amount_cents: row.captured_amount_cents,
             refund_requested_cents: row.refund_requested_cents,
             refunded_cents: row.refunded_cents,
+            gateway_capture_ref: row.gateway_capture_ref,
         })
     }
 }
@@ -72,7 +74,7 @@ impl TryFrom<PaymentIntentRow> for PaymentIntent {
 const INTENT_COLS: &str = "id, tenant_id, purpose, reference_type, reference_id, \
     amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref, \
     created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents, \
-    refund_requested_cents, refunded_cents";
+    refund_requested_cents, refunded_cents, gateway_capture_ref";
 
 #[async_trait]
 impl PaymentIntentRepository for PgPaymentIntentRepository {
@@ -109,8 +111,8 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
                 id, tenant_id, purpose, reference_type, reference_id,
                 amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref,
                 created_at, updated_at, expires_at, refund_requested_at, captured_amount_cents,
-                refund_requested_cents, refunded_cents
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+                refund_requested_cents, refunded_cents, gateway_capture_ref
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
             ON CONFLICT (id) DO UPDATE SET
                 status               = EXCLUDED.status,
                 gateway_order_ref    = EXCLUDED.gateway_order_ref,
@@ -119,7 +121,8 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
                 refund_requested_at  = EXCLUDED.refund_requested_at,
                 captured_amount_cents = EXCLUDED.captured_amount_cents,
                 refund_requested_cents = EXCLUDED.refund_requested_cents,
-                refunded_cents       = EXCLUDED.refunded_cents"#,
+                refunded_cents       = EXCLUDED.refunded_cents,
+                gateway_capture_ref  = EXCLUDED.gateway_capture_ref"#,
         )
         .bind(intent.id)
         .bind(intent.tenant_id)
@@ -139,6 +142,7 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         .bind(intent.captured_amount_cents)
         .bind(intent.refund_requested_cents)
         .bind(intent.refunded_cents)
+        .bind(intent.gateway_capture_ref.as_deref())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -229,20 +233,24 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         rows.into_iter().map(PaymentIntent::try_from).collect()
     }
 
-    async fn claim_for_capture(&self, id: Uuid) -> anyhow::Result<bool> {
-        // Same mechanism as `claim_for_refund`: the conditional UPDATE is
-        // the actual concurrency guard. No lease/reclaim clause here (unlike
-        // `claim_for_refund`) — there is no periodic sweep retrying stranded
-        // capture/void claims in this pass; a claim that never resolves
-        // (process crash between this UPDATE and the gateway call
-        // returning) is a known, narrow gap, not a silently-accepted one —
-        // see `PaymentIntentService::capture_intent`'s doc comment.
+    async fn claim_for_capture(&self, id: Uuid, amount_cents: i64) -> anyhow::Result<bool> {
+        // The conditional UPDATE is the concurrency guard: capture and void
+        // both claim from `authorized`, so at most one UPDATE across both ever
+        // matches. The claim lands in an intermediate `capturing` state (not
+        // the terminal one) so a crash before the gateway answers leaves a row
+        // that is visibly in-flight and reclaimable after the lease, instead of
+        // one that claims money was taken. The amount is recorded now so a
+        // reclaiming retry can be checked against what the first attempt asked
+        // the gateway to take.
         let result = sqlx::query(
             "UPDATE payments.payment_intents \
-             SET status = 'captured', updated_at = NOW() \
-             WHERE id = $1 AND status = 'authorized'",
+             SET status = 'capturing', captured_amount_cents = $2, updated_at = NOW() \
+             WHERE id = $1 \
+               AND (status = 'authorized' \
+                    OR (status = 'capturing' AND updated_at < NOW() - INTERVAL '5 minutes'))",
         )
         .bind(id)
+        .bind(amount_cents)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -251,10 +259,63 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
     async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool> {
         let result = sqlx::query(
             "UPDATE payments.payment_intents \
-             SET status = 'voided', updated_at = NOW() \
-             WHERE id = $1 AND status = 'authorized'",
+             SET status = 'voiding', updated_at = NOW() \
+             WHERE id = $1 \
+               AND (status = 'authorized' \
+                    OR (status = 'voiding' AND updated_at < NOW() - INTERVAL '5 minutes'))",
         )
         .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn complete_capture(&self, id: Uuid, capture_ref: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET status = 'captured', gateway_capture_ref = $2, updated_at = NOW() \
+             WHERE id = $1 AND status = 'capturing'",
+        )
+        .bind(id)
+        .bind(capture_ref)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn complete_void(&self, id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET status = 'voided', updated_at = NOW() \
+             WHERE id = $1 AND status = 'voiding'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn release_claim(&self, id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET status = 'authorized', captured_amount_cents = NULL, \
+                 last_gateway_error = NULL, updated_at = NOW() \
+             WHERE id = $1 AND status IN ('capturing', 'voiding')",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn record_claim_error(&self, id: Uuid, error: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET last_gateway_error = $2 \
+             WHERE id = $1 AND status IN ('capturing', 'voiding')",
+        )
+        .bind(id)
+        .bind(error)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)

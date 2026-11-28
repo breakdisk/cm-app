@@ -424,6 +424,18 @@ pub struct PaymentIntentCaptured {
     pub currency: String,
 }
 
+/// Published by `services/payments` when an authorization hold is released
+/// without being captured. `amount_cents` is the amount that was held.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentIntentVoided {
+    pub intent_id: Uuid,
+    pub purpose: String,
+    pub reference_type: String,
+    pub reference_id: Uuid,
+    pub amount_cents: i64,
+    pub currency: String,
+}
+
 /// Published by `services/payments` when a `PaymentAction::Authorize`
 /// intent's `AUTHORISED` webhook lands — funds are ring-fenced on the
 /// customer's card but NOT yet taken. Distinct from `PaymentIntentCaptured`

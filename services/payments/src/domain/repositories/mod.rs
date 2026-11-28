@@ -327,22 +327,40 @@ pub trait PaymentIntentRepository: Send + Sync {
     /// claim, not to a new sweep pass.
     async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>>;
 
-    /// Atomically claims exclusive ownership of capturing this intent:
-    /// `authorized` -> `captured` in one `UPDATE ... WHERE status =
-    /// 'authorized'`. Returns whether THIS call won the claim — mirrors
-    /// `claim_for_refund` exactly (same "the UPDATE itself is the
-    /// concurrency guard, not any in-memory check" reasoning). Because the
-    /// same `WHERE status = 'authorized'` guards both this and
-    /// `claim_for_void`, whichever of capture/void a caller wins first also
-    /// forecloses the other — an intent cannot be both captured and voided,
-    /// regardless of which was requested first.
-    async fn claim_for_capture(&self, id: Uuid) -> anyhow::Result<bool>;
+    /// Atomically claims exclusive ownership of capturing this intent
+    /// (a claim lease of 5 minutes applies to `capturing`/`voiding`: far above
+    /// the 30s gateway client timeout so a reclaim cannot race a live call,
+    /// short enough to stay inside NI's same-day void window):
+    /// `authorized` -> `capturing` (recording the amount being taken in
+    /// `captured_amount_cents`) in one conditional `UPDATE`. A `capturing` row
+    /// whose lease expired is reclaimable (crash recovery). Returns whether
+    /// THIS call won the claim; `false` means the caller must not touch the
+    /// gateway. Because capture and void claim from the same `authorized`
+    /// state, whichever wins first forecloses the other.
+    async fn claim_for_capture(&self, id: Uuid, amount_cents: i64) -> anyhow::Result<bool>;
 
-    /// Atomically claims exclusive ownership of voiding this intent:
-    /// `authorized` -> `voided` in one `UPDATE ... WHERE status =
-    /// 'authorized'`. See `claim_for_capture` — same mechanism, opposite
-    /// target status.
+    /// Atomically claims exclusive ownership of voiding: `authorized` ->
+    /// `voiding`, or an expired `voiding` lease. See `claim_for_capture`.
     async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool>;
+
+    /// Completes a capture the caller claimed: `capturing` -> `captured`,
+    /// recording the gateway's capture reference. Conditional on
+    /// `status = 'capturing'`; returns whether a row changed.
+    async fn complete_capture(&self, id: Uuid, capture_ref: &str) -> anyhow::Result<bool>;
+
+    /// Completes a void the caller claimed: `voiding` -> `voided`.
+    async fn complete_void(&self, id: Uuid) -> anyhow::Result<bool>;
+
+    /// Gives up a claim after a gateway failure: `capturing`/`voiding` ->
+    /// `authorized` (clearing the claimed capture amount), so the call is
+    /// retryable. Conditional on the claim state; returns whether a row changed.
+    async fn release_claim(&self, id: Uuid) -> anyhow::Result<bool>;
+
+    /// Records an AMBIGUOUS gateway error against a held claim
+    /// (`last_gateway_error`) without releasing it or touching `updated_at`
+    /// (the lease clock keeps running from the claim). Conditional on the row
+    /// still being `capturing`/`voiding`.
+    async fn record_claim_error(&self, id: Uuid, error: &str) -> anyhow::Result<bool>;
 }
 
 /// Plans, subscriptions, and the two work lists the sweeps run off.

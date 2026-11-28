@@ -4,6 +4,32 @@
 
 use async_trait::async_trait;
 
+/// How a gateway `capture`/`void` failed, as far as the adapter can tell.
+/// Carried inside the `anyhow::Error` the gateway returns; see
+/// [`GatewayError::is_rejected`].
+///
+/// * `Rejected` — the gateway definitely refused and did NOT act (e.g. a 4xx
+///   with a structured body). Safe to release the claim: no money moved.
+/// * `Ambiguous` — we cannot know whether the gateway acted (transport error,
+///   timeout, 5xx, unparseable response). The caller MUST keep its claim so
+///   the opposite operation cannot run against a possibly-completed one.
+#[derive(Debug, thiserror::Error)]
+pub enum GatewayError {
+    #[error("{0}")]
+    Rejected(String),
+    #[error("{0}")]
+    Ambiguous(String),
+}
+
+impl GatewayError {
+    /// `true` only for an error positively classified `Rejected`. Anything
+    /// else — including an unclassified `anyhow` error — is treated as
+    /// ambiguous (conservative).
+    pub fn is_rejected(e: &anyhow::Error) -> bool {
+        matches!(e.downcast_ref::<GatewayError>(), Some(GatewayError::Rejected(_)))
+    }
+}
+
 /// Whether a hosted-checkout session takes the customer's money immediately
 /// (`Sale`, the original and still-default behavior) or only places an
 /// authorization hold pending a later, separate `PaymentGateway::capture`
