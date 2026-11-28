@@ -43,22 +43,30 @@ const WEIGHT_DISCREPANCY_THRESHOLD_G: u32 = 100;
 
 #[async_trait::async_trait]
 pub trait PalletRepository: Send + Sync {
-    async fn find_by_id(&self, id: &PalletId) -> anyhow::Result<Option<Pallet>>;
+    /// Tenant-scoped: another tenant's pallet is `None`.
+    async fn find_by_id(&self, id: &PalletId, tenant_id: &TenantId) -> anyhow::Result<Option<Pallet>>;
     async fn find_open_for_hub(
         &self,
         hub_id: &HubId,
         destination_hub_id: Option<&HubId>,
+        tenant_id: &TenantId,
     ) -> anyhow::Result<Option<Pallet>>;
     async fn save(&self, pallet: &Pallet) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
 pub trait ContainerRepository: Send + Sync {
-    async fn find_by_id(&self, id: &ContainerId) -> anyhow::Result<Option<Container>>;
+    /// Tenant-scoped: another tenant's container is `None`.
+    async fn find_by_id(&self, id: &ContainerId, tenant_id: &TenantId) -> anyhow::Result<Option<Container>>;
     async fn save(&self, container: &Container) -> anyhow::Result<()>;
-    /// Resolve master AWB strings to shipment UUIDs via `hub_ops.parcel_inductions`.
+    /// Resolve master AWB strings to shipment UUIDs via `hub_ops.parcel_inductions`,
+    /// restricted to the caller's tenant.
     /// Returns an empty vec when `awbs` is empty (no query issued).
-    async fn resolve_awbs_to_shipment_ids(&self, awbs: &[String]) -> anyhow::Result<Vec<uuid::Uuid>>;
+    async fn resolve_awbs_to_shipment_ids(
+        &self,
+        awbs: &[String],
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<uuid::Uuid>>;
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -78,6 +86,7 @@ pub struct LoadPieceCommand {
 
 #[derive(Debug)]
 pub struct SealPalletCommand {
+    pub tenant_id: TenantId,
     pub pallet_id: PalletId,
     pub sealed_by: uuid::Uuid,
 }
@@ -93,6 +102,7 @@ pub struct CreateContainerCommand {
 
 #[derive(Debug)]
 pub struct LoadPalletIntoContainerCommand {
+    pub tenant_id:    TenantId,
     pub container_id: ContainerId,
     pub pallet_id:    PalletId,
     /// AWBs carried in this pallet — for container.master_awbs denormalisation.
@@ -101,12 +111,14 @@ pub struct LoadPalletIntoContainerCommand {
 
 #[derive(Debug)]
 pub struct DepartContainerCommand {
+    pub tenant_id:         TenantId,
     pub container_id:      ContainerId,
     pub eta:               Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(Debug)]
 pub struct ArriveContainerCommand {
+    pub tenant_id:    TenantId,
     pub container_id: ContainerId,
 }
 
@@ -127,8 +139,8 @@ impl PalletService {
         Self { pallet_repo, container_repo, kafka }
     }
 
-    pub async fn find_pallet(&self, id: PalletId) -> AppResult<Option<Pallet>> {
-        self.pallet_repo.find_by_id(&id).await.map_err(AppError::Internal)
+    pub async fn find_pallet(&self, id: PalletId, tenant_id: &TenantId) -> AppResult<Option<Pallet>> {
+        self.pallet_repo.find_by_id(&id, tenant_id).await.map_err(AppError::Internal)
     }
 
     // ── Piece → Pallet ────────────────────────────────────────────────────────
@@ -161,7 +173,7 @@ impl PalletService {
 
         // ── Find or create open pallet ────────────────────────────────────────
         let mut pallet = match self.pallet_repo
-            .find_open_for_hub(&cmd.hub_id, cmd.destination_hub_id.as_ref())
+            .find_open_for_hub(&cmd.hub_id, cmd.destination_hub_id.as_ref(), &cmd.tenant_id)
             .await
             .map_err(AppError::Internal)?
         {
@@ -199,7 +211,7 @@ impl PalletService {
     /// Emits `PalletSealed` Kafka event.
     pub async fn seal_pallet(&self, cmd: SealPalletCommand) -> AppResult<Pallet> {
         let mut pallet = self.pallet_repo
-            .find_by_id(&cmd.pallet_id)
+            .find_by_id(&cmd.pallet_id, &cmd.tenant_id)
             .await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
@@ -272,12 +284,22 @@ impl PalletService {
         cmd: LoadPalletIntoContainerCommand,
     ) -> AppResult<Container> {
         let mut container = self.container_repo
-            .find_by_id(&cmd.container_id)
+            .find_by_id(&cmd.container_id, &cmd.tenant_id)
             .await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "Container",
                 id: cmd.container_id.inner().to_string(),
+            })?;
+
+        // The pallet id comes from the request: it must be the caller's too.
+        self.pallet_repo
+            .find_by_id(&cmd.pallet_id, &cmd.tenant_id)
+            .await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "Pallet",
+                id: cmd.pallet_id.inner().to_string(),
             })?;
 
         container.load_pallet(cmd.pallet_id, cmd.pallet_awbs)
@@ -298,9 +320,13 @@ impl PalletService {
     }
 
     /// Finalise the manifest — no more loading after this.
-    pub async fn finalise_manifest(&self, container_id: ContainerId) -> AppResult<Container> {
+    pub async fn finalise_manifest(
+        &self,
+        container_id: ContainerId,
+        tenant_id:    &TenantId,
+    ) -> AppResult<Container> {
         let mut container = self.container_repo
-            .find_by_id(&container_id)
+            .find_by_id(&container_id, tenant_id)
             .await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
@@ -318,7 +344,7 @@ impl PalletService {
     /// Depart container — transitions to InTransit, emits `ContainerDeparted`.
     pub async fn depart_container(&self, cmd: DepartContainerCommand) -> AppResult<Container> {
         let mut container = self.container_repo
-            .find_by_id(&cmd.container_id)
+            .find_by_id(&cmd.container_id, &cmd.tenant_id)
             .await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
@@ -372,7 +398,7 @@ impl PalletService {
     /// Record container arrival at destination hub. Emits `ContainerArrived`.
     pub async fn arrive_container(&self, cmd: ArriveContainerCommand) -> AppResult<Container> {
         let mut container = self.container_repo
-            .find_by_id(&cmd.container_id)
+            .find_by_id(&cmd.container_id, &cmd.tenant_id)
             .await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {

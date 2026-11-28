@@ -118,12 +118,16 @@ fn row_to_induction(r: InductionRow) -> crate::domain::entities::ParcelInduction
 
 #[async_trait::async_trait]
 impl HubRepository for PgHubRepository {
-    async fn find_by_id(&self, id: &crate::domain::entities::HubId) -> anyhow::Result<Option<crate::domain::entities::Hub>> {
+    async fn find_by_id(
+        &self,
+        id: &crate::domain::entities::HubId,
+        tenant_id: &logisticos_types::TenantId,
+    ) -> anyhow::Result<Option<crate::domain::entities::Hub>> {
         let row = sqlx::query_as::<_, HubRow>(
             r#"SELECT id, tenant_id, name, address, lat, lng, capacity, current_load,
                       serving_zones, is_active, created_at, updated_at
-               FROM hub_ops.hubs WHERE id = $1"#
-        ).bind(id.inner()).fetch_optional(&self.pool).await?;
+               FROM hub_ops.hubs WHERE id = $1 AND tenant_id = $2"#
+        ).bind(id.inner()).bind(tenant_id.inner()).fetch_optional(&self.pool).await?;
         Ok(row.map(row_to_hub))
     }
     async fn list(&self, tenant_id: &logisticos_types::TenantId) -> anyhow::Result<Vec<crate::domain::entities::Hub>> {
@@ -147,6 +151,7 @@ impl HubRepository for PgHubRepository {
                 serving_zones = EXCLUDED.serving_zones,
                 is_active = EXCLUDED.is_active,
                 updated_at = EXCLUDED.updated_at
+            WHERE hub_ops.hubs.tenant_id = EXCLUDED.tenant_id
             "#
         )
         .bind(hub.id.inner()).bind(hub.tenant_id.inner()).bind(&hub.name).bind(&hub.address)
@@ -159,31 +164,43 @@ impl HubRepository for PgHubRepository {
 
 #[async_trait::async_trait]
 impl InductionRepository for PgInductionRepository {
-    async fn find_by_id(&self, id: &crate::domain::entities::InductionId) -> anyhow::Result<Option<crate::domain::entities::ParcelInduction>> {
+    async fn find_by_id(
+        &self,
+        id: &crate::domain::entities::InductionId,
+        tenant_id: &logisticos_types::TenantId,
+    ) -> anyhow::Result<Option<crate::domain::entities::ParcelInduction>> {
         let row = sqlx::query_as::<_, InductionRow>(
             r#"SELECT id, hub_id, tenant_id, shipment_id, tracking_number, status,
                       zone, bay, inducted_by, inducted_at, sorted_at, dispatched_at
-               FROM hub_ops.parcel_inductions WHERE id = $1"#
-        ).bind(id.inner()).fetch_optional(&self.pool).await?;
+               FROM hub_ops.parcel_inductions WHERE id = $1 AND tenant_id = $2"#
+        ).bind(id.inner()).bind(tenant_id.inner()).fetch_optional(&self.pool).await?;
         Ok(row.map(row_to_induction))
     }
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::ParcelInduction>> {
+    async fn find_by_shipment(
+        &self,
+        shipment_id: Uuid,
+        tenant_id: &logisticos_types::TenantId,
+    ) -> anyhow::Result<Option<crate::domain::entities::ParcelInduction>> {
         let row = sqlx::query_as::<_, InductionRow>(
             r#"SELECT id, hub_id, tenant_id, shipment_id, tracking_number, status,
                       zone, bay, inducted_by, inducted_at, sorted_at, dispatched_at
-               FROM hub_ops.parcel_inductions WHERE shipment_id = $1
+               FROM hub_ops.parcel_inductions WHERE shipment_id = $1 AND tenant_id = $2
                LIMIT 1"#
-        ).bind(shipment_id).fetch_optional(&self.pool).await?;
+        ).bind(shipment_id).bind(tenant_id.inner()).fetch_optional(&self.pool).await?;
         Ok(row.map(row_to_induction))
     }
-    async fn list_active(&self, hub_id: &crate::domain::entities::HubId) -> anyhow::Result<Vec<crate::domain::entities::ParcelInduction>> {
+    async fn list_active(
+        &self,
+        hub_id: &crate::domain::entities::HubId,
+        tenant_id: &logisticos_types::TenantId,
+    ) -> anyhow::Result<Vec<crate::domain::entities::ParcelInduction>> {
         let rows = sqlx::query_as::<_, InductionRow>(
             r#"SELECT id, hub_id, tenant_id, shipment_id, tracking_number, status,
                       zone, bay, inducted_by, inducted_at, sorted_at, dispatched_at
                FROM hub_ops.parcel_inductions
-               WHERE hub_id = $1 AND status IN ('inducted', 'sorted')
+               WHERE hub_id = $1 AND tenant_id = $2 AND status IN ('inducted', 'sorted')
                ORDER BY inducted_at DESC"#
-        ).bind(hub_id.inner()).fetch_all(&self.pool).await?;
+        ).bind(hub_id.inner()).bind(tenant_id.inner()).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(row_to_induction).collect())
     }
     async fn save(&self, i: &crate::domain::entities::ParcelInduction) -> anyhow::Result<()> {
@@ -197,6 +214,7 @@ impl InductionRepository for PgInductionRepository {
             ON CONFLICT (id) DO UPDATE SET
                 status = EXCLUDED.status, zone = EXCLUDED.zone, bay = EXCLUDED.bay,
                 sorted_at = EXCLUDED.sorted_at, dispatched_at = EXCLUDED.dispatched_at
+            WHERE hub_ops.parcel_inductions.tenant_id = EXCLUDED.tenant_id
             "#
         )
         .bind(i.id.inner()).bind(i.hub_id.inner()).bind(i.tenant_id.inner()).bind(i.shipment_id)
@@ -228,44 +246,95 @@ struct ContainerRow {
     master_awbs:      Vec<String>,
 }
 
-impl PgContainerRepository {
-    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ContainerRow>> {
+/// What the container HTTP handlers need from storage. Every method takes the
+/// caller's `tenant_id` (from the validated JWT) and scopes its SQL to it, so a
+/// container, pallet or AWB owned by another tenant is simply not found.
+/// A trait so the handlers can be driven in tests without a database.
+#[async_trait::async_trait]
+trait ContainerOps: Send + Sync {
+    async fn find_by_id(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<ContainerRow>>;
+    async fn shipment_ids_for_container(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Vec<Uuid>>;
+    async fn mark_departed(
+        &self,
+        id: Uuid,
+        tenant_id: Uuid,
+        eta: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<()>;
+    async fn create(
+        &self,
+        id: Uuid,
+        tenant_id: Uuid,
+        transport_mode: &str,
+        origin_hub_id: Uuid,
+        destination_hub_id: Uuid,
+        carrier_ref: Option<&str>,
+    ) -> anyhow::Result<()>;
+    async fn resolve_awbs_to_shipment_ids(
+        &self,
+        tenant_id: Uuid,
+        master_awbs: &[String],
+    ) -> anyhow::Result<Vec<Uuid>>;
+    async fn add_pallet(
+        &self,
+        container_id: Uuid,
+        pallet_id: Uuid,
+        tenant_id: Uuid,
+        master_awbs: &[String],
+    ) -> anyhow::Result<()>;
+    async fn add_loose_piece(
+        &self,
+        container_id: Uuid,
+        tenant_id: Uuid,
+        piece_awb: &str,
+        master_awb: &str,
+    ) -> anyhow::Result<()>;
+    async fn finalise(&self, container_id: Uuid, tenant_id: Uuid) -> anyhow::Result<()>;
+    /// Best-effort rollback of a container created by `confirm_plan_handler`.
+    async fn delete_planning(&self, container_id: Uuid, tenant_id: Uuid) -> anyhow::Result<()>;
+}
+
+#[async_trait::async_trait]
+impl ContainerOps for PgContainerRepository {
+    async fn find_by_id(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<ContainerRow>> {
         let row = sqlx::query_as::<_, ContainerRow>(
             "SELECT id, tenant_id, status, departed_at, estimated_arrival, master_awbs
-               FROM hub_ops.containers WHERE id = $1"
-        ).bind(id).fetch_optional(&self.pool).await?;
+               FROM hub_ops.containers WHERE id = $1 AND tenant_id = $2"
+        ).bind(id).bind(tenant_id).fetch_optional(&self.pool).await?;
         Ok(row)
     }
 
     /// Returns all shipment IDs for parcels in this container by joining
     /// through `hub_ops.parcel_inductions` on `tracking_number = master_awb`.
-    async fn shipment_ids_for_container(&self, id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+    async fn shipment_ids_for_container(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
         let rows: Vec<(Uuid,)> = sqlx::query_as(
             r#"SELECT DISTINCT i.shipment_id
                FROM hub_ops.parcel_inductions i
-              WHERE i.tracking_number = ANY(
-                  SELECT unnest(master_awbs) FROM hub_ops.containers WHERE id = $1
+              WHERE i.tenant_id = $2
+                AND i.tracking_number = ANY(
+                  SELECT unnest(master_awbs) FROM hub_ops.containers
+                   WHERE id = $1 AND tenant_id = $2
               )"#
-        ).bind(id).fetch_all(&self.pool).await?;
+        ).bind(id).bind(tenant_id).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(|(sid,)| sid).collect())
     }
 
-
     async fn mark_departed(
         &self,
-        id:  Uuid,
-        eta: Option<chrono::DateTime<chrono::Utc>>,
+        id:        Uuid,
+        tenant_id: Uuid,
+        eta:       Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<()> {
         let now = chrono::Utc::now();
         let affected = sqlx::query(
             "UPDATE hub_ops.containers
                 SET status = 'in_transit', departed_at = $1, estimated_arrival = $2, updated_at = $3
-              WHERE id = $4 AND status IN ('manifested', 'sealed')"
+              WHERE id = $4 AND tenant_id = $5 AND status IN ('manifested', 'sealed')"
         )
         .bind(now)
         .bind(eta)
         .bind(now)
         .bind(id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -299,11 +368,16 @@ impl PgContainerRepository {
         Ok(())
     }
 
-    async fn resolve_awbs_to_shipment_ids(&self, master_awbs: &[String]) -> anyhow::Result<Vec<Uuid>> {
+    async fn resolve_awbs_to_shipment_ids(
+        &self,
+        tenant_id:   Uuid,
+        master_awbs: &[String],
+    ) -> anyhow::Result<Vec<Uuid>> {
         if master_awbs.is_empty() { return Ok(vec![]); }
         let rows: Vec<(Uuid,)> = sqlx::query_as(
-            "SELECT DISTINCT shipment_id FROM hub_ops.parcel_inductions WHERE tracking_number = ANY($1)"
-        ).bind(master_awbs).fetch_all(&self.pool).await?;
+            "SELECT DISTINCT shipment_id FROM hub_ops.parcel_inductions \
+              WHERE tracking_number = ANY($1) AND tenant_id = $2"
+        ).bind(master_awbs).bind(tenant_id).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
@@ -315,8 +389,8 @@ impl PgContainerRepository {
         master_awbs:  &[String],
     ) -> anyhow::Result<()> {
         let status: Option<(String,)> = sqlx::query_as(
-            "SELECT status FROM hub_ops.containers WHERE id = $1"
-        ).bind(container_id).fetch_optional(&self.pool).await?;
+            "SELECT status FROM hub_ops.containers WHERE id = $1 AND tenant_id = $2"
+        ).bind(container_id).bind(tenant_id).fetch_optional(&self.pool).await?;
 
         match status {
             None => anyhow::bail!("Container {} not found", container_id),
@@ -326,9 +400,18 @@ impl PgContainerRepository {
             _ => {}
         }
 
+        // The pallet id is a request-body value: it must be the caller's pallet.
+        let pallet_owned: Option<(bool,)> = sqlx::query_as(
+            "SELECT true FROM hub_ops.pallets WHERE id = $1 AND tenant_id = $2"
+        ).bind(pallet_id).bind(tenant_id).fetch_optional(&self.pool).await?;
+        if pallet_owned.is_none() {
+            anyhow::bail!("Pallet {} not found", pallet_id);
+        }
+
         let already_loaded: Option<(bool,)> = sqlx::query_as(
-            "SELECT true FROM hub_ops.container_pallets WHERE container_id = $1 AND pallet_id = $2"
-        ).bind(container_id).bind(pallet_id).fetch_optional(&self.pool).await?;
+            "SELECT true FROM hub_ops.container_pallets \
+              WHERE container_id = $1 AND pallet_id = $2 AND tenant_id = $3"
+        ).bind(container_id).bind(pallet_id).bind(tenant_id).fetch_optional(&self.pool).await?;
         if already_loaded.is_some() {
             anyhow::bail!("Pallet {} is already loaded in container {}", pallet_id, container_id);
         }
@@ -342,8 +425,8 @@ impl PgContainerRepository {
                 r#"UPDATE hub_ops.containers
                    SET master_awbs = ARRAY(SELECT DISTINCT unnest(array_cat(master_awbs, $1::text[]))),
                        updated_at  = NOW()
-                   WHERE id = $2"#
-            ).bind(master_awbs).bind(container_id).execute(&self.pool).await?;
+                   WHERE id = $2 AND tenant_id = $3"#
+            ).bind(master_awbs).bind(container_id).bind(tenant_id).execute(&self.pool).await?;
         }
         Ok(())
     }
@@ -356,8 +439,8 @@ impl PgContainerRepository {
         master_awb:   &str,
     ) -> anyhow::Result<()> {
         let status: Option<(String,)> = sqlx::query_as(
-            "SELECT status FROM hub_ops.containers WHERE id = $1"
-        ).bind(container_id).fetch_optional(&self.pool).await?;
+            "SELECT status FROM hub_ops.containers WHERE id = $1 AND tenant_id = $2"
+        ).bind(container_id).bind(tenant_id).fetch_optional(&self.pool).await?;
 
         match status {
             None => anyhow::bail!("Container {} not found", container_id),
@@ -377,32 +460,46 @@ impl PgContainerRepository {
                                       THEN array_append(master_awbs, $1)
                                       ELSE master_awbs END,
                    updated_at  = NOW()
-               WHERE id = $2"#
-        ).bind(master_awb).bind(container_id).execute(&self.pool).await?;
+               WHERE id = $2 AND tenant_id = $3"#
+        ).bind(master_awb).bind(container_id).bind(tenant_id).execute(&self.pool).await?;
 
         Ok(())
     }
 
-    async fn finalise(&self, container_id: Uuid) -> anyhow::Result<()> {
+    async fn finalise(&self, container_id: Uuid, tenant_id: Uuid) -> anyhow::Result<()> {
         let has_pallet: Option<(bool,)> = sqlx::query_as(
-            "SELECT true FROM hub_ops.container_pallets WHERE container_id = $1 LIMIT 1"
-        ).bind(container_id).fetch_optional(&self.pool).await?;
+            "SELECT true FROM hub_ops.container_pallets \
+              WHERE container_id = $1 AND tenant_id = $2 LIMIT 1"
+        ).bind(container_id).bind(tenant_id).fetch_optional(&self.pool).await?;
 
         let has_piece: Option<(bool,)> = sqlx::query_as(
-            "SELECT true FROM hub_ops.container_loose_pieces WHERE container_id = $1 LIMIT 1"
-        ).bind(container_id).fetch_optional(&self.pool).await?;
+            "SELECT true FROM hub_ops.container_loose_pieces \
+              WHERE container_id = $1 AND tenant_id = $2 LIMIT 1"
+        ).bind(container_id).bind(tenant_id).fetch_optional(&self.pool).await?;
 
         if has_pallet.is_none() && has_piece.is_none() {
             anyhow::bail!("Container {} is empty — load at least one pallet or piece before finalising", container_id);
         }
 
         let affected = sqlx::query(
-            "UPDATE hub_ops.containers SET status = 'manifested', updated_at = NOW() WHERE id = $1 AND status = 'planning'"
-        ).bind(container_id).execute(&self.pool).await?.rows_affected();
+            "UPDATE hub_ops.containers SET status = 'manifested', updated_at = NOW() \
+              WHERE id = $1 AND tenant_id = $2 AND status = 'planning'"
+        ).bind(container_id).bind(tenant_id).execute(&self.pool).await?.rows_affected();
 
         if affected == 0 {
             anyhow::bail!("Container {} cannot be finalised: not found or not in 'planning' status", container_id);
         }
+        Ok(())
+    }
+
+    async fn delete_planning(&self, container_id: Uuid, tenant_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "DELETE FROM hub_ops.containers WHERE id = $1 AND tenant_id = $2 AND status = 'planning'"
+        )
+        .bind(container_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }
@@ -589,7 +686,8 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
                 volume_total_cm3 = EXCLUDED.volume_total_cm3,
                 piece_count      = EXCLUDED.piece_count,
                 computed_at      = EXCLUDED.computed_at,
-                updated_at       = EXCLUDED.updated_at"#
+                updated_at       = EXCLUDED.updated_at
+               WHERE hub_ops.consolidation_plans.tenant_id = EXCLUDED.tenant_id"#
         )
         .bind(plan.id).bind(plan.tenant_id).bind(plan.hub_id).bind(plan.truck_spec_id)
         .bind(plan.container_id)
@@ -660,11 +758,13 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn loading_count(&self, plan_id: Uuid) -> anyhow::Result<i64> {
+    async fn loading_count(&self, plan_id: Uuid, tenant_id: Uuid) -> anyhow::Result<i64> {
         let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM hub_ops.consolidation_plan_loadings WHERE plan_id = $1"
+            "SELECT COUNT(*) FROM hub_ops.consolidation_plan_loadings \
+              WHERE plan_id = $1 AND tenant_id = $2"
         )
         .bind(plan_id)
+        .bind(tenant_id)
         .fetch_one(&self.pool).await?;
         Ok(row.0)
     }
@@ -881,7 +981,7 @@ async fn fetch_shipment_dims(
 #[derive(Clone)]
 struct AppState {
     svc:               Arc<HubService>,
-    containers:        Arc<PgContainerRepository>,
+    containers:        Arc<dyn ContainerOps>,
     consolidation_svc: Arc<ConsolidationService>,
     pallet_svc:        Arc<PalletService>,
     hub_transfer_svc:  Arc<HubTransferService>,
@@ -896,12 +996,40 @@ struct AppState {
 }
 
 // ---------------------------------------------------------------------------
+// Tenant-scoping helpers
+// ---------------------------------------------------------------------------
+
+/// 404 unless `hub_id` is one of the caller's hubs. Every hub id taken from a
+/// path, query or body goes through here before it is used.
+async fn require_own_hub(s: &AppState, claims: &AuthClaims, hub_id: Uuid) -> Result<(), AppError> {
+    s.svc
+        .get_hub(&logisticos_types::TenantId::from_uuid(claims.tenant_id), hub_id)
+        .await
+        .map(|_| ())
+}
+
+/// The caller's container, or 404. Handlers call this before any external
+/// call or write, so another tenant's container id never gets further.
+async fn require_own_container(
+    s: &AppState,
+    claims: &AuthClaims,
+    container_id: Uuid,
+) -> Result<ContainerRow, AppError> {
+    s.containers
+        .find_by_id(container_id, claims.tenant_id)
+        .await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "container", id: container_id.to_string() })
+}
+
+// ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
 
 async fn create_hub(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<CreateHubCommand>) -> impl IntoResponse {
     use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_MANAGE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let hub = s.svc.create_hub(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(hub)))
@@ -933,15 +1061,14 @@ async fn depart_container(
     Json(req): Json<DepartRequest>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
-    let container = s.containers.find_by_id(container_id).await
-        .map_err(AppError::Internal)?
-        .ok_or_else(|| AppError::NotFound { resource: "container", id: container_id.to_string() })?;
+    let container = require_own_container(&s, &claims, container_id).await?;
 
     // Billing clearance guard — only applies to sea/air containers where Balikbayan
     // boxes are loaded (Track A billing). Road containers for last-mile skip this.
     if !s.payments_url.is_empty() {
-        let shipment_ids = s.containers.shipment_ids_for_container(container_id).await
+        let shipment_ids = s.containers.shipment_ids_for_container(container_id, claims.tenant_id).await
             .map_err(AppError::Internal)?;
 
         if !shipment_ids.is_empty() {
@@ -969,7 +1096,7 @@ async fn depart_container(
     }
 
     // All clear — mark the container as departed.
-    s.containers.mark_departed(container_id, req.eta).await
+    s.containers.mark_departed(container_id, claims.tenant_id, req.eta).await
         .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
     // Emit CONTAINER_DEPARTED so order-intake status_consumer can flip all
@@ -1037,12 +1164,17 @@ async fn create_container_handler(
     Json(req): Json<CreateContainerRequest>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     if !["road", "sea", "air"].contains(&req.transport_mode.as_str()) {
         return Err(AppError::Validation(
             "transport_mode must be 'road', 'sea', or 'air'".into(),
         ));
     }
+
+    // Both hub ids come from the body: they must be the caller's hubs.
+    require_own_hub(&s, &claims, req.origin_hub_id).await?;
+    require_own_hub(&s, &claims, req.destination_hub_id).await?;
 
     let id = Uuid::new_v4();
     s.containers.create(
@@ -1084,9 +1216,17 @@ async fn load_pallet_handler(
     Json(req): Json<LoadPalletRequest>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+
+    // Both ids are the caller's, or 404 — before any billing/POP round-trip.
+    require_own_container(&s, &claims, container_id).await?;
+    s.pallet_svc
+        .find_pallet(logisticos_types::PalletId::from_uuid(req.pallet_id), &logisticos_types::TenantId::from_uuid(claims.tenant_id))
+        .await?
+        .ok_or_else(|| AppError::NotFound { resource: "pallet", id: req.pallet_id.to_string() })?;
 
     let shipment_ids = s.containers
-        .resolve_awbs_to_shipment_ids(&req.master_awbs)
+        .resolve_awbs_to_shipment_ids(claims.tenant_id, &req.master_awbs)
         .await
         .map_err(AppError::internal)?;
 
@@ -1175,9 +1315,12 @@ async fn load_loose_piece_handler(
     Json(req): Json<LoadLoosePieceRequest>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+
+    require_own_container(&s, &claims, container_id).await?;
 
     let shipment_ids = s.containers
-        .resolve_awbs_to_shipment_ids(std::slice::from_ref(&req.master_awb))
+        .resolve_awbs_to_shipment_ids(claims.tenant_id, std::slice::from_ref(&req.master_awb))
         .await
         .map_err(AppError::internal)?;
 
@@ -1244,8 +1387,10 @@ async fn finalise_manifest_handler(
     Path(container_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
-    s.containers.finalise(container_id).await
+    require_own_container(&s, &claims, container_id).await?;
+    s.containers.finalise(container_id, claims.tenant_id).await
         .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
     tracing::info!(container_id = %container_id, "Container manifest finalised");
@@ -1275,8 +1420,11 @@ async fn get_hub_by_id(State(s): State<AppState>, claims: AuthClaims, Path(id): 
     Ok::<_, AppError>((StatusCode::OK, Json(hub)))
 }
 
-async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<InductParcelCommand>) -> impl IntoResponse {
+async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(mut cmd): Json<InductParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+    // The actor is the authenticated user, not whoever the body claims.
+    cmd.inducted_by = Some(claims.user_id);
     let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
     let induction = s.svc.induct_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(induction)))
@@ -1284,6 +1432,7 @@ async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<I
 
 async fn sort(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<SortParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
     let induction = s.svc.sort_parcel(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
@@ -1291,6 +1440,7 @@ async fn sort(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<Sor
 
 async fn dispatch(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<Uuid>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
     let induction = s.svc.dispatch_parcel(&tenant_id, id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(induction)))
@@ -1416,6 +1566,14 @@ async fn scan_piece_handler(
     Json(body): Json<ScanPieceBody>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+    // The hub in the path (and the optional destination hub in the body) must
+    // be the caller's, otherwise a pallet is opened or extended on someone
+    // else's hub.
+    require_own_hub(&s, &claims, hub_id).await?;
+    if let Some(dest) = body.destination_hub_id {
+        require_own_hub(&s, &claims, dest).await?;
+    }
 
     let piece_awb  = logisticos_types::awb::ChildAwb::parse(&body.piece_awb)
         .map_err(|e| AppError::Validation(e.to_string()))?;
@@ -1431,7 +1589,7 @@ async fn scan_piece_handler(
         declared_weight_g:   body.declared_weight_g,
         actual_weight_g:     body.actual_weight_g,
         scanned_by:          claims.user_id,
-    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    }).await?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "pallet_id":    pallet.id,
@@ -1450,7 +1608,10 @@ async fn get_pallet_handler(
     claims.require_permission(permissions::SHIPMENT_READ)?;
     logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let pallet = s.pallet_svc
-        .find_pallet(logisticos_types::PalletId::from_uuid(id))
+        .find_pallet(
+            logisticos_types::PalletId::from_uuid(id),
+            &logisticos_types::TenantId::from_uuid(claims.tenant_id),
+        )
         .await?
         .ok_or_else(|| AppError::NotFound { resource: "pallet", id: id.to_string() })?;
     Ok::<_, AppError>((StatusCode::OK, Json(pallet)))
@@ -1463,10 +1624,12 @@ async fn seal_pallet_handler(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let pallet = s.pallet_svc.seal_pallet(SealPalletCommand {
+        tenant_id: logisticos_types::TenantId::from_uuid(claims.tenant_id),
         pallet_id: logisticos_types::PalletId::from_uuid(id),
         sealed_by: claims.user_id,
-    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    }).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "pallet_id":   pallet.id,
         "piece_count": pallet.piece_count(),
@@ -1493,6 +1656,7 @@ async fn load_pallet_into_container_handler(
     Json(body): Json<LoadPalletIntoContainerBody>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     let pallet_awbs: Vec<logisticos_types::awb::Awb> = body.pallet_awbs
         .iter()
@@ -1500,10 +1664,11 @@ async fn load_pallet_into_container_handler(
         .collect();
 
     s.pallet_svc.load_pallet_into_container(LoadPalletIntoContainerCommand {
+        tenant_id:    logisticos_types::TenantId::from_uuid(claims.tenant_id),
         container_id: logisticos_types::ContainerId::from_uuid(body.container_id),
         pallet_id:    logisticos_types::PalletId::from_uuid(pallet_id),
         pallet_awbs,
-    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    }).await?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": body.container_id,
@@ -1518,9 +1683,11 @@ async fn arrive_container_handler(
     Path(container_id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     s.pallet_svc.arrive_container(ArriveContainerCommand {
+        tenant_id:    logisticos_types::TenantId::from_uuid(claims.tenant_id),
         container_id: logisticos_types::ContainerId::from_uuid(container_id),
-    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    }).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": container_id,
         "status":       "delivered",
@@ -1547,6 +1714,7 @@ async fn create_truck_spec(
     Json(cmd): Json<CreateSpecCommand>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::FLEET_MANAGE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let spec = s.consolidation_svc.create_spec(claims.tenant_id, cmd).await
         .map_err(AppError::internal)?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(spec)))
@@ -1559,6 +1727,7 @@ async fn update_truck_spec(
     Json(cmd): Json<UpdateSpecCommand>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::FLEET_MANAGE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let spec = s.consolidation_svc.update_spec(id, claims.tenant_id, cmd).await
         .map_err(|e| AppError::BusinessRule(e.to_string()))?;
     Ok::<_, AppError>((StatusCode::OK, Json(spec)))
@@ -1570,6 +1739,9 @@ async fn compute_plan(
     Json(cmd): Json<ComputePlanCommand>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+    // `hub_id` comes from the body and keys the WebSocket broadcast channel.
+    require_own_hub(&s, &claims, cmd.hub_id).await?;
     let plan = s.consolidation_svc.compute_plan(claims.tenant_id, cmd).await
         .map_err(|e| AppError::BusinessRule(e.to_string()))?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(plan)))
@@ -1595,6 +1767,7 @@ async fn list_hub_plans(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
     logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+    require_own_hub(&s, &claims, hub_id).await?;
     let plans = s.consolidation_svc.list_plans(hub_id, claims.tenant_id).await
         .map_err(AppError::internal)?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "plans": plans }))))
@@ -1607,6 +1780,7 @@ async fn update_placements_handler(
     Json(body): Json<UpdatePlacementsBody>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let plan = s.consolidation_svc.update_placements(id, claims.tenant_id, body).await
         .map_err(|e| AppError::BusinessRule(e.to_string()))?;
     Ok::<_, AppError>((StatusCode::OK, Json(plan)))
@@ -1634,6 +1808,7 @@ async fn confirm_plan_handler(
     Json(body): Json<ConfirmPlanBody>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::FLEET_MANAGE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     if !["road", "sea", "air"].contains(&body.transport_mode.as_str()) {
         return Err(AppError::Validation(
@@ -1645,6 +1820,9 @@ async fn confirm_plan_handler(
         .get_plan(id, claims.tenant_id).await
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::NotFound { resource: "consolidation_plan", id: id.to_string() })?;
+
+    // The destination hub comes from the body: it must be the caller's.
+    require_own_hub(&s, &claims, body.destination_hub_id).await?;
 
     if plan.status != "draft" {
         return Ok::<_, AppError>((
@@ -1673,12 +1851,7 @@ async fn confirm_plan_handler(
         Ok(plan) => plan,
         Err(e) => {
             // Best-effort cleanup — delete the planning-state container we just created.
-            let _ = sqlx::query(
-                "DELETE FROM hub_ops.containers WHERE id = $1 AND status = 'planning'"
-            )
-            .bind(container_id)
-            .execute(&s.pool)
-            .await;
+            let _ = s.containers.delete_planning(container_id, claims.tenant_id).await;
             return Err(AppError::BusinessRule(e.to_string()));
         }
     };
@@ -1730,6 +1903,7 @@ async fn scan_consolidation_piece_handler(
 ) -> impl IntoResponse {
     use crate::domain::algorithms::bin_pack::Placement;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     let plan = s.consolidation_svc
         .get_plan(id, claims.tenant_id).await
@@ -1779,7 +1953,7 @@ async fn scan_consolidation_piece_handler(
     }
 
     let loaded_count = s.consolidation_svc
-        .loading_count(id).await
+        .loading_count(id, claims.tenant_id).await
         .map_err(AppError::internal)?;
     let total_count = plan.piece_count;
 
@@ -1803,7 +1977,7 @@ async fn scan_consolidation_piece_handler(
         // actually transitioned the status (concurrent last-scan safety).
         if transitioned {
             if let Some(container_id) = plan.container_id {
-                s.containers.finalise(container_id).await
+                s.containers.finalise(container_id, claims.tenant_id).await
                     .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
                 let loaded_event = serde_json::json!({
@@ -1887,6 +2061,29 @@ struct WsQuery {
     token: String,
 }
 
+/// Everything a hub event subscription needs to clear before the upgrade:
+/// a valid token, `shipments:read`, a tenant-wide (non-partner) token, and a
+/// hub that belongs to the token's tenant. The socket carries live scan and
+/// plan events for that hub, so without the last check any tenant could
+/// subscribe to any other tenant's hub by id.
+async fn authorize_hub_ws(
+    s: &AppState,
+    jwt: &JwtService,
+    hub_id: Uuid,
+    token: &str,
+) -> Result<(), Box<Response>> {
+    let claims = jwt
+        .validate_access_token(token)
+        .map_err(|_| Box::new((StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()))?
+        .claims;
+    let claims = AuthClaims(claims);
+    claims.require_permission(permissions::SHIPMENT_READ).map_err(|e| Box::new(e.into_response()))?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")
+        .map_err(|e| Box::new(e.into_response()))?;
+    require_own_hub(s, &claims, hub_id).await.map_err(|e| Box::new(e.into_response()))?;
+    Ok(())
+}
+
 async fn ws_hub_events(
     State(s): State<AppState>,
     Path(hub_id): Path<Uuid>,
@@ -1896,8 +2093,8 @@ async fn ws_hub_events(
     // Manual JWT validation — WS upgrade cannot carry an Authorization header.
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").unwrap_or_default();
     let jwt = JwtService::new(&jwt_secret, 3600, 86400);
-    if jwt.validate_access_token(&q.token).is_err() {
-        return (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response();
+    if let Err(resp) = authorize_hub_ws(&s, &jwt, hub_id, &q.token).await {
+        return *resp;
     }
     let broadcaster = s.hub_broadcaster.clone();
     ws.on_upgrade(move |socket| drive_ws(socket, hub_id, broadcaster))
@@ -1929,77 +2126,10 @@ async fn drive_ws(mut socket: WebSocket, hub_id: Uuid, broadcaster: HubBroadcast
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-pub async fn run() -> anyhow::Result<()> {
-    let cfg = Config::load()?;
-    let otlp = std::env::var("OTLP_ENDPOINT").ok();
-    logisticos_tracing::init(logisticos_tracing::TracingConfig {
-        service_name: "hub-ops",
-        env: &cfg.app.env,
-        otlp_endpoint: otlp.as_deref(),
-        log_level: None,
-    })?;
-    logisticos_auth::partner::log_partner_scope_mode();
-
-    let pool = PgPoolOptions::new()
-        .max_connections(cfg.database.max_connections)
-        .after_connect(|conn, _meta| Box::pin(async move {
-            sqlx::query("SET search_path TO hub_ops, public")
-                .execute(&mut *conn)
-                .await?;
-            Ok(())
-        }))
-        .connect(&cfg.database.url)
-        .await?;
-
-    logisticos_common::migrations::run(&pool, "hub_ops", &sqlx::migrate!("./migrations")).await?;
-
-    let hub_repo       = Arc::new(PgHubRepository { pool: pool.clone() });
-    let induction_repo = Arc::new(PgInductionRepository { pool: pool.clone() });
-    let container_repo = Arc::new(PgContainerRepository { pool: pool.clone() });
-    let spec_repo      = Arc::new(PgTruckSpecRepository { pool: pool.clone() });
-    let plan_repo      = Arc::new(PgConsolidationPlanRepository { pool: pool.clone() });
-    let hub_broadcaster = HubBroadcaster::new();
-    let consolidation_svc = Arc::new(ConsolidationService::new(
-        spec_repo, plan_repo, hub_broadcaster.clone(),
-    ));
-
-    let kafka = Arc::new(
-        KafkaProducer::new(&cfg.kafka.brokers)
-            .context("failed to create Kafka producer for hub-ops")?,
-    );
-    let svc = Arc::new(HubService::new(hub_repo, induction_repo).with_events(kafka.clone()));
-    let pallet_repo    = Arc::new(PgPalletRepository::new(pool.clone()));
-    let pallet_ctr_repo = Arc::new(PgPalletContainerRepository::new(pool.clone()));
-    let pallet_svc     = Arc::new(PalletService::new(pallet_repo, pallet_ctr_repo.clone(), kafka.clone()));
-
-    // Cross-border hub transfer service — reuses the typed container repo + kafka.
-    let hub_transfer_svc = Arc::new(HubTransferService::new(
-        pallet_ctr_repo.clone(),
-        Arc::new(PgHubScanRepository::new(pool.clone())),
-        Arc::new(PgHubLocationRepository::new(pool.clone())),
-        Arc::new(PgHubInventoryRepository::new(pool.clone())),
-        Arc::new(PgHubTransferManifestRepository::new(pool.clone())),
-        Arc::new(PgHubRoutingConfigRepository::new(pool.clone())),
-        kafka.clone(),
-    ));
-
-    let payments_url      = cfg.payments.url.clone();
-    let pod_url           = cfg.pod.url.clone();
-    let order_intake_url  = cfg.order_intake.url.clone();
-    let state = AppState {
-        svc, containers: container_repo,
-        consolidation_svc, pallet_svc,
-        hub_transfer_svc,
-        hub_broadcaster,
-        kafka,
-        payments_url, pod_url, order_intake_url,
-        pool: pool.clone(),
-    };
-
-    let jwt_secret = std::env::var("AUTH__JWT_SECRET")
-        .context("AUTH__JWT_SECRET env var not set")?;
-    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
-
+/// The full HTTP surface: JWT-protected `/v1/*` routes, the WebSocket route
+/// (which validates its own `?token=`), and the unauthenticated probes.
+/// Extracted from `run()` so tests mount exactly the router production serves.
+fn build_router(state: AppState, jwt: Arc<JwtService>) -> Router {
     // Protected business routes — JWT required on all /v1/* endpoints.
     let protected = Router::new()
         // Hub management
@@ -2061,11 +2191,88 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/ready",   get(|| async { axum::Json(serde_json::json!({"status":"ready"})) }))
         .route("/metrics", get(|| async { "" }));
 
-    let app = protected
+    protected
         .merge(ws_router)
         .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state)
+}
+
+pub async fn run() -> anyhow::Result<()> {
+    let cfg = Config::load()?;
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "hub-ops",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
+    })?;
+    logisticos_auth::partner::log_partner_scope_mode();
+
+    let pool = PgPoolOptions::new()
+        .max_connections(cfg.database.max_connections)
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO hub_ops, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
+        .connect(&cfg.database.url)
+        .await?;
+
+    logisticos_common::migrations::run(&pool, "hub_ops", &sqlx::migrate!("./migrations")).await?;
+
+    let hub_repo: Arc<dyn HubRepository> = Arc::new(PgHubRepository { pool: pool.clone() });
+    let induction_repo = Arc::new(PgInductionRepository { pool: pool.clone() });
+    let container_repo = Arc::new(PgContainerRepository { pool: pool.clone() });
+    let spec_repo      = Arc::new(PgTruckSpecRepository { pool: pool.clone() });
+    let plan_repo      = Arc::new(PgConsolidationPlanRepository { pool: pool.clone() });
+    let hub_broadcaster = HubBroadcaster::new();
+    let consolidation_svc = Arc::new(ConsolidationService::new(
+        spec_repo, plan_repo, hub_broadcaster.clone(),
+    ));
+
+    let kafka = Arc::new(
+        KafkaProducer::new(&cfg.kafka.brokers)
+            .context("failed to create Kafka producer for hub-ops")?,
+    );
+    let svc = Arc::new(HubService::new(hub_repo.clone(), induction_repo).with_events(kafka.clone()));
+    let pallet_repo: Arc<dyn crate::application::services::pallet_service::PalletRepository> =
+        Arc::new(PgPalletRepository::new(pool.clone()));
+    let pallet_ctr_repo = Arc::new(PgPalletContainerRepository::new(pool.clone()));
+    let pallet_svc     = Arc::new(PalletService::new(pallet_repo.clone(), pallet_ctr_repo.clone(), kafka.clone()));
+
+    // Cross-border hub transfer service — reuses the typed container repo + kafka.
+    let hub_transfer_svc = Arc::new(HubTransferService::new(
+        hub_repo,
+        pallet_repo,
+        pallet_ctr_repo.clone(),
+        Arc::new(PgHubScanRepository::new(pool.clone())),
+        Arc::new(PgHubLocationRepository::new(pool.clone())),
+        Arc::new(PgHubInventoryRepository::new(pool.clone())),
+        Arc::new(PgHubTransferManifestRepository::new(pool.clone())),
+        Arc::new(PgHubRoutingConfigRepository::new(pool.clone())),
+        kafka.clone(),
+    ));
+
+    let payments_url      = cfg.payments.url.clone();
+    let pod_url           = cfg.pod.url.clone();
+    let order_intake_url  = cfg.order_intake.url.clone();
+    let state = AppState {
+        svc, containers: container_repo,
+        consolidation_svc, pallet_svc,
+        hub_transfer_svc,
+        hub_broadcaster,
+        kafka,
+        payments_url, pod_url, order_intake_url,
+        pool: pool.clone(),
+    };
+
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET")
+        .context("AUTH__JWT_SECRET env var not set")?;
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
+
+    let app = build_router(state, jwt);
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;
     tracing::info!(addr = %addr, "hub-ops service listening");
@@ -2115,6 +2322,7 @@ async fn record_scan_handler(
 ) -> impl IntoResponse {
     use logisticos_types::{awb::{Awb, ChildAwb}, ContainerId, HubId, PalletId, ShipmentId, TenantId};
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     // POP-before-InboundReceive gate.
     if matches!(req.scan_type, ScanType::InboundReceive) && !s.pod_url.is_empty() {
@@ -2235,8 +2443,13 @@ async fn arrive_at_port_handler(
 ) -> impl IntoResponse {
     use logisticos_types::ContainerId;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let c = s.hub_transfer_svc
-        .arrive_at_port(ContainerId::from_uuid(container_id), req.details)
+        .arrive_at_port(
+            &logisticos_types::TenantId::from_uuid(claims.tenant_id),
+            ContainerId::from_uuid(container_id),
+            req.details,
+        )
         .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": container_id, "status": format!("{:?}", c.status),
@@ -2251,8 +2464,13 @@ async fn enter_customs_handler(
 ) -> impl IntoResponse {
     use logisticos_types::ContainerId;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let c = s.hub_transfer_svc
-        .enter_customs(ContainerId::from_uuid(container_id), req.details)
+        .enter_customs(
+            &logisticos_types::TenantId::from_uuid(claims.tenant_id),
+            ContainerId::from_uuid(container_id),
+            req.details,
+        )
         .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": container_id, "status": format!("{:?}", c.status),
@@ -2261,14 +2479,23 @@ async fn enter_customs_handler(
 
 #[derive(serde::Deserialize)]
 struct ClearCustomsRequest {
-    /// Defaults to the authenticated user when omitted.
-    #[serde(default)] cleared_by:         Option<Uuid>,
+    // No `cleared_by`: the clearance gate is a human sign-off, so it is always
+    // the authenticated user. A body-supplied id would let one user sign off as
+    // another (unknown fields are ignored on deserialise).
     #[serde(default)] duties_total_cents: Option<i64>,
     #[serde(default)] customs_filing_ref: Option<String>,
-    /// 3-char tenant code for duties invoice numbering (forwarded to payments).
-    #[serde(default)] tenant_code:        String,
+    /// Ignored: the invoice tenant code comes from the JWT (`tenant_slug`).
+    /// Still accepted so clients that send it keep deserialising.
+    #[serde(default)] #[allow(dead_code)] tenant_code: String,
     /// Per-shipment recipients + duty payers (the "enrich from request" data).
     #[serde(default)] details:            Vec<logisticos_events::payloads::ShipmentMilestoneDetail>,
+}
+
+/// Invoice-numbering tenant code, derived from the token exactly as pod does.
+fn tenant_code_from_claims(claims: &logisticos_auth::claims::Claims) -> String {
+    logisticos_types::awb::TenantCode::from_slug(&claims.tenant_slug)
+        .map(|c| c.to_string())
+        .unwrap_or_default()
 }
 
 /// `POST /v1/containers/:id/clear-customs` — mandatory human clearance gate.
@@ -2280,12 +2507,14 @@ async fn clear_customs_handler(
 ) -> impl IntoResponse {
     use logisticos_types::ContainerId;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let c = s.hub_transfer_svc.clear_customs(ClearCustomsCommand {
+        tenant_id:          logisticos_types::TenantId::from_uuid(claims.tenant_id),
         container_id:       ContainerId::from_uuid(container_id),
-        cleared_by:         req.cleared_by.unwrap_or(claims.user_id),
+        cleared_by:         claims.user_id,
         duties_total_cents: req.duties_total_cents,
         customs_filing_ref: req.customs_filing_ref,
-        tenant_code:        req.tenant_code,
+        tenant_code:        tenant_code_from_claims(&claims),
         details:            req.details,
     }).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
@@ -2300,7 +2529,13 @@ async fn release_domestic_handler(
 ) -> impl IntoResponse {
     use logisticos_types::ContainerId;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let c = s.hub_transfer_svc.release_domestic(ContainerId::from_uuid(container_id)).await?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+    let c = s.hub_transfer_svc
+        .release_domestic(
+            &logisticos_types::TenantId::from_uuid(claims.tenant_id),
+            ContainerId::from_uuid(container_id),
+        )
+        .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": container_id, "status": format!("{:?}", c.status),
     }))))
@@ -2326,14 +2561,16 @@ async fn deconsolidate_handler(
 ) -> impl IntoResponse {
     use logisticos_types::ContainerId;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     let shipment_ids = if req.master_awbs.is_empty() {
         Vec::new()
     } else {
-        s.containers.resolve_awbs_to_shipment_ids(&req.master_awbs).await.map_err(AppError::internal)?
+        s.containers.resolve_awbs_to_shipment_ids(claims.tenant_id, &req.master_awbs).await.map_err(AppError::internal)?
     };
 
     let c = s.hub_transfer_svc.deconsolidate(DeconsolidateCommand {
+        tenant_id:        logisticos_types::TenantId::from_uuid(claims.tenant_id),
         container_id:     ContainerId::from_uuid(container_id),
         destination_zone: req.destination_zone,
         shipment_ids:     shipment_ids.clone(),
@@ -2355,7 +2592,10 @@ async fn get_manifest_handler(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
     logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
-    match s.hub_transfer_svc.get_manifest(container_id).await? {
+    match s.hub_transfer_svc
+        .get_manifest(&logisticos_types::TenantId::from_uuid(claims.tenant_id), container_id)
+        .await?
+    {
         Some(m) => Ok::<_, AppError>((StatusCode::OK, Json(m))),
         None => Err(AppError::NotFound { resource: "manifest", id: container_id.to_string() }),
     }
@@ -2401,6 +2641,7 @@ async fn create_location_handler(
 ) -> impl IntoResponse {
     use logisticos_types::{HubId, TenantId};
     claims.require_permission(permissions::FLEET_MANAGE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let location = HubLocation::new(
         TenantId::from_uuid(claims.tenant_id),
         HubId::from_uuid(req.hub_id),
@@ -2421,7 +2662,13 @@ async fn list_locations_handler(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
     logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
-    let locations = s.hub_transfer_svc.list_locations(q.hub_id, q.zone_id.as_deref()).await?;
+    let locations = s.hub_transfer_svc
+        .list_locations(
+            &logisticos_types::TenantId::from_uuid(claims.tenant_id),
+            q.hub_id,
+            q.zone_id.as_deref(),
+        )
+        .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(locations)))
 }
 
@@ -2442,6 +2689,7 @@ async fn check_in_inventory_handler(
 ) -> impl IntoResponse {
     use logisticos_types::{awb::ChildAwb, HubId, PalletId, TenantId};
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
 
     let unit = match req.unit_kind.as_str() {
         "piece" => InventoryUnit::Piece(
@@ -2475,7 +2723,12 @@ async fn list_inventory_handler(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
     logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
-    let items = s.hub_transfer_svc.list_inventory_at(q.location_id).await?;
+    let items = s.hub_transfer_svc
+        .list_inventory_at(
+            &logisticos_types::TenantId::from_uuid(claims.tenant_id),
+            q.location_id,
+        )
+        .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(items)))
 }
 
@@ -2491,7 +2744,14 @@ async fn move_inventory_handler(
     Json(req): Json<MoveInventoryRequest>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    s.hub_transfer_svc.move_inventory(req.inventory_id, req.to_location_id).await?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
+    s.hub_transfer_svc
+        .move_inventory(
+            &logisticos_types::TenantId::from_uuid(claims.tenant_id),
+            req.inventory_id,
+            req.to_location_id,
+        )
+        .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "inventory_id": req.inventory_id, "location_id": req.to_location_id,
     }))))
@@ -2578,6 +2838,7 @@ async fn upsert_routing_handler(
 ) -> impl IntoResponse {
     use logisticos_types::{HubId, TenantId};
     claims.require_permission(permissions::FLEET_MANAGE)?;
+    logisticos_auth::partner::require_unscoped(&claims, "hub operations")?;
     let mut config = HubRoutingConfig::new(
         TenantId::from_uuid(claims.tenant_id),
         HubId::from_uuid(req.hub_id),
@@ -2623,3 +2884,7 @@ mod partner_scope_source_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "bootstrap_tenant_tests.rs"]
+mod tenant_http_tests;

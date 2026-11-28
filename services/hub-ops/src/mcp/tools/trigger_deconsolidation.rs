@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use logisticos_auth::rbac::permissions;
-use logisticos_types::ContainerId;
+use logisticos_types::{ContainerId, TenantId};
 
 use crate::application::services::DeconsolidateCommand;
 use crate::mcp::tools::req_uuid;
@@ -38,6 +38,7 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<McpState>) -> Re
     let container = state
         .hub_transfer_svc
         .deconsolidate(DeconsolidateCommand {
+            tenant_id:        TenantId::from_uuid(ctx.tenant_id),
             container_id:     ContainerId::from_uuid(container_id),
             destination_zone,
             shipment_ids:     Vec::new(), // auto-resolved inside service

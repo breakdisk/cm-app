@@ -51,9 +51,12 @@ impl MockHubRepository {
 
 #[async_trait::async_trait]
 impl HubRepository for MockHubRepository {
-    async fn find_by_id(&self, id: &HubId) -> anyhow::Result<Option<Hub>> {
+    async fn find_by_id(&self, id: &HubId, tenant_id: &TenantId) -> anyhow::Result<Option<Hub>> {
         let store = self.store.lock().unwrap();
-        Ok(store.get(&id.inner()).cloned())
+        Ok(store
+            .get(&id.inner())
+            .filter(|h| h.tenant_id.inner() == tenant_id.inner())
+            .cloned())
     }
 
     async fn list(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Hub>> {
@@ -84,22 +87,29 @@ impl MockInductionRepository {
 
 #[async_trait::async_trait]
 impl InductionRepository for MockInductionRepository {
-    async fn find_by_id(&self, id: &InductionId) -> anyhow::Result<Option<ParcelInduction>> {
+    async fn find_by_id(&self, id: &InductionId, tenant_id: &TenantId) -> anyhow::Result<Option<ParcelInduction>> {
         let store = self.store.lock().unwrap();
-        Ok(store.get(&id.inner()).cloned())
+        Ok(store
+            .get(&id.inner())
+            .filter(|p| p.tenant_id.inner() == tenant_id.inner())
+            .cloned())
     }
 
-    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ParcelInduction>> {
+    async fn find_by_shipment(&self, shipment_id: Uuid, tenant_id: &TenantId) -> anyhow::Result<Option<ParcelInduction>> {
         let store = self.store.lock().unwrap();
-        Ok(store.values().find(|p| p.shipment_id == shipment_id).cloned())
+        Ok(store
+            .values()
+            .find(|p| p.shipment_id == shipment_id && p.tenant_id.inner() == tenant_id.inner())
+            .cloned())
     }
 
-    async fn list_active(&self, hub_id: &HubId) -> anyhow::Result<Vec<ParcelInduction>> {
+    async fn list_active(&self, hub_id: &HubId, tenant_id: &TenantId) -> anyhow::Result<Vec<ParcelInduction>> {
         let store = self.store.lock().unwrap();
         Ok(store
             .values()
             .filter(|p| {
                 p.hub_id.inner() == hub_id.inner()
+                    && p.tenant_id.inner() == tenant_id.inner()
                     && p.status != InductionStatus::Dispatched
             })
             .cloned()
