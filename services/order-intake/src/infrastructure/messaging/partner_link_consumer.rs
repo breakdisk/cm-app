@@ -53,17 +53,40 @@ struct Link {
 /// Read a message. `Ok(None)` for an unrelated topic; an error for a malformed
 /// payload.
 fn parse_link(topic: &str, payload: &[u8]) -> anyhow::Result<Option<Link>> {
-    Ok(match topic {
+    let link = match topic {
         t if t == topics::CARRIER_ALLOCATED => {
-            let d = serde_json::from_slice::<Event<CarrierAllocatedView>>(payload)?.data;
-            Some(Link { tenant_id: d.tenant_id, shipment_id: d.shipment_id, carrier_id: Some(d.carrier_id), source: "carrier_allocated" })
+            let e = serde_json::from_slice::<Event<CarrierAllocatedView>>(payload)?;
+            let d = e.data;
+            Link { tenant_id: d.tenant_id, shipment_id: d.shipment_id, carrier_id: Some(d.carrier_id), source: "carrier_allocated" }
+                .vouched_for_by(e.tenant_id)
         }
         t if t == topics::TASK_ASSIGNED => {
-            let d = serde_json::from_slice::<Event<TaskAssignedView>>(payload)?.data;
-            Some(Link { tenant_id: d.tenant_id, shipment_id: d.shipment_id, carrier_id: d.driver_carrier_id, source: "task_assigned" })
+            let e = serde_json::from_slice::<Event<TaskAssignedView>>(payload)?;
+            let d = e.data;
+            Link { tenant_id: d.tenant_id, shipment_id: d.shipment_id, carrier_id: d.driver_carrier_id, source: "task_assigned" }
+                .vouched_for_by(e.tenant_id)
         }
-        _ => None,
-    })
+        _ => return Ok(None),
+    };
+    Ok(link)
+}
+
+impl Link {
+    /// The link's tenant is read from the payload; the envelope's is the
+    /// producer's assertion of who the event belongs to. A link whose two
+    /// disagree (or whose envelope tenant is nil) is skipped with a warning
+    /// naming both - not an error, so the offset is committed and it never
+    /// poison-loops.
+    fn vouched_for_by(self, envelope_tenant: Uuid) -> Option<Link> {
+        if envelope_tenant.is_nil() || envelope_tenant != self.tenant_id {
+            tracing::warn!(
+                shipment_id = %self.shipment_id, payload_tenant = %self.tenant_id, envelope_tenant = %envelope_tenant,
+                "partner link consumer: payload tenant differs from the event's tenant - link not written"
+            );
+            return None;
+        }
+        Some(self)
+    }
 }
 
 /// Apply one message. Returns an error for a malformed payload; the caller logs
@@ -162,6 +185,22 @@ mod tests {
         );
         let link = parse_link(topics::CARRIER_ALLOCATED, &p).expect("parses").expect("a link");
         assert_eq!(link, Link { tenant_id: t, shipment_id: s, carrier_id: Some(c), source: "carrier_allocated" });
+    }
+
+    #[test]
+    fn a_link_whose_payload_tenant_differs_from_the_envelope_is_skipped() {
+        let (envelope, other, s, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let data = serde_json::json!({ "carrier_id": c, "tenant_id": other, "shipment_id": s });
+        let p = payload(data.clone(), "carrier.allocated", envelope);
+        assert!(parse_link(topics::CARRIER_ALLOCATED, &p).expect("parses").is_none());
+        let nil = payload(data, "carrier.allocated", Uuid::nil());
+        assert!(parse_link(topics::CARRIER_ALLOCATED, &nil).expect("parses").is_none());
+        let task = payload(
+            serde_json::json!({ "shipment_id": s, "tenant_id": other, "driver_carrier_id": c }),
+            "task.assigned",
+            envelope,
+        );
+        assert!(parse_link(topics::TASK_ASSIGNED, &task).expect("parses").is_none());
     }
 
     #[test]

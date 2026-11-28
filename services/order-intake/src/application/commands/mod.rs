@@ -15,7 +15,46 @@ pub struct PieceInput {
     pub description:  Option<String>,
 }
 
+/// A phone reduced to an optional leading `+` and digits. Anything from the
+/// first letter, `#` or `;` on is an extension ("ext. 12", "x12") and dropped.
+pub fn normalize_phone(raw: &str) -> String {
+    let main = raw.split(|c: char| c.is_alphabetic() || c == '#' || c == ';').next().unwrap_or("");
+    let main = main.trim();
+    let mut out = String::with_capacity(main.len());
+    if main.starts_with('+') {
+        out.push('+');
+    }
+    out.extend(main.chars().filter(char::is_ascii_digit));
+    out
+}
+
+/// Length bounds for a normalised phone, counting the `+`.
+pub fn phone_in_range(normalized: &str) -> bool {
+    (7..=20).contains(&normalized.chars().count())
+}
+
+/// The single-parcel weight cap, as `ShipmentService::create` applies it: not
+/// to a per-piece Balikbayan/International declaration (whose `weight_grams`
+/// is the sum of its boxes) nor to a household move (tonnes). A flat
+/// `range(max = 70000)` on the field rejected those, so the cap lives here.
+fn weight_within_cap(cmd: &CreateShipmentCommand) -> Result<(), validator::ValidationError> {
+    if !phone_in_range(&normalize_phone(&cmd.customer_phone)) {
+        return Err(validator::ValidationError::new("customer_phone"));
+    }
+    if cmd.weight_grams < 1 {
+        return Err(validator::ValidationError::new("range"));
+    }
+    let uncapped = cmd.service_type == "home_move"
+        || (matches!(cmd.service_type.as_str(), "balikbayan" | "international")
+            && cmd.pieces.as_ref().is_some_and(|p| !p.is_empty()));
+    if !uncapped && cmd.weight_grams > 70_000 {
+        return Err(validator::ValidationError::new("range"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize, Validate)]
+#[validate(schema(function = "weight_within_cap"))]
 pub struct CreateShipmentCommand {
     #[serde(default)]
     pub tenant_id: uuid::Uuid,
@@ -24,8 +63,7 @@ pub struct CreateShipmentCommand {
 
     #[validate(length(min = 1, max = 200))]
     pub customer_name: String,
-    #[validate(length(min = 7, max = 20))]
-    pub customer_phone: String,
+    pub customer_phone: String,      // bounded by `weight_within_cap` after `normalize_phone`
     pub customer_email: Option<String>,
 
     /// Sender identity fields — the person handing parcels to the courier.
@@ -41,8 +79,7 @@ pub struct CreateShipmentCommand {
     pub destination: AddressInput,
 
     pub service_type: String,       // "standard" | "express" | "same_day" | "balikbayan"
-    #[validate(range(min = 1, max = 70000))]
-    pub weight_grams: u32,
+    pub weight_grams: u32,          // bounded by `weight_within_cap`
     pub length_cm: Option<u32>,
     pub width_cm:  Option<u32>,
     pub height_cm: Option<u32>,
@@ -165,7 +202,8 @@ pub struct InternalCreateShipmentCommand {
 
     #[validate(length(min = 1, max = 200))]
     pub customer_name:    String,
-    #[validate(length(min = 7, max = 20))]
+    /// Not length-validated: a connector order is already paid for and must
+    /// never be refused over phone format. See `internal_create_shipment`.
     pub customer_phone:   String,
     pub customer_email:   Option<String>,
 
@@ -310,5 +348,19 @@ mod intake_tests {
         let (_, intent, _, extracted) = i.to_store().unwrap();
         assert!(intent.is_none());
         assert_eq!(extracted, serde_json::json!({}));
+    }
+}
+
+#[cfg(test)]
+mod phone_tests {
+    use super::*;
+
+    #[test]
+    fn formatting_and_extensions_are_dropped_and_a_leading_plus_kept() {
+        assert_eq!(normalize_phone("+971 (50) 123-4567 ext. 12"), "+971501234567");
+        assert_eq!(normalize_phone("0917 123 4567 x45"), "09171234567");
+        assert_eq!(normalize_phone("+63.917.123.4567 #9"), "+639171234567");
+        assert!(!phone_in_range(&normalize_phone("n/a")));
+        assert!(!phone_in_range(&normalize_phone("12345")));
     }
 }

@@ -419,6 +419,8 @@ pub fn admit(
     // shared create path verifies it exactly as it verifies any quote, so
     // payment, idempotency and the AWB work the one way they always do.
     Ok(QuoteTokenPayload {
+        v: quote_token::TOKEN_VERSION,
+        route: Some(quote_token::route_fingerprint(&payload.origin, &payload.destination)),
         tenant_id,
         service_type: "home_move".into(),
         weight_grams,
