@@ -108,6 +108,9 @@ create_topic "logisticos.cdp.segment.updated"
 # POD / Tracking
 create_topic "logisticos.pod.captured"
 create_topic "logisticos.tracking.receipt.email.requested"
+# Customer rating of a delivery. Published by delivery-experience, consumed by
+# driver-ops (rating_avg / rating_count).
+create_topic "logisticos.delivery.feedback.submitted"
 
 # Carrier
 create_topic "logisticos.carrier.onboarded"

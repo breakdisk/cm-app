@@ -270,6 +270,10 @@ async fn reschedule_delivery(
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Tracking number not found"})),
         ).into_response(),
+        Err(AppError::Validation(msg)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": msg})),
+        ).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -342,8 +346,16 @@ async fn submit_feedback(
             StatusCode::OK,
             Json(serde_json::json!({"data": {"submitted": true}})),
         ).into_response(),
-        Err(AppError::Validation(msg)) => (
+        Err(AppError::Validation(msg) | AppError::BusinessRule(msg)) => (
             StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": msg})),
+        ).into_response(),
+        Err(AppError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Tracking number not found"})),
+        ).into_response(),
+        Err(AppError::Conflict(msg)) => (
+            StatusCode::CONFLICT,
             Json(serde_json::json!({"error": msg})),
         ).into_response(),
         Err(e) => (

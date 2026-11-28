@@ -615,3 +615,10 @@ impl PgJourneyRepository {
         }).collect())
     }
 }
+
+#[async_trait::async_trait]
+impl crate::domain::repositories::AbTestLookup for PgAbTestRepository {
+    async fn find_by_campaign(&self, campaign_id: Uuid) -> anyhow::Result<Option<AbTest>> {
+        PgAbTestRepository::find_by_campaign(self, campaign_id).await
+    }
+}

@@ -31,13 +31,9 @@ pub trait TrackingRepository: Send + Sync {
         reason: &str,
     ) -> anyhow::Result<()>;
 
-    async fn save_feedback(
-        &self,
-        tracking_number: &str,
-        rating: i16,
-        tags: &[String],
-        comments: Option<&str>,
-    ) -> anyhow::Result<()>;
+    /// Persist one feedback row for a shipment. Returns `false` (and writes
+    /// nothing) when that shipment already has feedback.
+    async fn save_feedback(&self, feedback: &NewFeedback) -> anyhow::Result<bool>;
 
     /// Record customer's self-confirmation of receipt.
     /// Sets `customer_confirmed_at` timestamp on the tracking record.
@@ -51,4 +47,18 @@ pub trait TrackingRepository: Send + Sync {
         tracking_number: &str,
         email: &str,
     ) -> anyhow::Result<()>;
+}
+
+/// A customer's feedback on one delivered shipment. Tenant, shipment and
+/// driver come from the tracking record, never from the request.
+#[derive(Debug, Clone)]
+pub struct NewFeedback {
+    pub tenant_id:       Uuid,
+    pub shipment_id:     Uuid,
+    /// The driver on the shipment when feedback was left, if one was assigned.
+    pub driver_id:       Option<Uuid>,
+    pub tracking_number: String,
+    pub rating:          i16,
+    pub tags:            Vec<String>,
+    pub comments:        Option<String>,
 }

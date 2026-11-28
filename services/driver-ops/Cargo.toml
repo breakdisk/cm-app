@@ -59,3 +59,9 @@ path = "tests/unit/mod.rs"
 # [[test]]
 # name = "integration"
 # path = "tests/integration/mod.rs"
+
+# Needs DATABASE_URL (ci-rust.yml sets it and applies these migrations); fatal
+# when CI is set and it is missing.
+[[test]]
+name = "feedback_rating_db"
+path = "tests/feedback_rating_db.rs"
