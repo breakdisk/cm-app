@@ -242,6 +242,7 @@ impl logisticos_pod::domain::repositories::ShipmentBillingContextSource for Book
             service_code: "standard".into(),
             declared_value_cents: None,
             customer_phone: self.phone.clone(),
+            merchant_id: None,
         })
     }
 }

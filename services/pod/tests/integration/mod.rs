@@ -142,6 +142,7 @@ impl ShipmentBillingContextSource for BookingSource {
             service_code:         "standard".into(),
             declared_value_cents: None,
             customer_phone:       Some(BOOKING_PHONE.into()),
+            merchant_id: None,
         })
     }
 }
