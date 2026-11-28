@@ -73,6 +73,35 @@ services/hub-ops/src/bootstrap.rs::list_containers_handler: denied  # hub contai
 services/hub-ops/src/bootstrap.rs::list_hub_plans: denied  # hub consolidation plans
 services/hub-ops/src/bootstrap.rs::list_inventory_handler: denied  # hub inventory
 services/hub-ops/src/bootstrap.rs::list_locations_handler: denied  # hub locations
+services/hub-ops/src/bootstrap.rs::arrive_at_port_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::arrive_container_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::check_in_inventory_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::clear_customs_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::compute_plan: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::confirm_plan_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::create_container_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::create_hub: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::create_location_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::create_truck_spec: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::deconsolidate_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::depart_container: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::dispatch: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::enter_customs_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::finalise_manifest_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::induct: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::load_loose_piece_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::load_pallet_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::load_pallet_into_container_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::move_inventory_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::record_scan_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::release_domestic_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::scan_consolidation_piece_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::scan_piece_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::seal_pallet_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::sort: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::update_placements_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::update_truck_spec: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
+services/hub-ops/src/bootstrap.rs::upsert_routing_handler: denied  # hub-ops mutation; tenant operation, partner-bound token refused (require_unscoped)
 services/hub-ops/src/bootstrap.rs::list_routing_handler: denied  # hub routing configuration
 services/hub-ops/src/bootstrap.rs::list_scans_handler: denied  # scan history of any shipment in the tenant
 services/hub-ops/src/bootstrap.rs::manifest: denied  # hub manifest
@@ -102,6 +131,7 @@ services/pod/src/api/http/pod.rs::get_pod: scoped  # a pid-bound caller reads on
 services/pod/src/api/http/pod.rs::get_pop: scoped  # a pid-bound caller reads only POP it captured itself (driver_id); else NotFound
 services/pod/src/api/http/pod.rs::list_pods: scoped  # a pid-bound caller sees only POD it captured itself; else empty
 services/pod/src/api/http/pod.rs::list_pops: scoped  # a pid-bound caller sees only POP it captured itself; else empty
+services/pod/src/api/http/pod.rs::may_view_evidence: scoped  # the read check itself: a pid-bound caller sees only proofs it captured (driver_id); others by role via EvidenceAccess
 
 # ── payments: the tenant's own money ─────────────────────────────────────────
 services/payments/src/api/http/invoices.rs::list_invoices: denied  # the tenant's invoices
