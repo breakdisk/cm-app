@@ -123,6 +123,27 @@ pub fn trigger_matches(trigger: &RuleTrigger, topic: &str, data: &Value) -> bool
             .get("sla_type")
             .and_then(Value::as_str)
             .is_some_and(|t| t.eq_ignore_ascii_case(sla_type)),
+        // Same event as `SlaBreach`. `minutes_late` is how far past `sla_due_at`
+        // the breach was *detected* (`breached_at - sla_due_at`, whole minutes).
+        // order-intake's sweep publishes once per shipment, so this is bounded by
+        // the sweep interval (default 5 min) except after an outage.
+        RuleTrigger::ShipmentDelayed { minutes_late } if topic == topics::SHIPMENT_SLA_BREACHED => {
+            breach_lateness_minutes(data).is_some_and(|late| late >= i64::from(*minutes_late))
+        }
+        // Money actually taken (payments `PaymentIntentCaptured`) for a shipment
+        // or invoice. Authorizations are holds, not receipts, and subscription
+        // captures are the tenant paying the platform: neither is a receipt a
+        // tenant rule should react to.
+        RuleTrigger::PaymentReceived if topic == topics::PAYMENT_INTENT_CAPTURED => data
+            .get("reference_type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| PAYMENT_RECEIVED_REFERENCE_TYPES.contains(&t)),
+        // Fires on exactly the Nth failed delivery attempt of a shipment. The
+        // count is derived by `process_event` (idempotent per event id); a
+        // redelivered event carries no count and therefore does not match.
+        RuleTrigger::DeliveryAttempted { attempts } if topic == topics::DELIVERY_FAILED => {
+            derived_attempt_number(data) == Some(u64::from(*attempts))
+        }
         _ => matches!(
             (trigger, topic),
             (RuleTrigger::DeliveryFailed,        "logisticos.driver.delivery.failed")
@@ -131,11 +152,33 @@ pub fn trigger_matches(trigger: &RuleTrigger, topic: &str, data: &Value) -> bool
             | (RuleTrigger::ShipmentRescheduled, "logisticos.order.shipment.rescheduled")
             | (RuleTrigger::PickupCompleted,     "logisticos.driver.pickup.completed")
             | (RuleTrigger::CodCollected,        "logisticos.payments.cod.collected")
-            | (RuleTrigger::PaymentReceived,     "logisticos.payments.payment.received")
-            | (RuleTrigger::DeliveryAttempted { .. }, "logisticos.driver.delivery.attempted")
             | (RuleTrigger::CampaignTriggered { .. }, "logisticos.marketing.campaign.triggered")
         ),
     }
+}
+
+/// `PaymentIntentCaptured.reference_type` values that mean "a customer paid for
+/// a shipment or invoice".
+const PAYMENT_RECEIVED_REFERENCE_TYPES: &[&str] = &["shipment", "invoice"];
+
+/// Key under which `process_event` stores values it derived itself, so they can
+/// never be confused with (or spoofed by) the publisher's own fields.
+const DERIVED_KEY: &str = "_derived";
+const DERIVED_ATTEMPT_KEY: &str = "delivery_attempt_number";
+
+fn derived_attempt_number(data: &Value) -> Option<u64> {
+    data.get(DERIVED_KEY)?.get(DERIVED_ATTEMPT_KEY)?.as_u64()
+}
+
+/// Whole minutes between `sla_due_at` and `breached_at` in a
+/// `ShipmentSlaBreached` payload; `None` if either is missing or unparsable.
+fn breach_lateness_minutes(data: &Value) -> Option<i64> {
+    let parse = |k: &str| {
+        data.get(k)
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+    };
+    Some((parse("breached_at")? - parse("sla_due_at")?).num_minutes())
 }
 
 fn topic_to_event_type(topic: &str) -> String {
@@ -149,7 +192,12 @@ pub fn build_context(tenant_id: Uuid, topic: &str, payload: &Value) -> RuleConte
     RuleContext {
         tenant_id,
         event_type: topic_to_event_type(topic),
-        shipment_id:  payload["shipment_id"].as_str().and_then(|s| s.parse().ok()),
+        // Payment intents name the shipment as `reference_id` (reference_type "shipment").
+        shipment_id:  payload["shipment_id"].as_str().and_then(|s| s.parse().ok()).or_else(|| {
+            (payload["reference_type"].as_str() == Some("shipment"))
+                .then(|| payload["reference_id"].as_str().and_then(|s| s.parse().ok()))
+                .flatten()
+        }),
         customer_id:  payload["customer_id"].as_str().and_then(|s| s.parse().ok()),
         merchant_id:  payload["merchant_id"].as_str().and_then(|s| s.parse().ok()),
         driver_id:    payload["driver_id"].as_str().and_then(|s| s.parse().ok()),
@@ -345,6 +393,79 @@ pub async fn execute_actions(
     Ok(report)
 }
 
+
+/// A rule that matched an event, passed its conditions and was executed.
+/// The caller persists these to the execution log.
+pub struct FiredRule {
+    pub rule: AutomationRule,
+    pub ctx: RuleContext,
+    pub outcome: &'static str,
+    pub actions_logged: Vec<String>,
+}
+
+/// Everything that happens for one decoded Kafka event: derive per-event
+/// facts, match rules for the tenant, check conditions, execute actions.
+///
+/// `data` is the envelope's `data`; `event_id` is the envelope's `id` (needed to
+/// make attempt counting idempotent under redelivery).
+#[allow(clippy::too_many_arguments)]
+pub async fn process_event(
+    rules: &RuleRepository,
+    executor: &dyn ActionExecutor,
+    seg_checker: &dyn SegmentChecker,
+    attempts: &dyn crate::application::attempts::AttemptStore,
+    tenant_id: Uuid,
+    topic: &str,
+    event_id: Option<Uuid>,
+    data: Value,
+) -> Vec<FiredRule> {
+    let mut data = data;
+    if let Some(obj) = data.as_object_mut() {
+        // Never trust a publisher-supplied value under our reserved key.
+        obj.remove(DERIVED_KEY);
+    }
+
+    // Count on every failed delivery, whether or not a rule is listening yet,
+    // so a rule created later sees the true history.
+    if topic == logisticos_events::topics::DELIVERY_FAILED {
+        let shipment_id = data["shipment_id"].as_str().and_then(|s| s.parse::<Uuid>().ok());
+        match (shipment_id, event_id) {
+            (Some(shipment_id), Some(event_id)) => {
+                match attempts.record_attempt(tenant_id, shipment_id, event_id).await {
+                    Ok(Some(n)) => {
+                        if let Some(obj) = data.as_object_mut() {
+                            obj.insert(DERIVED_KEY.into(), serde_json::json!({ DERIVED_ATTEMPT_KEY: n }));
+                        }
+                    }
+                    Ok(None) => tracing::debug!(%event_id, "Redelivered delivery.failed — attempt already counted"),
+                    Err(e) => tracing::error!(%shipment_id, err = %e, "Could not record delivery attempt"),
+                }
+            }
+            _ => tracing::warn!(topic, "delivery.failed without shipment_id or envelope id — attempt not counted"),
+        }
+    }
+
+    let matching = rules.rules_for_topic(tenant_id, topic, &data).await;
+    let mut ctx = build_context(tenant_id, topic, &data);
+    enrich_segments(&mut ctx, &matching, seg_checker).await;
+
+    let mut fired = Vec::new();
+    for rule in matching {
+        if !rule.conditions_met(&ctx) {
+            continue;
+        }
+        tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic, "Rule fired");
+        let (outcome, actions_logged) = match execute_actions(&rule, &ctx, executor).await {
+            Ok(report) => (report.outcome(), report.logged_actions()),
+            Err(e) => {
+                tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
+                ("error", rule.actions.iter().map(|a| format!("{a:?}")).collect())
+            }
+        };
+        fired.push(FiredRule { rule, ctx: ctx.clone(), outcome, actions_logged });
+    }
+    fired
+}
 
 #[cfg(test)]
 mod tests {

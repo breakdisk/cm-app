@@ -10,9 +10,11 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use logisticos_business_logic::{
+    application::attempts::InMemoryAttemptStore,
     application::services::{
-        ActionExecutor, RuleRepository, build_context, execute_actions,
+        ActionExecutor, RuleRepository, SegmentChecker, build_context, execute_actions, process_event,
     },
+    bootstrap::{decode_event, event_id},
     domain::entities::rule::{
         AutomationRule, RuleAction, RuleCondition, RuleContext, RuleTrigger,
     },
@@ -246,13 +248,228 @@ async fn shipment_created_matches_correct_topic() {
     assert_eq!(rules.len(), 1);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Re-pointed triggers: DeliveryAttempted / PaymentReceived / ShipmentDelayed.
+// Events are built with the real `logisticos_events::Event<T>` envelope and
+// decoded the way the consumer does, so a flat-payload regression fails here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct NoSegments;
+
+#[async_trait]
+impl SegmentChecker for NoSegments {
+    async fn segment_ids_for_customer(&self, _t: Uuid, _c: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(Vec::new())
+    }
+}
+
+fn alert_action(msg: &str) -> Vec<RuleAction> {
+    vec![RuleAction::AlertDispatcher { message: msg.into(), priority: "high".into() }]
+}
+
+/// Serialize a real envelope, then run it through the consumer's decoding and
+/// `process_event`. Returns how many rules fired.
+async fn deliver(
+    repo: &RuleRepository,
+    exec: &MockExecutor,
+    store: &InMemoryAttemptStore,
+    tenant: Uuid,
+    topic: &str,
+    data: serde_json::Value,
+    envelope_id: Option<Uuid>,
+) -> usize {
+    let mut json = serde_json::to_value(logisticos_events::Event::new("test", "evt", tenant, data))
+        .expect("envelope serializes");
+    if let Some(id) = envelope_id {
+        json["id"] = serde_json::json!(id);
+    }
+    let (t, data) = decode_event(None, &json).expect("tenant decodes");
+    assert_eq!(t, tenant);
+    process_event(repo, exec, &NoSegments, store, t, topic, event_id(&json), data).await.len()
+}
+
+fn failed(shipment: Uuid) -> serde_json::Value {
+    serde_json::json!({
+        "task_id": Uuid::new_v4(), "driver_id": Uuid::new_v4(), "shipment_id": shipment,
+        "reason": "CUSTOMER_ABSENT", "failed_at": chrono::Utc::now(),
+    })
+}
+
 #[tokio::test]
-async fn delivery_attempted_matches_correct_topic() {
+async fn delivery_attempted_fires_on_nth_failure_only() {
     let tid = tenant_id();
-    let rule = make_rule(tid, RuleTrigger::DeliveryAttempted { attempts: 2 }, vec![], vec![], 10);
-    let repo = RuleRepository::new(vec![rule]);
-    let rules = repo.rules_for_topic(tid, "logisticos.driver.delivery.attempted", &serde_json::json!({})).await;
-    assert_eq!(rules.len(), 1);
+    let ship = shipment_id();
+    let exec = MockExecutor::default();
+    let store = InMemoryAttemptStore::default();
+    let repo = RuleRepository::new(vec![make_rule(
+        tid, RuleTrigger::DeliveryAttempted { attempts: 2 }, vec![], alert_action("second try"), 10,
+    )]);
+    let t = "logisticos.driver.delivery.failed";
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(ship), None).await, 0);
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(ship), None).await, 1);
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(ship), None).await, 0);
+    assert_eq!(exec.alerts.lock().unwrap().len(), 1);
+    assert_eq!(exec.alerts.lock().unwrap()[0].0, tid);
+}
+
+#[tokio::test]
+async fn delivery_attempted_counts_per_shipment() {
+    let tid = tenant_id();
+    let exec = MockExecutor::default();
+    let store = InMemoryAttemptStore::default();
+    let repo = RuleRepository::new(vec![make_rule(
+        tid, RuleTrigger::DeliveryAttempted { attempts: 2 }, vec![], alert_action("x"), 10,
+    )]);
+    let t = "logisticos.driver.delivery.failed";
+    // One failure each on two different shipments: neither is a second attempt.
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(shipment_id()), None).await, 0);
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(shipment_id()), None).await, 0);
+}
+
+#[tokio::test]
+async fn delivery_attempted_redelivery_is_not_double_counted() {
+    let tid = tenant_id();
+    let ship = shipment_id();
+    let exec = MockExecutor::default();
+    let store = InMemoryAttemptStore::default();
+    let repo = RuleRepository::new(vec![make_rule(
+        tid, RuleTrigger::DeliveryAttempted { attempts: 2 }, vec![], alert_action("x"), 10,
+    )]);
+    let t = "logisticos.driver.delivery.failed";
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(ship), Some(first)).await, 0);
+    // Kafka redelivers the first event: still attempt 1, nothing fires.
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(ship), Some(first)).await, 0);
+    // The genuine second failure is attempt 2, so it fires exactly once...
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(ship), Some(second)).await, 1);
+    // ...and its redelivery does not fire the rule again.
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, failed(ship), Some(second)).await, 0);
+    assert_eq!(exec.alerts.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn delivery_attempted_other_tenants_rule_does_not_match_and_counts_are_separate() {
+    let tenant_a = tenant_id();
+    let tenant_b = tenant_id();
+    let ship = shipment_id();
+    let exec = MockExecutor::default();
+    let store = InMemoryAttemptStore::default();
+    let repo = RuleRepository::new(vec![make_rule(
+        tenant_a, RuleTrigger::DeliveryAttempted { attempts: 1 }, vec![], alert_action("x"), 10,
+    )]);
+    let t = "logisticos.driver.delivery.failed";
+    assert_eq!(deliver(&repo, &exec, &store, tenant_b, t, failed(ship), None).await, 0);
+    assert!(exec.alerts.lock().unwrap().is_empty());
+    // Tenant B's failure did not advance tenant A's count for the same shipment id.
+    assert_eq!(deliver(&repo, &exec, &store, tenant_a, t, failed(ship), None).await, 1);
+}
+
+#[tokio::test]
+async fn publisher_cannot_spoof_the_derived_attempt_count() {
+    let tid = tenant_id();
+    let exec = MockExecutor::default();
+    let store = InMemoryAttemptStore::default();
+    let repo = RuleRepository::new(vec![make_rule(
+        tid, RuleTrigger::DeliveryAttempted { attempts: 5 }, vec![], alert_action("x"), 10,
+    )]);
+    let mut data = failed(shipment_id());
+    data["_derived"] = serde_json::json!({"delivery_attempt_number": 5});
+    let n = deliver(&repo, &exec, &store, tid, "logisticos.driver.delivery.failed", data, None).await;
+    assert_eq!(n, 0);
+}
+
+#[tokio::test]
+async fn payment_received_fires_on_captured_shipment_payment() {
+    let tid = tenant_id();
+    let ship = shipment_id();
+    let exec = MockExecutor::default();
+    let store = InMemoryAttemptStore::default();
+    let repo = RuleRepository::new(vec![make_rule(
+        tid, RuleTrigger::PaymentReceived, vec![], alert_action("paid"), 10,
+    )]);
+    let captured = |reference_type: &str| {
+        serde_json::to_value(logisticos_events::payloads::PaymentIntentCaptured {
+            intent_id: Uuid::new_v4(),
+            purpose: "shipping_fee".into(),
+            reference_type: reference_type.into(),
+            reference_id: ship,
+            amount_cents: 12_500,
+            currency: "AED".into(),
+        }).expect("serializes")
+    };
+    let t = "logisticos.payments.intent.captured";
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, captured("shipment"), None).await, 1);
+    // The tenant paying the platform (subscription) is not a receipt for a tenant rule.
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, captured("subscription"), None).await, 0);
+    // A hold is not money received.
+    let auth = "logisticos.payments.intent.authorized";
+    assert_eq!(deliver(&repo, &exec, &store, tid, auth, captured("shipment"), None).await, 0);
+    // Another tenant's capture does not fire this tenant's rule.
+    assert_eq!(deliver(&repo, &exec, &store, tenant_id(), t, captured("shipment"), None).await, 0);
+    assert_eq!(exec.alerts.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn payment_received_context_carries_the_shipment() {
+    let ship = shipment_id();
+    let ctx = build_context(
+        tenant_id(),
+        "logisticos.payments.intent.captured",
+        &serde_json::json!({"reference_type": "shipment", "reference_id": ship}),
+    );
+    assert_eq!(ctx.shipment_id, Some(ship));
+}
+
+#[tokio::test]
+async fn shipment_delayed_fires_from_sla_breach_lateness() {
+    let tid = tenant_id();
+    let exec = MockExecutor::default();
+    let store = InMemoryAttemptStore::default();
+    let repo = RuleRepository::new(vec![
+        make_rule(tid, RuleTrigger::ShipmentDelayed { minutes_late: 3 }, vec![], alert_action("late"), 10),
+    ]);
+    let due = chrono::Utc::now() - chrono::Duration::minutes(10);
+    let breach = |late_min: i64| {
+        serde_json::to_value(logisticos_events::payloads::ShipmentSlaBreached {
+            shipment_id: Uuid::new_v4(),
+            merchant_id: Uuid::new_v4(),
+            service_type: "standard".into(),
+            sla_type: "delivery".into(),
+            sla_due_at: due,
+            breached_at: due + chrono::Duration::minutes(late_min),
+        }).expect("serializes")
+    };
+    let t = "logisticos.order.shipment.sla_breached";
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, breach(2), None).await, 0);
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, breach(3), None).await, 1);
+    assert_eq!(deliver(&repo, &exec, &store, tid, t, breach(9), None).await, 1);
+    // Wrong tenant: no match.
+    assert_eq!(deliver(&repo, &exec, &store, tenant_id(), t, breach(9), None).await, 0);
+    assert_eq!(exec.alerts.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn shipment_delayed_without_timestamps_never_matches() {
+    let tid = tenant_id();
+    let repo = RuleRepository::new(vec![
+        make_rule(tid, RuleTrigger::ShipmentDelayed { minutes_late: 0 }, vec![], vec![], 10),
+    ]);
+    let t = "logisticos.order.shipment.sla_breached";
+    assert!(repo.rules_for_topic(tid, t, &serde_json::json!({})).await.is_empty());
+    assert!(repo.rules_for_topic(tid, t, &serde_json::json!({"breached_at": "garbage", "sla_due_at": "garbage"})).await.is_empty());
+}
+
+#[tokio::test]
+async fn retired_topics_no_longer_match() {
+    let tid = tenant_id();
+    let repo = RuleRepository::new(vec![
+        make_rule(tid, RuleTrigger::DeliveryAttempted { attempts: 1 }, vec![], vec![], 10),
+        make_rule(tid, RuleTrigger::PaymentReceived, vec![], vec![], 10),
+    ]);
+    for t in ["logisticos.driver.delivery.attempted", "logisticos.payments.payment.received"] {
+        assert!(repo.rules_for_topic(tid, t, &serde_json::json!({})).await.is_empty(), "{t}");
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
