@@ -1,5 +1,5 @@
 pub mod booking_repo;
-pub use booking_repo::{CarrierBookingRecord, PgCarrierBookingRepository};
+pub use booking_repo::{CarrierBookingRecord, CarrierBookingStore, PgCarrierBookingRepository};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -460,6 +460,13 @@ const LISTING_COLS: &str =
      idle_from, idle_until, status, carrier_response_window_mins, \
      bookings_today, revenue_today_cents, created_at, updated_at";
 
+/// SQL twin of `MarketplaceBooking::is_offered_to_carrier`: an online booking
+/// whose hold has not landed is not yet an offer. Applied before `LIMIT` so a
+/// page is never short and its `COUNT` matches what the list can reach. Keep
+/// the two in step.
+const OFFERED_TO_CARRIER: &str =
+    "(payment_method <> 'online' OR payment_status <> 'pending')";
+
 const BOOKING_COLS: &str =
     "id, tenant_id, listing_id, carrier_id, shipment_id, awb, consumer_name, \
      consumer_phone, pickup_label, dropoff_label, cargo_weight_kg, cargo_volume_m3, \
@@ -529,6 +536,13 @@ impl MarketplaceRepository for PgMarketplaceRepository {
             ),
         ).bind(tenant_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
         rows.into_iter().map(VehicleListing::try_from).collect()
+    }
+
+    async fn count_listings_by_tenant(&self, tenant_id: Uuid) -> anyhow::Result<i64> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM carrier.vehicle_listings WHERE tenant_id = $1",
+        ).bind(tenant_id).fetch_one(&self.pool).await?;
+        Ok(n)
     }
 
     async fn update_listing(&self, l: &VehicleListing) -> anyhow::Result<()> {
@@ -610,10 +624,19 @@ impl MarketplaceRepository for PgMarketplaceRepository {
     ) -> anyhow::Result<Vec<MarketplaceBooking>> {
         let rows = sqlx::query_as::<_, MarketplaceBookingRow>(
             &format!(
-                "SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings                  WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+                "SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings                  WHERE tenant_id = $1 AND {OFFERED_TO_CARRIER}                  ORDER BY created_at DESC LIMIT $2 OFFSET $3"
             ),
         ).bind(tenant_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
         rows.into_iter().map(MarketplaceBooking::try_from).collect()
+    }
+
+    async fn count_bookings_by_tenant(&self, tenant_id: Uuid) -> anyhow::Result<i64> {
+        let n: i64 = sqlx::query_scalar(
+            &format!(
+                "SELECT COUNT(*) FROM carrier.marketplace_bookings                  WHERE tenant_id = $1 AND {OFFERED_TO_CARRIER}"
+            ),
+        ).bind(tenant_id).fetch_one(&self.pool).await?;
+        Ok(n)
     }
 
     async fn save_booking(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {

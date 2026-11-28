@@ -77,6 +77,9 @@ pub trait MarketplaceRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<VehicleListing>>;
+    /// Total listings in a tenant -- the `total` that makes a paged
+    /// `list_listings_by_tenant` honest about what it left out.
+    async fn count_listings_by_tenant(&self, tenant_id: Uuid) -> anyhow::Result<i64>;
     async fn update_listing(&self, listing: &VehicleListing) -> anyhow::Result<()>;
     async fn delete_listing(&self, id: Uuid) -> anyhow::Result<bool>;
 
@@ -136,6 +139,10 @@ pub trait MarketplaceRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<MarketplaceBooking>>;
+    /// Total bookings `list_bookings_by_tenant` can return for the tenant.
+    /// Counts the same set the list pages over: bookings the carrier has not
+    /// been offered yet (an online hold still pending) are in neither.
+    async fn count_bookings_by_tenant(&self, tenant_id: Uuid) -> anyhow::Result<i64>;
     async fn save_booking(&self, booking: &MarketplaceBooking) -> anyhow::Result<()>;
 
     /// Compare-and-set: writes `booking` only if the stored row is still at

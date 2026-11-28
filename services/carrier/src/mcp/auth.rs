@@ -20,6 +20,7 @@ pub fn extract_context(headers: &HeaderMap, jwt: &Arc<JwtService>) -> Result<Mcp
         tenant_id:   claims.tenant_id,
         actor_uid:   claims.user_id,
         permissions: claims.permissions,
+        partner_id:  claims.pid,
         trace_id:    uuid::Uuid::new_v4().to_string(),
     })
 }
