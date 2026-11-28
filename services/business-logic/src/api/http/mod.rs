@@ -22,7 +22,9 @@ use logisticos_errors::AppError;
 
 use crate::{
     application::services::RuleRepository,
-    domain::entities::rule::{AutomationRule, RuleAction, RuleCondition, RuleTrigger},
+    domain::entities::rule::{
+        AutomationRule, RuleAction, RuleCondition, RuleTrigger, SHIPMENT_DELAYED_MAX_MINUTES,
+    },
     infrastructure::db::PgRuleRepository,
 };
 
@@ -118,6 +120,13 @@ struct CreateRuleBody {
 
 /// Refuse triggers nothing can fire, so a rule that can never run is never saved.
 pub fn ensure_trigger_available(trigger: &RuleTrigger) -> Result<(), AppError> {
+    if let RuleTrigger::ShipmentDelayed { minutes_late } = trigger {
+        if *minutes_late > SHIPMENT_DELAYED_MAX_MINUTES {
+            return Err(AppError::BusinessRule(format!(
+                "ShipmentDelayed.minutes_late = {minutes_late} could never fire: SLA breaches are detected by a periodic sweep and reported once, at most about {SHIPMENT_DELAYED_MAX_MINUTES} minutes after the deadline. Use a threshold of {SHIPMENT_DELAYED_MAX_MINUTES} or less, or an SlaBreach rule."
+            )));
+        }
+    }
     if trigger.is_available() {
         Ok(())
     } else {
@@ -563,19 +572,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unavailable_triggers_are_refused_by_name() {
+    fn unfireable_shipment_delay_threshold_is_refused_by_name() {
+        let t = RuleTrigger::ShipmentDelayed { minutes_late: SHIPMENT_DELAYED_MAX_MINUTES + 1 };
+        match ensure_trigger_available(&t) {
+            Err(AppError::BusinessRule(msg)) => {
+                assert!(msg.contains("ShipmentDelayed"), "{msg}");
+                assert!(msg.contains("could never fire"), "{msg}");
+            }
+            other => panic!("expected BusinessRule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newly_wired_triggers_are_accepted() {
         for t in [
             RuleTrigger::DeliveryAttempted { attempts: 3 },
             RuleTrigger::PaymentReceived,
-            RuleTrigger::ShipmentDelayed { minutes_late: 15 },
+            RuleTrigger::ShipmentDelayed { minutes_late: SHIPMENT_DELAYED_MAX_MINUTES },
         ] {
-            match ensure_trigger_available(&t) {
-                Err(AppError::BusinessRule(msg)) => {
-                    assert!(msg.contains(&t.name()), "{msg}");
-                    assert!(msg.contains("not yet available"), "{msg}");
-                }
-                other => panic!("expected BusinessRule for {t:?}, got {other:?}"),
-            }
+            assert!(ensure_trigger_available(&t).is_ok(), "{t:?}");
         }
     }
 

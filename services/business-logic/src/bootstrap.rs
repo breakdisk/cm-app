@@ -12,12 +12,13 @@ use uuid::Uuid;
 
 use crate::{
     api::http::{observability_router, router, AppState},
+    application::attempts::AttemptStore,
     application::services::{
-        build_context, enrich_segments, execute_actions, ActionExecutor, RuleRepository, SegmentChecker,
+        process_event,ActionExecutor, RuleRepository, SegmentChecker,
     },
     config::Config,
     domain::entities::rule::failed_delivery_rule,
-    infrastructure::db::PgRuleRepository,
+    infrastructure::db::{PgAttemptStore, PgRuleRepository},
 };
 
 // ---------------------------------------------------------------------------
@@ -265,6 +266,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     logisticos_common::migrations::run(&pool, "business_logic", &sqlx::migrate!("./migrations")).await?;
 
+    let attempts: Arc<dyn AttemptStore> = Arc::new(PgAttemptStore::new(pool.clone()));
     let pg_repo = Arc::new(PgRuleRepository::new(pool));
 
     // Seed in-memory engine from DB + platform defaults.
@@ -315,10 +317,10 @@ pub async fn run() -> anyhow::Result<()> {
         "logisticos.order.shipment.rescheduled",
         "logisticos.driver.delivery.failed",
         "logisticos.driver.delivery.completed",
-        "logisticos.driver.delivery.attempted",
         "logisticos.driver.pickup.completed",
         "logisticos.payments.cod.collected",
-        "logisticos.payments.payment.received",
+        // PaymentReceived trigger: money actually taken (published by payments).
+        "logisticos.payments.intent.captured",
         "logisticos.marketing.campaign.triggered",
         // Threshold signals: HubCapacityExceeded, PaymentOverdue, SlaBreach.
         "logisticos.hub.load.changed",
@@ -348,7 +350,7 @@ pub async fn run() -> anyhow::Result<()> {
         result = axum::serve(listener, app) => {
             result?;
         }
-        _ = run_consumer(Arc::clone(&consumer), Arc::clone(&rule_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&pg_repo), Arc::clone(&seg_checker)) => {}
+        _ = run_consumer(Arc::clone(&consumer), Arc::clone(&rule_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&pg_repo), Arc::clone(&seg_checker), attempts) => {}
         _ = run_inactive_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&seg_checker), cdp_url) => {}
         _ = run_idle_driver_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, seg_checker, driver_ops_url, idle_poll_secs) => {}
     }
@@ -362,6 +364,7 @@ async fn run_consumer(
     executor: Arc<dyn ActionExecutor>,
     pg_repo: Arc<PgRuleRepository>,
     seg_checker: Arc<dyn SegmentChecker>,
+    attempts: Arc<dyn AttemptStore>,
 ) {
     loop {
         match consumer.recv().await {
@@ -378,34 +381,28 @@ async fn run_consumer(
                                 tracing::warn!(topic = %topic, "Event has no determinable tenant — skipped");
                             }
                             Some((tenant_id, data)) => {
-                                let matching_rules = rules.rules_for_topic(tenant_id, &topic, &data).await;
-                                let mut ctx = build_context(tenant_id, &topic, &data);
-                                enrich_segments(&mut ctx, &matching_rules, seg_checker.as_ref()).await;
-
-                                for rule in &matching_rules {
-                                    if rule.conditions_met(&ctx) {
-                                        tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
-
-                                        let (outcome, actions_log) = match execute_actions(rule, &ctx, executor.as_ref()).await {
-                                            Ok(report) => (report.outcome(), report.logged_actions()),
-                                            Err(e) => {
-                                                tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");
-                                                ("error", rule.actions.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>())
-                                            }
-                                        };
-
-                                        pg_repo.log_execution(
-                                            rule.id,
-                                            ctx.tenant_id,
-                                            &topic,
-                                            ctx.shipment_id,
-                                            true,
-                                            &actions_log,
-                                            outcome,
-                                            None,
-                                            chrono::Utc::now(),
-                                        ).await.ok();
-                                    }
+                                let fired = process_event(
+                                    rules.as_ref(),
+                                    executor.as_ref(),
+                                    seg_checker.as_ref(),
+                                    attempts.as_ref(),
+                                    tenant_id,
+                                    &topic,
+                                    event_id(&json),
+                                    data,
+                                ).await;
+                                for f in &fired {
+                                    pg_repo.log_execution(
+                                        f.rule.id,
+                                        f.ctx.tenant_id,
+                                        &topic,
+                                        f.ctx.shipment_id,
+                                        true,
+                                        &f.actions_logged,
+                                        f.outcome,
+                                        None,
+                                        chrono::Utc::now(),
+                                    ).await.ok();
                                 }
                             }
                         }
@@ -443,6 +440,13 @@ pub fn decode_event(headers_tenant: Option<Uuid>, payload: &Value) -> Option<(Uu
     }
 
     headers_tenant.or(body_tenant).map(|tenant| (tenant, payload.clone()))
+}
+
+/// The envelope's event id (`Event::id`), used to dedupe redeliveries. Only
+/// meaningful for the envelope form; flat payloads have none.
+pub fn event_id(payload: &Value) -> Option<Uuid> {
+    payload.get("data").filter(|d| d.is_object())?;
+    payload.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok())
 }
 
 fn extract_tenant_id(msg: &rdkafka::message::BorrowedMessage<'_>) -> Option<Uuid> {

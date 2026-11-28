@@ -303,3 +303,55 @@ pub struct RuleExecutionRow {
     pub error_message: Option<String>,
     pub fired_at: DateTime<Utc>,
 }
+
+/// Postgres-backed `AttemptStore`: `business_logic.delivery_attempts`.
+pub struct PgAttemptStore {
+    pool: PgPool,
+}
+
+impl PgAttemptStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::application::attempts::AttemptStore for PgAttemptStore {
+    async fn record_attempt(
+        &self,
+        tenant_id: Uuid,
+        shipment_id: Uuid,
+        event_id: Uuid,
+    ) -> anyhow::Result<Option<u32>> {
+        let mut tx = self.pool.begin().await?;
+        // Serialise per shipment: two replicas handling two failures of the
+        // same shipment must not both read the same count.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("{tenant_id}:{shipment_id}"))
+            .execute(&mut *tx)
+            .await?;
+        let inserted = sqlx::query(
+            "INSERT INTO business_logic.delivery_attempts (tenant_id, event_id, shipment_id) \
+             VALUES ($1, $2, $3) ON CONFLICT (tenant_id, event_id) DO NOTHING",
+        )
+        .bind(tenant_id)
+        .bind(event_id)
+        .bind(shipment_id)
+        .execute(&mut *tx)
+        .await?;
+        if inserted.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM business_logic.delivery_attempts \
+             WHERE tenant_id = $1 AND shipment_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(shipment_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(u32::try_from(count).unwrap_or(u32::MAX)))
+    }
+}
