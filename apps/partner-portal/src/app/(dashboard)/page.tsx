@@ -28,8 +28,9 @@ import { authFetch } from "@/lib/auth/auth-fetch";
 import { carriersApi, fmtPhp, carrierIdOf, type ZoneSlaRow, type SlaRecord } from "@/lib/api/carriers";
 import { dailyOnTimeRate } from "@/lib/sla-trend";
 
-const DRIVER_OPS_URL  = process.env.NEXT_PUBLIC_DRIVER_OPS_URL  ?? "http://localhost:8006";
-const MARKETPLACE_URL = process.env.NEXT_PUBLIC_MARKETPLACE_URL ?? "http://localhost:8016";
+// All backends go through the gateway (NEXT_PUBLIC_API_URL is the only build arg).
+const DRIVER_OPS_URL  = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const MARKETPLACE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function daysAgoStr(n: number) {

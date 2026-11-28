@@ -27,7 +27,8 @@ import { dailyOnTimeRate, totalsFromZones, type TrendPoint } from "@/lib/sla-tre
 // tenant-wide analytics endpoints, which count every carrier's and merchant's
 // shipments, and which a partner token is no longer allowed to call.
 
-const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL   ?? "http://localhost:8010";
+// Gateway routes /v1/carriers to the carrier service; NEXT_PUBLIC_CARRIER_URL was never a build arg.
+const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function todayStr()     { return new Date().toISOString().slice(0, 10); }
 function daysAgoStr(n: number) {
