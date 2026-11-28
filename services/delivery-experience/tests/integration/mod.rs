@@ -52,10 +52,10 @@ use logisticos_auth::{claims::Claims, jwt::JwtService};
 use logisticos_types::TenantId;
 
 use logisticos_delivery_experience::{
-    application::services::TrackingService,
+    application::services::{EventPublisher, TrackingService},
     domain::{
         entities::{TrackingRecord, TrackingStatus},
-        repositories::TrackingRepository,
+        repositories::{NewFeedback, TrackingRepository},
     },
     infrastructure::external::PodClient,
     AppState,
@@ -128,6 +128,9 @@ struct MockTrackingRepo {
 
 #[derive(Clone, Debug)]
 struct FeedbackRow {
+    tenant_id: Uuid,
+    shipment_id: Uuid,
+    driver_id: Option<Uuid>,
     tracking_number: String,
     rating: i16,
     tags: Vec<String>,
@@ -220,20 +223,22 @@ impl TrackingRepository for MockTrackingRepo {
         Ok(())
     }
 
-    async fn save_feedback(
-        &self,
-        tracking_number: &str,
-        rating: i16,
-        tags: &[String],
-        comments: Option<&str>,
-    ) -> anyhow::Result<()> {
-        self.feedback.lock().unwrap().push(FeedbackRow {
-            tracking_number: tracking_number.to_owned(),
-            rating,
-            tags: tags.to_vec(),
-            comments: comments.map(str::to_owned),
+    async fn save_feedback(&self, f: &NewFeedback) -> anyhow::Result<bool> {
+        let mut rows = self.feedback.lock().unwrap();
+        // Mirrors the partial unique index on shipment_id.
+        if rows.iter().any(|r| r.shipment_id == f.shipment_id) {
+            return Ok(false);
+        }
+        rows.push(FeedbackRow {
+            tenant_id: f.tenant_id,
+            shipment_id: f.shipment_id,
+            driver_id: f.driver_id,
+            tracking_number: f.tracking_number.clone(),
+            rating: f.rating,
+            tags: f.tags.clone(),
+            comments: f.comments.clone(),
         });
-        Ok(())
+        Ok(true)
     }
 
     async fn confirm_customer_receipt(&self, tracking_number: &str) -> anyhow::Result<()> {
@@ -307,6 +312,33 @@ fn make_out_for_delivery_record(tn: &str, tenant_id: Uuid) -> TrackingRecord {
 // Test app builders
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Records every publish; optionally fails them all.
+#[derive(Default)]
+struct RecordingPublisher {
+    published: Mutex<Vec<(String, String, String)>>,
+    fail: bool,
+}
+
+impl EventPublisher for RecordingPublisher {
+    fn publish<'a>(
+        &'a self,
+        topic: &'a str,
+        key: &'a str,
+        payload: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            if self.fail {
+                return Err(anyhow::anyhow!("broker down"));
+            }
+            self.published
+                .lock()
+                .unwrap()
+                .push((topic.to_owned(), key.to_owned(), payload.to_owned()));
+            Ok(())
+        })
+    }
+}
+
 struct TestApp {
     router: Router,
     repo: Arc<MockTrackingRepo>,
@@ -316,10 +348,20 @@ struct TestApp {
 
 impl TestApp {
     fn build() -> Self {
+        Self::build_inner(None)
+    }
+
+    fn build_with_publisher(publisher: Arc<RecordingPublisher>) -> Self {
+        Self::build_inner(Some(publisher))
+    }
+
+    fn build_inner(publisher: Option<Arc<RecordingPublisher>>) -> Self {
         let repo = Arc::new(MockTrackingRepo::new());
-        let tracking_svc = Arc::new(TrackingService::new(
-            repo.clone() as Arc<dyn TrackingRepository>,
-        ));
+        let mut svc = TrackingService::new(repo.clone() as Arc<dyn TrackingRepository>);
+        if let Some(p) = publisher {
+            svc = svc.with_publisher(p as Arc<dyn EventPublisher>);
+        }
+        let tracking_svc = Arc::new(svc);
         // Nothing listens on port 1; `get_evidence` is best-effort and degrades
         // to "no evidence" on a refused connection, which is what these tests
         // want (the pod service is out of scope).
@@ -1032,9 +1074,8 @@ mod reschedule_tests {
                 ),
             )
             .await;
-            // The handler maps every non-NotFound service error to 500; the
-            // validation message distinguishes it.
-            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "days={days}");
+            // Invalid input is a client error, not a 500.
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "days={days}");
             assert!(body["error"].as_str().unwrap_or_default().contains("Preferred date"), "days={days}");
         }
         assert!(app.repo.reschedules.lock().unwrap().is_empty());
@@ -1141,6 +1182,190 @@ mod feedback_tests {
         let rows = app.repo.feedback.lock().unwrap();
         assert!(rows[0].comments.is_none());
         assert!(rows[0].tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn feedback_unknown_tracking_number_is_404_and_writes_nothing() {
+        let app = TestApp::build();
+
+        let (status, _) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-NOSUCH-FB/feedback", &json!({ "rating": 5 })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(app.repo.feedback.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn feedback_row_carries_tenant_shipment_and_driver_from_the_record() {
+        let app = TestApp::build();
+        let mut record = make_out_for_delivery_record("LGS-FB-ATTR", fixed_tenant_id());
+        let driver_id = record.driver_id;
+        record.mark_delivered(Uuid::new_v4(), "Maria".into(), Utc::now());
+        let shipment_id = record.shipment_id;
+        app.seed(record);
+
+        let (status, _) = send(
+            app.router.clone(),
+            post_req_json("/v1/tracking/LGS-FB-ATTR/feedback", &json!({ "rating": 5 })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let rows = app.repo.feedback.lock().unwrap();
+        assert_eq!(rows[0].tenant_id, fixed_tenant_id());
+        assert_eq!(rows[0].shipment_id, shipment_id);
+        assert!(driver_id.is_some());
+        assert_eq!(rows[0].driver_id, driver_id);
+    }
+
+    #[tokio::test]
+    async fn feedback_before_delivery_is_refused_and_writes_nothing() {
+        let app = TestApp::build();
+        app.seed(make_tracking_record("LGS-FB-EARLY", fixed_tenant_id()));
+
+        let (status, _) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-EARLY/feedback", &json!({ "rating": 5 })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(app.repo.feedback.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn second_feedback_for_the_same_shipment_is_409_and_keeps_the_first() {
+        let app = TestApp::build();
+        app.seed(make_delivered_record("LGS-FB-DUP", fixed_tenant_id()));
+
+        let (first, _) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-DUP/feedback", &json!({ "rating": 5 })),
+        )
+        .await;
+        let (second, _) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-DUP/feedback", &json!({ "rating": 1 })),
+        )
+        .await;
+
+        assert_eq!(first, StatusCode::OK);
+        assert_eq!(second, StatusCode::CONFLICT);
+        let rows = app.repo.feedback.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rating, 5);
+    }
+
+    #[tokio::test]
+    async fn feedback_oversized_comment_or_tags_are_422_and_store_nothing() {
+        let app = TestApp::build();
+        app.seed(make_delivered_record("LGS-FB-BIG", fixed_tenant_id()));
+
+        for body in [
+            json!({ "rating": 4, "comments": "x".repeat(1001) }),
+            json!({ "rating": 4, "tags": vec!["t"; 11] }),
+            json!({ "rating": 4, "tags": ["y".repeat(51)] }),
+        ] {
+            let (status, _) = send(
+                app.router.clone(),
+                post_req_json("/track/LGS-FB-BIG/feedback", &body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        assert!(app.repo.feedback.lock().unwrap().is_empty());
+    }
+
+    fn delivered_with_driver(tn: &str) -> (TrackingRecord, Uuid, Uuid) {
+        let mut record = make_out_for_delivery_record(tn, fixed_tenant_id());
+        let driver_id = record.driver_id.expect("driver assigned");
+        record.mark_delivered(Uuid::new_v4(), "Maria".into(), Utc::now());
+        let shipment_id = record.shipment_id;
+        (record, driver_id, shipment_id)
+    }
+
+    #[tokio::test]
+    async fn feedback_publishes_event_with_tenant_shipment_driver_and_rating() {
+        let publisher = Arc::new(RecordingPublisher::default());
+        let app = TestApp::build_with_publisher(publisher.clone());
+        let (record, driver_id, shipment_id) = delivered_with_driver("LGS-FB-EVT");
+        app.seed(record);
+
+        let (status, _) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-EVT/feedback", &json!({ "rating": 4 })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let sent = publisher.published.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "logisticos.delivery.feedback.submitted");
+        let evt: Value = serde_json::from_str(&sent[0].2).unwrap();
+        assert_eq!(evt["tenant_id"], json!(fixed_tenant_id()));
+        assert_eq!(evt["data"]["shipment_id"], json!(shipment_id));
+        assert_eq!(evt["data"]["driver_id"], json!(driver_id));
+        assert_eq!(evt["data"]["rating"], json!(4));
+        assert!(evt["id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn feedback_without_a_driver_publishes_nothing() {
+        let publisher = Arc::new(RecordingPublisher::default());
+        let app = TestApp::build_with_publisher(publisher.clone());
+        // make_delivered_record never assigned a driver.
+        app.seed(make_delivered_record("LGS-FB-NODRV", fixed_tenant_id()));
+
+        let (status, _) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-NODRV/feedback", &json!({ "rating": 5 })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(publisher.published.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_feedback_does_not_publish_a_second_event() {
+        let publisher = Arc::new(RecordingPublisher::default());
+        let app = TestApp::build_with_publisher(publisher.clone());
+        let (record, _, _) = delivered_with_driver("LGS-FB-EVT2");
+        app.seed(record);
+
+        for rating in [5, 1] {
+            send(
+                app.router.clone(),
+                post_req_json("/track/LGS-FB-EVT2/feedback", &json!({ "rating": rating })),
+            )
+            .await;
+        }
+
+        let sent = publisher.published.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let evt: Value = serde_json::from_str(&sent[0].2).unwrap();
+        assert_eq!(evt["data"]["rating"], json!(5));
+    }
+
+    #[tokio::test]
+    async fn feedback_succeeds_when_the_publish_fails() {
+        let publisher = Arc::new(RecordingPublisher { fail: true, ..Default::default() });
+        let app = TestApp::build_with_publisher(publisher);
+        let (record, _, _) = delivered_with_driver("LGS-FB-EVT3");
+        app.seed(record);
+
+        let (status, body) = send(
+            app.router.clone(),
+            post_req_json("/track/LGS-FB-EVT3/feedback", &json!({ "rating": 3 })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["submitted"], json!(true));
+        assert_eq!(app.repo.feedback.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

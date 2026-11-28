@@ -667,6 +667,18 @@ pub struct JobDropped {
     pub dropped_at:   chrono::DateTime<chrono::Utc>,
 }
 
+/// A customer's rating of a delivery (`logisticos.delivery.feedback.submitted`).
+/// Published by delivery-experience once per shipment, only when a driver was
+/// assigned. `driver_id` is the dispatch/driver-ops driver id (the identity
+/// user id, equal to `driver_ops.drivers.id`). Tenant is on the envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryFeedbackSubmitted {
+    pub shipment_id: Uuid,
+    pub driver_id:   Uuid,
+    /// 1..=5.
+    pub rating:      i16,
+}
+
 /// Emitted by delivery-experience when a customer taps "Email Receipt" on the
 /// ReceiptScreen / CollectionScreen. Engagement consumes this topic and sends
 /// a single email to `recipient_email` using the shipment_confirmation
@@ -1140,4 +1152,21 @@ pub struct ShipmentSlaBreached {
     pub sla_type: String,
     pub sla_due_at: DateTime<Utc>,
     pub breached_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod delivery_feedback_submitted_tests {
+    use super::*;
+
+    #[test]
+    fn roundtrips_with_envelope() {
+        let tenant = Uuid::new_v4();
+        let p = DeliveryFeedbackSubmitted { shipment_id: Uuid::new_v4(), driver_id: Uuid::new_v4(), rating: 5 };
+        let evt = crate::envelope::Event::new("logisticos/delivery-experience", "delivery.feedback.submitted", tenant, p.clone());
+        let json = serde_json::to_string(&evt).expect("serializes");
+        let back: crate::envelope::Event<DeliveryFeedbackSubmitted> = serde_json::from_str(&json).expect("parses");
+        assert_eq!(back.tenant_id, tenant);
+        assert_eq!(back.data.driver_id, p.driver_id);
+        assert_eq!(back.data.rating, 5);
+    }
 }

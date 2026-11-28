@@ -6,3 +6,5 @@ pub mod offer_consumer;
 pub use offer_consumer::start_offer_consumer;
 pub mod shipment_cancelled_consumer;
 pub use shipment_cancelled_consumer::start_shipment_cancelled_consumer;
+pub mod feedback_consumer;
+pub use feedback_consumer::start_feedback_consumer;

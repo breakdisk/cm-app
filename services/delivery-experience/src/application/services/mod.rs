@@ -4,9 +4,13 @@ use uuid::Uuid;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
+const FEEDBACK_MAX_TAGS: usize = 10;
+const FEEDBACK_MAX_TAG_CHARS: usize = 50;
+const FEEDBACK_MAX_COMMENT_CHARS: usize = 1000;
+
 use crate::domain::{
-    entities::TrackingRecord,
-    repositories::TrackingRepository,
+    entities::{TrackingRecord, TrackingStatus},
+    repositories::{NewFeedback, TrackingRepository},
     value_objects::{may_read, Reader},
 };
 
@@ -237,6 +241,12 @@ impl TrackingService {
         Ok(())
     }
 
+    /// Public, unauthenticated feedback for a delivered shipment.
+    ///
+    /// The tracking number must resolve to a real record; tenant, shipment and
+    /// driver are taken from it. Only one feedback per shipment is accepted
+    /// (`Conflict`): on an unauthenticated route an upsert would let anyone
+    /// holding the tracking number rewrite the customer's rating.
     pub async fn submit_feedback(
         &self,
         tracking_number: &str,
@@ -244,13 +254,87 @@ impl TrackingService {
         tags: Vec<String>,
         comments: Option<String>,
     ) -> AppResult<()> {
-        // Validate rating
         if !(1..=5).contains(&rating) {
             return Err(AppError::Validation("Rating must be between 1 and 5".to_owned()));
         }
-        self.repo
-            .save_feedback(tracking_number, rating, &tags, comments.as_deref())
+        if tags.len() > FEEDBACK_MAX_TAGS || tags.iter().any(|t| t.chars().count() > FEEDBACK_MAX_TAG_CHARS) {
+            return Err(AppError::Validation(format!(
+                "At most {FEEDBACK_MAX_TAGS} tags of {FEEDBACK_MAX_TAG_CHARS} characters each"
+            )));
+        }
+        if comments.as_deref().is_some_and(|c| c.chars().count() > FEEDBACK_MAX_COMMENT_CHARS) {
+            return Err(AppError::Validation(format!(
+                "Comments cannot exceed {FEEDBACK_MAX_COMMENT_CHARS} characters"
+            )));
+        }
+
+        let record = self.repo
+            .find_by_tracking_number(tracking_number)
             .await
-            .map_err(AppError::Internal)
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "tracking",
+                id: tracking_number.to_owned(),
+            })?;
+
+        if !matches!(
+            record.current_status,
+            TrackingStatus::Delivered | TrackingStatus::DeliveryAttempted | TrackingStatus::DeliveryFailed
+        ) {
+            return Err(AppError::BusinessRule(
+                "Feedback can only be left once a delivery has been attempted".to_owned(),
+            ));
+        }
+
+        let saved = self.repo
+            .save_feedback(&NewFeedback {
+                tenant_id:       record.tenant_id.inner(),
+                shipment_id:     record.shipment_id,
+                driver_id:       record.driver_id,
+                tracking_number: record.tracking_number.clone(),
+                rating,
+                tags,
+                comments,
+            })
+            .await
+            .map_err(AppError::Internal)?;
+        if !saved {
+            return Err(AppError::Conflict("Feedback has already been submitted for this shipment".to_owned()));
+        }
+        if let Some(driver_id) = record.driver_id {
+            self.publish_feedback_submitted(record.tenant_id.inner(), record.shipment_id, driver_id, rating).await;
+        }
+        Ok(())
+    }
+
+    /// Tell driver-ops a driver was rated. Best-effort: the feedback row is
+    /// already stored, so a broker failure is logged and never fails the
+    /// customer's request.
+    async fn publish_feedback_submitted(&self, tenant_id: Uuid, shipment_id: Uuid, driver_id: Uuid, rating: i16) {
+        use logisticos_events::{envelope::Event, payloads::DeliveryFeedbackSubmitted, topics};
+        let Some(publisher) = &self.publisher else {
+            tracing::warn!(%shipment_id, "submit_feedback: no publisher configured — driver rating not propagated");
+            return;
+        };
+        let event = Event::new(
+            "logisticos/delivery-experience",
+            "delivery.feedback.submitted",
+            tenant_id,
+            DeliveryFeedbackSubmitted { shipment_id, driver_id, rating },
+        );
+        let json = match serde_json::to_string(&event) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(%shipment_id, err = %e, "submit_feedback: event serialize failed");
+                return;
+            }
+        };
+        if let Err(e) = publisher
+            .publish(topics::DELIVERY_FEEDBACK_SUBMITTED, &tenant_id.to_string(), &json)
+            .await
+        {
+            tracing::warn!(%shipment_id, %driver_id, err = %e,
+                "submit_feedback: Kafka publish failed — feedback stored, driver rating not updated");
+        }
     }
 }

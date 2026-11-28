@@ -15,6 +15,8 @@ use logisticos_auth::jwt::JwtService;
 pub struct AppState {
     pub campaign_svc:  Arc<CampaignService>,
     pub ab_test_repo:  Arc<PgAbTestRepository>,
+    /// Read-only A/B lookup used by `activate` (same repo in production).
+    pub ab_test_lookup: Arc<dyn domain::repositories::AbTestLookup>,
     pub journey_repo:  Arc<PgJourneyRepository>,
     pub jwt:           Arc<JwtService>,
     /// Optional CDP client for audience resolution.

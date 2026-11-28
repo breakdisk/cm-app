@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use uuid::Uuid;
 use logisticos_types::TenantId;
 use crate::domain::entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus, WeeklyStat};
 
@@ -16,4 +17,12 @@ pub trait CampaignRepository: Send + Sync {
     async fn weekly_stats(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<WeeklyStat>>;
     /// Return up to `limit` scheduled campaigns whose `scheduled_at <= NOW()`.
     async fn find_campaigns_due(&self, limit: i64) -> anyhow::Result<Vec<Campaign>>;
+}
+
+/// The one A/B-test read `activate` depends on, behind a trait so a lookup
+/// failure can be exercised without a live Postgres.
+#[async_trait]
+pub trait AbTestLookup: Send + Sync {
+    /// `Ok(None)` means the campaign has no A/B test; `Err` means we could not tell.
+    async fn find_by_campaign(&self, campaign_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::AbTest>>;
 }
