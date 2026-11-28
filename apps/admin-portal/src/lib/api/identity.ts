@@ -44,7 +44,6 @@ export interface InviteUserPayload {
 export interface InviteUserResult {
   user_id: string;
   email: string;
-  temp_password: string;
 }
 
 // ── Pricing feature types ───────────────────────────────────────────────────────

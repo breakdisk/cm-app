@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, UserPlus, Truck, CheckCircle2, ChevronRight, Loader2, Eye, EyeOff, Link2, Copy, Check } from "lucide-react";
+import { X, UserPlus, Truck, CheckCircle2, ChevronRight, Loader2, Link2, Copy, Check } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { createIdentityApi } from "@/lib/api/identity";
 import { createDriversApi } from "@/lib/api/drivers";
@@ -31,7 +31,6 @@ interface OnboardResult {
   user_id:     string;
   driver_id:   string;
   email:       string;
-  temp_password: string;
   is_gig:      boolean;
 }
 
@@ -57,7 +56,6 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showPassword, setShowPassword] = useState(false);
 
   // Step 1 state — identity/invite
   const [s1, setS1] = useState<Step1Fields>({
@@ -83,7 +81,6 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
     setLoading(false);
     setError(null);
     setResult(null);
-    setShowPassword(false);
     setInviteLinkCopied(false);
     setInviteLinkLoading(false);
     setInviteLinkError(null);
@@ -137,12 +134,11 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
         // which would assign a new UUID on every fresh install.
         phone_number: s1.phone,
       });
-      // Store user_id + temp_password for the result screen
+      // Store user_id for the result screen (no credential is issued)
       setResult({
         user_id:       res.data.user_id,
         driver_id:     "",
         email:         res.data.email,
-        temp_password: res.data.temp_password,
         is_gig:        false,
       });
       setStep(2);
@@ -454,7 +450,7 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
                     </div>
                     <p className="font-heading font-bold text-white">Driver Onboarded!</p>
                     <p className="text-xs text-white/40">
-                      {s1.first_name} {s1.last_name} is registered and offline. They can log in with the credentials below.
+                      {s1.first_name} {s1.last_name} is registered and offline. They sign in to the Driver App with their phone number and an SMS one-time code.
                     </p>
                   </div>
 
@@ -463,17 +459,6 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
                       <span className="text-xs text-white/40 font-mono">Email</span>
                       <span className="text-xs text-white font-mono">{result.email}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs text-white/40 font-mono">Temp Password</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-amber-signal font-mono font-semibold">
-                          {showPassword ? result.temp_password : "••••••••••••"}
-                        </span>
-                        <button onClick={() => setShowPassword((p) => !p)} className="text-white/30 hover:text-white/60 transition-colors">
-                          {showPassword ? <EyeOff size={12} /> : <Eye size={12} />}
-                        </button>
-                      </div>
-                    </div>
                     <div className="flex justify-between">
                       <span className="text-xs text-white/40 font-mono">Driver ID</span>
                       <span className="text-xs text-white/60 font-mono">{result.driver_id.slice(0, 8)}…</span>
@@ -481,7 +466,7 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
                   </div>
 
                   <p className="text-2xs text-white/30 text-center font-mono">
-                    Share credentials securely. Driver must change password on first login.
+                    No password is issued. The driver logs in with the SMS code sent to their phone.
                   </p>
 
                   {/* Compliance reminder */}
