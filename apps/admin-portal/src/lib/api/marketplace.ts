@@ -154,22 +154,98 @@ function bookingToAdmin(b: MarketplaceBooking): AdminBooking {
 
 // ── Public API functions ──────────────────────────────────────────────────────
 
-/** Throws on any failure: an empty array always means the tenant has no listings. */
-export async function fetchAllListings(): Promise<AdminListing[]> {
-  const json = await apiGetStrict<{ listings?: ApiListing[] } | ApiListing[]>("/v1/marketplace/admin/listings");
-  const raw = Array.isArray(json) ? json : (json.listings ?? []);
-  return raw.map(apiListingToAdmin);
+// ── Pagination ────────────────────────────────────────────────────────────────
+//
+// The carrier service pages `/v1/marketplace/admin/*` (default 50, capped at
+// 100) and reports `total` beside the page. Reading only the first response
+// silently drops row 51 onward, so every reader here either asks for a page and
+// keeps `total`, or walks the pages until it has them all.
+
+/** Rows per request the carrier service will honour. */
+export const ADMIN_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+/** Safety stop for "fetch everything" callers; a tenant beyond this needs a server-side aggregate. */
+const MAX_ALL_ROWS = 5_000;
+
+export interface Page<T> {
+  items:  T[];
+  /** Every row the tenant has, not just this page. */
+  total:  number;
+  limit:  number;
+  offset: number;
 }
 
-/** Throws on any failure: an empty array always means the tenant has no bookings. */
-export async function fetchAllBookings(): Promise<AdminBooking[]> {
-  const json = await apiGetStrict<{ bookings?: MarketplaceBooking[] } | MarketplaceBooking[]>(
-    "/v1/marketplace/admin/bookings",
+interface PagedEnvelope {
+  total?:  number;
+  limit?:  number;
+  offset?: number;
+  [key: string]: unknown;
+}
+
+async function fetchPage<Raw>(
+  path: string, key: "listings" | "bookings", offset: number, limit: number,
+): Promise<Page<Raw>> {
+  const json = await apiGetStrict<PagedEnvelope | Raw[]>(
+    `${path}?limit=${limit}&offset=${offset}`,
   );
-  const raw = Array.isArray(json) ? json : (json.bookings ?? []);
-  return raw
-    .map(bookingToAdmin)
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const items = (Array.isArray(json) ? json : ((json[key] as Raw[] | undefined) ?? []));
+  // An older carrier service sends no `total`: fall back to what we can see.
+  const total = !Array.isArray(json) && typeof json.total === "number"
+    ? json.total
+    : offset + items.length;
+  return { items, total, limit, offset };
+}
+
+/** Walks pages until `want` rows are held or the tenant has no more. */
+async function fetchUpTo<Raw>(
+  path: string, key: "listings" | "bookings", want: number,
+): Promise<{ items: Raw[]; total: number }> {
+  const items: Raw[] = [];
+  let total = 0;
+  while (items.length < want) {
+    const page = await fetchPage<Raw>(path, key, items.length, Math.min(MAX_PAGE_SIZE, want - items.length));
+    items.push(...page.items);
+    total = page.total;
+    if (page.items.length === 0 || items.length >= total) break;
+  }
+  return { items, total };
+}
+
+const sortNewestFirst = (a: AdminBooking, b: AdminBooking) =>
+  new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+
+/** One page of listings. Throws on any failure. */
+export async function fetchListingsPage(offset = 0, limit = ADMIN_PAGE_SIZE): Promise<Page<AdminListing>> {
+  const p = await fetchPage<ApiListing>("/v1/marketplace/admin/listings", "listings", offset, limit);
+  return { ...p, items: p.items.map(apiListingToAdmin) };
+}
+
+/** One page of bookings, newest first. Throws on any failure. */
+export async function fetchBookingsPage(offset = 0, limit = ADMIN_PAGE_SIZE): Promise<Page<AdminBooking>> {
+  const p = await fetchPage<MarketplaceBooking>("/v1/marketplace/admin/bookings", "bookings", offset, limit);
+  return { ...p, items: p.items.map(bookingToAdmin).sort(sortNewestFirst) };
+}
+
+/** The first `want` listings (at least one page) plus the tenant total. Throws on any failure. */
+export async function fetchListingsUpTo(want: number): Promise<{ items: AdminListing[]; total: number }> {
+  const r = await fetchUpTo<ApiListing>("/v1/marketplace/admin/listings", "listings", Math.max(want, ADMIN_PAGE_SIZE));
+  return { items: r.items.map(apiListingToAdmin), total: r.total };
+}
+
+/** The first `want` bookings, newest first (at least one page), plus the tenant total. Throws on any failure. */
+export async function fetchBookingsUpTo(want: number): Promise<{ items: AdminBooking[]; total: number }> {
+  const r = await fetchUpTo<MarketplaceBooking>("/v1/marketplace/admin/bookings", "bookings", Math.max(want, ADMIN_PAGE_SIZE));
+  return { items: r.items.map(bookingToAdmin).sort(sortNewestFirst), total: r.total };
+}
+
+/** Every listing, across all pages. Throws on any failure: an empty array always means the tenant has none. */
+export async function fetchAllListings(): Promise<AdminListing[]> {
+  return (await fetchListingsUpTo(MAX_ALL_ROWS)).items;
+}
+
+/** Every booking, across all pages. Throws on any failure: an empty array always means the tenant has none. */
+export async function fetchAllBookings(): Promise<AdminBooking[]> {
+  return (await fetchBookingsUpTo(MAX_ALL_ROWS)).items;
 }
 
 export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {

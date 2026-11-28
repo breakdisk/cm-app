@@ -42,9 +42,12 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge, type BadgeVariant } from "@/components/ui/neon-badge";
 import { cn } from "@/lib/design-system/cn";
 import {
-  fetchAllListings,
-  fetchAllBookings,
+  fetchListingsUpTo,
+  fetchBookingsUpTo,
+  fetchListingsPage,
+  fetchBookingsPage,
   fetchMarketplaceStats,
+  ADMIN_PAGE_SIZE,
   formatCentsPhp,
   SIZE_CLASS_LABEL,
   type AdminListing,
@@ -173,6 +176,12 @@ function AdminMarketplacePageInner() {
 
   const [listings, setListings] = useState<AdminListing[]>([]);
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
+  // `listings` / `bookings` hold the pages loaded so far; the totals are what the
+  // tenant has, so the page can say when it is showing a slice.
+  const [listingsTotal, setListingsTotal] = useState(0);
+  const [bookingsTotal, setBookingsTotal] = useState(0);
+  const [loadingMore, setLoadingMore]     = useState<Tab | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState(false);
   const [stats, setStats]       = useState<MarketplaceStats | null>(null);
   const [loading, setLoading]   = useState(true);
   // A failed refresh keeps the last good lists and flags the outage; the next success clears it.
@@ -199,18 +208,28 @@ function AdminMarketplacePageInner() {
 
   // A tick (or roster nudge) that lands while a request is outstanding is skipped.
   const inFlightRef = useRef(false);
+  // How many rows are on screen, so a refresh re-reads that many rather than
+  // collapsing a list the operator has paged down back to page one.
+  const loadedRef = useRef({ listings: 0, bookings: 0 });
+  const listingsRef = useRef<AdminListing[]>([]);
+  const bookingsRef = useRef<AdminBooking[]>([]);
   const refresh = useCallback(async () => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     try {
       const [l, b, s] = await Promise.all([
-        fetchAllListings(),
-        fetchAllBookings(),
+        fetchListingsUpTo(loadedRef.current.listings),
+        fetchBookingsUpTo(loadedRef.current.bookings),
         fetchMarketplaceStats(),
       ]);
       if (!mountedRef.current) return;
-      setListings(l);
-      setBookings(b);
+      loadedRef.current = { listings: l.items.length, bookings: b.items.length };
+      listingsRef.current = l.items;
+      bookingsRef.current = b.items;
+      setListings(l.items);
+      setListingsTotal(l.total);
+      setBookings(b.items);
+      setBookingsTotal(b.total);
       setStats(s);
       setLoadError(false);
     } catch {
@@ -224,6 +243,38 @@ function AdminMarketplacePageInner() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Appends the next page. Rows are de-duplicated by id: the list is newest
+  // first, so a row created since the last read shifts the window by one.
+  const loadMore = useCallback(async (which: Tab) => {
+    setLoadingMore(which);
+    setLoadMoreError(false);
+    try {
+      if (which === "listings") {
+        const p = await fetchListingsPage(loadedRef.current.listings, ADMIN_PAGE_SIZE);
+        if (!mountedRef.current) return;
+        const seen = new Set(listingsRef.current.map((x) => x.id));
+        const next = [...listingsRef.current, ...p.items.filter((x) => !seen.has(x.id))];
+        listingsRef.current = next;
+        loadedRef.current = { ...loadedRef.current, listings: next.length };
+        setListings(next);
+        setListingsTotal(p.total);
+      } else {
+        const p = await fetchBookingsPage(loadedRef.current.bookings, ADMIN_PAGE_SIZE);
+        if (!mountedRef.current) return;
+        const seen = new Set(bookingsRef.current.map((x) => x.id));
+        const next = [...bookingsRef.current, ...p.items.filter((x) => !seen.has(x.id))];
+        bookingsRef.current = next;
+        loadedRef.current = { ...loadedRef.current, bookings: next.length };
+        setBookings(next);
+        setBookingsTotal(p.total);
+      }
+    } catch {
+      if (mountedRef.current) setLoadMoreError(true);
+    } finally {
+      if (mountedRef.current) setLoadingMore(null);
+    }
+  }, []);
 
   // Live-ish refresh: bookings advance through pending→accepted→in_transit
   // driven by carrier driver status flips. The roster channel gives us the
@@ -395,10 +446,10 @@ function AdminMarketplacePageInner() {
       {/* ── Tab switcher ──────────────────────────────────────────────────── */}
       <div className="flex items-center gap-1 border-b border-glass-border">
         <TabButton active={tab === "listings"} onClick={() => setTab("listings")}>
-          Listings ({listings.length})
+          Listings ({listingsTotal})
         </TabButton>
         <TabButton active={tab === "bookings"} onClick={() => setTab("bookings")}>
-          Bookings ({bookings.length})
+          Bookings ({bookingsTotal})
           {disputedCount > 0 && (
             <span className="ml-2 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-signal px-1 font-mono text-2xs text-canvas">
               {disputedCount}
@@ -497,12 +548,24 @@ function AdminMarketplacePageInner() {
 
       {/* ── Content ───────────────────────────────────────────────────────── */}
       {tab === "listings" ? (
-        <ListingsTable rows={filteredListings} total={listings.length} loading={loading} />
+        <ListingsTable
+          rows={filteredListings}
+          loaded={listings.length}
+          total={listingsTotal}
+          loading={loading}
+          loadingMore={loadingMore === "listings"}
+          loadMoreError={loadMoreError}
+          onLoadMore={() => void loadMore("listings")}
+        />
       ) : (
         <BookingsTable
           rows={filteredBookings}
-          total={bookings.length}
+          loaded={bookings.length}
+          total={bookingsTotal}
           loading={loading}
+          loadingMore={loadingMore === "bookings"}
+          loadMoreError={loadMoreError}
+          onLoadMore={() => void loadMore("bookings")}
           onOpenReceipt={setReceiptBooking}
           onResolveDispute={(b) => setDisputeBooking(b)}
         />
@@ -730,12 +793,20 @@ function TabButton({
 
 function ListingsTable({
   rows,
+  loaded,
   total,
   loading,
+  loadingMore,
+  loadMoreError,
+  onLoadMore,
 }: {
   rows: AdminListing[];
+  loaded: number;
   total: number;
   loading: boolean;
+  loadingMore: boolean;
+  loadMoreError: boolean;
+  onLoadMore: () => void;
 }) {
   return (
     <GlassCard size="sm" padding="none" accent glow="purple">
@@ -854,15 +925,63 @@ function ListingsTable({
         </table>
       </div>
 
-      <div className="flex items-center justify-between border-t border-glass-border px-5 py-2.5 text-2xs text-white/40">
-        <span>
-          Showing {rows.length} of {total} listings across the network
-        </span>
-        <span className="font-mono">
-          RLS · scope=tenant · cross-partner visibility enabled
-        </span>
-      </div>
+      <PagerFooter
+        noun="listings"
+        shown={rows.length}
+        loaded={loaded}
+        total={total}
+        loadingMore={loadingMore}
+        loadMoreError={loadMoreError}
+        onLoadMore={onLoadMore}
+        note="RLS · scope=tenant · cross-partner visibility enabled"
+      />
     </GlassCard>
+  );
+}
+
+// ── Pager footer ──────────────────────────────────────────────────────────────
+
+/**
+ * "Showing X of N" plus Load more. X is what survives the filters among the rows
+ * loaded so far; N is everything the tenant has. When rows are not loaded yet,
+ * say so and offer the next page.
+ */
+function PagerFooter({
+  noun, shown, loaded, total, loadingMore, loadMoreError, onLoadMore, note,
+}: {
+  noun: string;
+  shown: number;
+  loaded: number;
+  total: number;
+  loadingMore: boolean;
+  loadMoreError: boolean;
+  onLoadMore: () => void;
+  note: string;
+}) {
+  const hasMore = loaded < total;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-glass-border px-5 py-2.5 text-2xs text-white/40">
+      <span>
+        Showing {shown} of {total} {noun}
+        {hasMore && ` · ${loaded} loaded, filters apply to loaded rows only`}
+      </span>
+      <div className="flex flex-wrap items-center gap-3">
+        {loadMoreError && (
+          <span role="alert" className="text-red-signal">Could not load more.</span>
+        )}
+        {hasMore && (
+          <button
+            type="button"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="rounded-md border border-glass-border px-3 py-1 font-mono text-xs text-white/70 transition-colors hover:bg-white/5 disabled:opacity-50"
+          >
+            {loadingMore ? "Loading…" : `Load more (${total - loaded} remaining)`}
+          </button>
+        )}
+        <span className="font-mono">{note}</span>
+      </div>
+    </div>
   );
 }
 
@@ -870,14 +989,22 @@ function ListingsTable({
 
 function BookingsTable({
   rows,
+  loaded,
   total,
   loading,
+  loadingMore,
+  loadMoreError,
+  onLoadMore,
   onOpenReceipt,
   onResolveDispute,
 }: {
   rows: AdminBooking[];
+  loaded: number;
   total: number;
   loading: boolean;
+  loadingMore: boolean;
+  loadMoreError: boolean;
+  onLoadMore: () => void;
   onOpenReceipt: (b: AdminBooking) => void;
   onResolveDispute: (b: AdminBooking) => void;
 }) {
@@ -1005,10 +1132,16 @@ function BookingsTable({
         </table>
       </div>
 
-      <div className="flex items-center justify-between border-t border-glass-border px-5 py-2.5 text-2xs text-white/40">
-        <span>Showing {rows.length} of {total} bookings</span>
-        <span className="font-mono">Consumer identity masked until carrier accepts</span>
-      </div>
+      <PagerFooter
+        noun="bookings"
+        shown={rows.length}
+        loaded={loaded}
+        total={total}
+        loadingMore={loadingMore}
+        loadMoreError={loadMoreError}
+        onLoadMore={onLoadMore}
+        note="Consumer identity masked until carrier accepts"
+      />
     </GlassCard>
   );
 }

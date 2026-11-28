@@ -40,35 +40,51 @@ pub struct AdminCreateListingBody {
     pub listing:    CreateListingCommand,
 }
 
-/// GET /v1/marketplace/admin/listings
+/// GET /v1/marketplace/admin/listings?limit=&offset=
+///
+/// Pages newest-first. `count` is the size of this page (as before); `total`
+/// is every listing in the tenant, and `limit`/`offset` are the window that
+/// was actually applied (the service holds `limit` to 1..=100), so a client
+/// can tell a full list from a cut-off one and ask for the next page.
 pub async fn admin_list_listings(
     State(state): State<AppState>,
     claims: AuthClaims,
     Query(q): Query<AdminPaginationQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CARRIERS_MANAGE)?;
+    let (limit, offset) = MarketplaceService::clamp_page(q.limit.unwrap_or(50), q.offset.unwrap_or(0));
     let listings = state.marketplace_svc
-        .list_listings_for_tenant(claims.tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0))
+        .list_listings_for_tenant(claims.tenant_id, limit, offset)
         .await?;
+    let total = state.marketplace_svc.count_listings_for_tenant(claims.tenant_id).await?;
     let count = listings.len();
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"listings": listings, "count": count}))))
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "listings": listings, "count": count, "total": total, "limit": limit, "offset": offset,
+    }))))
 }
 
-/// GET /v1/marketplace/admin/bookings
+/// GET /v1/marketplace/admin/bookings?limit=&offset=
+///
+/// Same paging contract as the listings route. `total` counts what the list
+/// can reach: unfunded online holds are in neither.
 pub async fn admin_list_bookings(
     State(state): State<AppState>,
     claims: AuthClaims,
     Query(q): Query<AdminPaginationQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CARRIERS_MANAGE)?;
+    let (limit, offset) = MarketplaceService::clamp_page(q.limit.unwrap_or(50), q.offset.unwrap_or(0));
     let bookings: Vec<_> = state.marketplace_svc
-        .list_bookings_for_tenant(claims.tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0))
+        .list_bookings_for_tenant(claims.tenant_id, limit, offset)
         .await?
         .into_iter()
         .map(MarketplaceService::apply_pii_mask)
         .collect();
+    let total = state.marketplace_svc.count_bookings_for_tenant(claims.tenant_id).await?;
     let count = bookings.len();
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"bookings": bookings, "count": count}))))
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "bookings": bookings, "count": count, "total": total, "limit": limit, "offset": offset,
+    }))))
 }
 
 /// POST /v1/marketplace/admin/listings
@@ -94,9 +110,8 @@ pub async fn admin_create_listing(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    use async_trait::async_trait;
     use axum::{
         body::Body,
         http::{header, Method, Request},
@@ -104,109 +119,13 @@ mod tests {
         Router,
     };
     use chrono::{Duration, Utc};
-    use logisticos_auth::{claims::Claims, jwt::JwtService};
-    use logisticos_events::producer::KafkaProducer;
+    use logisticos_auth::claims::Claims;
     use logisticos_types::TenantId;
     use tower::ServiceExt;
 
-    use crate::application::services::CarrierService;
-    use crate::domain::entities::{
-        Carrier, CarrierId, MarketplaceBooking, SizeClass, SlaCommitment, SlaRecord, VehicleListing,
-        ZoneSlaRow,
-    };
-    use crate::domain::repositories::{
-        BreachReasonRow, CarrierRepository, MarketplaceRepository, SlaRecordRepository,
-    };
-    use crate::infrastructure::{external::ExternalCarrierClient, messaging::CarrierPublisher};
+    use crate::domain::entities::{Carrier, SizeClass, SlaCommitment, VehicleListing};
     use crate::infrastructure::adapters::AdapterRegistry;
-
-    // ── Doubles ───────────────────────────────────────────────────────────
-
-    #[derive(Default)]
-    struct Carriers(Mutex<Vec<Carrier>>);
-
-    #[async_trait]
-    impl CarrierRepository for Carriers {
-        async fn find_by_id(&self, id: &CarrierId) -> anyhow::Result<Option<Carrier>> {
-            Ok(self.0.lock().unwrap().iter().find(|c| c.id == *id).cloned())
-        }
-        async fn find_by_code(&self, _t: &TenantId, _c: &str) -> anyhow::Result<Option<Carrier>> { Ok(None) }
-        async fn find_by_contact_email(&self, _t: &TenantId, _e: &str) -> anyhow::Result<Option<Carrier>> { Ok(None) }
-        async fn list(&self, _t: &TenantId, _l: i64, _o: i64) -> anyhow::Result<Vec<Carrier>> { Ok(vec![]) }
-        async fn list_active(&self, _t: &TenantId) -> anyhow::Result<Vec<Carrier>> { Ok(vec![]) }
-        async fn save(&self, c: &Carrier) -> anyhow::Result<()> {
-            self.0.lock().unwrap().push(c.clone());
-            Ok(())
-        }
-    }
-
-    struct NoSla;
-
-    #[async_trait]
-    impl SlaRecordRepository for NoSla {
-        async fn create(&self, _r: &SlaRecord) -> anyhow::Result<()> { Ok(()) }
-        async fn find_by_shipment(&self, _s: Uuid) -> anyhow::Result<Option<SlaRecord>> { Ok(None) }
-        async fn save_outcome(&self, _r: &SlaRecord) -> anyhow::Result<()> { Ok(()) }
-        async fn list_by_carrier(&self, _c: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<SlaRecord>> { Ok(vec![]) }
-        async fn zone_summary(&self, _c: Uuid, _f: chrono::DateTime<Utc>, _t: chrono::DateTime<Utc>) -> anyhow::Result<Vec<ZoneSlaRow>> { Ok(vec![]) }
-        async fn breach_reasons(&self, _c: Uuid, _f: chrono::DateTime<Utc>, _t: chrono::DateTime<Utc>) -> anyhow::Result<Vec<BreachReasonRow>> { Ok(vec![]) }
-    }
-
-    #[derive(Default)]
-    struct Market {
-        listings: Mutex<Vec<VehicleListing>>,
-        bookings: Mutex<Vec<MarketplaceBooking>>,
-    }
-
-    #[async_trait]
-    impl MarketplaceRepository for Market {
-        async fn create_listing(&self, l: &VehicleListing) -> anyhow::Result<()> {
-            self.listings.lock().unwrap().push(l.clone());
-            Ok(())
-        }
-        async fn find_listing_by_id(&self, _id: Uuid) -> anyhow::Result<Option<VehicleListing>> { Ok(None) }
-        async fn list_listings_by_carrier(&self, _c: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<VehicleListing>> { Ok(vec![]) }
-        async fn list_listings_by_tenant(&self, t: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<VehicleListing>> {
-            Ok(self.listings.lock().unwrap().iter().filter(|l| l.tenant_id == t).cloned().collect())
-        }
-        async fn update_listing(&self, _l: &VehicleListing) -> anyhow::Result<()> { Ok(()) }
-        async fn delete_listing(&self, _id: Uuid) -> anyhow::Result<bool> { Ok(true) }
-        async fn find_available_listings(
-            &self, _t: Uuid, _w: f32, _s: Option<&str>, _at: chrono::DateTime<Utc>, _l: i64,
-        ) -> anyhow::Result<Vec<VehicleListing>> { Ok(vec![]) }
-        async fn create_booking(&self, _b: &MarketplaceBooking) -> anyhow::Result<()> { Ok(()) }
-        async fn save_booking_payment_reference(&self, _b: &MarketplaceBooking) -> anyhow::Result<()> { Ok(()) }
-        async fn list_bookings_by_booker(&self, _t: Uuid, _u: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<MarketplaceBooking>> { Ok(vec![]) }
-        async fn list_pending_bookings(&self, _l: i64) -> anyhow::Result<Vec<MarketplaceBooking>> { Ok(vec![]) }
-        async fn find_booking_by_id(&self, _id: Uuid) -> anyhow::Result<Option<MarketplaceBooking>> { Ok(None) }
-        async fn list_bookings_by_carrier(&self, _c: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<MarketplaceBooking>> { Ok(vec![]) }
-        async fn list_bookings_by_tenant(&self, t: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<MarketplaceBooking>> {
-            Ok(self.bookings.lock().unwrap().iter().filter(|b| b.tenant_id == t).cloned().collect())
-        }
-        async fn save_booking(&self, _b: &MarketplaceBooking) -> anyhow::Result<()> { Ok(()) }
-        async fn transition_booking(
-            &self,
-            b: &MarketplaceBooking,
-            expected_status: &crate::domain::entities::BookingStatus,
-            expected_payment: crate::domain::entities::BookingPaymentStatus,
-        ) -> anyhow::Result<bool> {
-            let mut all = self.bookings.lock().unwrap();
-            match all.iter_mut().find(|x| {
-                x.id == b.id && x.tenant_id == b.tenant_id
-                    && x.status == *expected_status && x.payment_status == expected_payment
-            }) {
-                Some(e) => { *e = b.clone(); Ok(true) }
-                None => Ok(false),
-            }
-        }
-    }
-
-    fn noop_kafka() -> Arc<KafkaProducer> {
-        let cluster = rdkafka::mocking::MockCluster::new(1).expect("mock kafka cluster");
-        let brokers = cluster.bootstrap_servers();
-        Box::leak(Box::new(cluster));
-        Arc::new(KafkaProducer::new(&brokers).expect("noop kafka producer"))
-    }
+    use crate::test_support::{app_state, Carriers, Market};
 
     fn carrier_in(tenant: Uuid) -> Carrier {
         Carrier::new(
@@ -238,20 +157,7 @@ mod tests {
         carriers.0.lock().unwrap().push(carrier.clone());
         let market = Arc::new(Market::default());
 
-        let kafka = noop_kafka();
-        let state = AppState {
-            carrier_svc:      Arc::new(CarrierService::new(
-                carriers.clone(),
-                Arc::new(NoSla),
-                Arc::new(CarrierPublisher::new(kafka.clone())),
-                Arc::new(ExternalCarrierClient::new(None)),
-            )),
-            marketplace_svc:  Arc::new(MarketplaceService::new(market.clone(), kafka)),
-            jwt:              Arc::new(JwtService::new("test-secret", 300, 600)),
-            adapter_registry: Arc::new(AdapterRegistry::new()),
-            storage:          None,
-            booking_repo:     None,
-        };
+        let state = app_state(carriers.clone(), market.clone(), AdapterRegistry::new(), "test-secret", None);
         let claims = Claims::new(
             Uuid::new_v4(), tenant, "t".into(), "enterprise".into(), "admin@t.test".into(),
             vec![], perms.iter().map(|p| p.to_string()).collect(), 300,
@@ -343,6 +249,71 @@ mod tests {
         assert_eq!(s_missing, StatusCode::NOT_FOUND);
         assert_eq!(b_foreign["error"]["code"], b_missing["error"]["code"]);
         assert!(f.market.listings.lock().unwrap().is_empty());
+    }
+
+    // ── Pagination ────────────────────────────────────────────────────────
+
+    fn booking_in(tenant: Uuid, online_pending: bool) -> crate::domain::entities::MarketplaceBooking {
+        use crate::domain::entities::{BookingPaymentMethod, BookingPaymentStatus, MarketplaceBooking};
+        let listing = listing_in(tenant, Uuid::new_v4());
+        let mut b = MarketplaceBooking::place(
+            &listing, Uuid::new_v4(), Uuid::new_v4(), "CM-TEST".into(), "Ann".into(), None,
+            "A".into(), "B".into(), 10.0, None, 5.0, Utc::now(),
+        );
+        if online_pending {
+            b.payment_method = BookingPaymentMethod::Online;
+            b.payment_status = BookingPaymentStatus::Pending;
+        }
+        b
+    }
+
+    #[tokio::test]
+    async fn admin_listings_report_the_tenant_total_beyond_the_page() {
+        let tenant = Uuid::new_v4();
+        let f = fixture(tenant, &[permissions::CARRIERS_MANAGE]);
+        {
+            let mut l = f.market.listings.lock().unwrap();
+            for _ in 0..5 { l.push(listing_in(tenant, Uuid::new_v4())); }
+            l.push(listing_in(Uuid::new_v4(), Uuid::new_v4())); // another tenant
+        }
+        let (s, b) = call(f.app.clone(), get("/v1/marketplace/admin/listings?limit=2&offset=0")).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(b["count"], 2, "count stays the size of this page");
+        assert_eq!(b["total"], 5, "total is the whole tenant, not the page");
+        assert_eq!(b["limit"], 2);
+        assert_eq!(b["offset"], 0);
+
+        let (_, last) = call(f.app, get("/v1/marketplace/admin/listings?limit=2&offset=4")).await;
+        assert_eq!(last["count"], 1);
+        assert_eq!(last["total"], 5);
+        assert_eq!(last["offset"], 4);
+    }
+
+    #[tokio::test]
+    async fn admin_listings_echo_the_window_actually_applied() {
+        let f = fixture(Uuid::new_v4(), &[permissions::CARRIERS_MANAGE]);
+        let (_, b) = call(f.app.clone(), get("/v1/marketplace/admin/listings")).await;
+        assert_eq!(b["limit"], 50, "default page size");
+        let (_, huge) = call(f.app, get("/v1/marketplace/admin/listings?limit=100000&offset=-9")).await;
+        assert_eq!(huge["limit"], 100, "service caps the page at 100");
+        assert_eq!(huge["offset"], 0);
+    }
+
+    #[tokio::test]
+    async fn admin_bookings_total_excludes_unfunded_online_holds_and_other_tenants() {
+        let tenant = Uuid::new_v4();
+        let f = fixture(tenant, &[permissions::CARRIERS_MANAGE]);
+        {
+            let mut bk = f.market.bookings.lock().unwrap();
+            for _ in 0..3 { bk.push(booking_in(tenant, false)); }
+            bk.push(booking_in(tenant, true));              // hold not landed: not an offer
+            bk.push(booking_in(Uuid::new_v4(), false));     // another tenant
+        }
+        let (s, b) = call(f.app, get("/v1/marketplace/admin/bookings?limit=2")).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(b["count"], 2);
+        assert_eq!(b["total"], 3);
+        assert_eq!(b["limit"], 2);
     }
 
     // ── Permission gate ───────────────────────────────────────────────────

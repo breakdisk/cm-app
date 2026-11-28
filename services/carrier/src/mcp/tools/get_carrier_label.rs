@@ -8,23 +8,25 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use crate::AppState;
 use crate::mcp::context::McpContext;
+use crate::mcp::ids::carrier_ref;
+use crate::mcp::ownership::require_own_booking_ref;
 use crate::infrastructure::adapters::LabelFormat;
 
-pub async fn handle(args: &Value, _ctx: &McpContext, state: &Arc<AppState>) -> Result<Value, String> {
+pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Result<Value, String> {
     let carrier_code = args["carrier_code"]
         .as_str()
         .ok_or("carrier_code is required")?
         .to_uppercase();
 
-    let booking_ref = args["booking_ref"]
-        .as_str()
-        .ok_or("booking_ref is required")?;
+    let booking_ref = carrier_ref(args, "booking_ref")?;
 
     let format = match args["format"].as_str().unwrap_or("PDF").to_uppercase().as_str() {
         "ZPL" => LabelFormat::Zpl,
         "PNG" => LabelFormat::Png,
         _     => LabelFormat::Pdf,
     };
+
+    require_own_booking_ref(state, ctx, &carrier_code, booking_ref).await?;
 
     let adapter = state.adapter_registry
         .get(&carrier_code)

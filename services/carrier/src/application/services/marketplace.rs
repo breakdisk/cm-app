@@ -253,6 +253,13 @@ impl MarketplaceService {
             .map_err(AppError::internal)
     }
 
+    /// The page window the admin lists actually serve: `limit` is held to
+    /// 1..=100 and `offset` to 0 or more. Exposed so the route can echo back
+    /// the window it really applied rather than the one the caller asked for.
+    pub fn clamp_page(limit: i64, offset: i64) -> (i64, i64) {
+        (limit.clamp(1, 100), offset.max(0))
+    }
+
     /// Tenant-wide listing read for admin oversight. `tenant_id` must come
     /// from the validated token.
     pub async fn list_listings_for_tenant(
@@ -261,27 +268,39 @@ impl MarketplaceService {
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<VehicleListing>> {
+        let (limit, offset) = Self::clamp_page(limit, offset);
         self.repo
-            .list_listings_by_tenant(tenant_id, limit.clamp(1, 100), offset.max(0))
+            .list_listings_by_tenant(tenant_id, limit, offset)
             .await
             .map_err(AppError::internal)
     }
 
+    /// Total listings in the tenant, for the `total` beside a paged list.
+    pub async fn count_listings_for_tenant(&self, tenant_id: Uuid) -> AppResult<i64> {
+        self.repo.count_listings_by_tenant(tenant_id).await.map_err(AppError::internal)
+    }
+
     /// Tenant-wide booking read for admin oversight. Same visibility rule as
     /// the carrier inbox: an online booking whose hold has not landed is not
-    /// an offer yet, so it is not listed.
+    /// an offer yet, so it is not listed. The repository applies that rule in
+    /// SQL, before `LIMIT`, so a page is never short and `offset` never skips
+    /// rows the caller cannot see.
     pub async fn list_bookings_for_tenant(
         &self,
         tenant_id: Uuid,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<MarketplaceBooking>> {
-        let bookings = self
-            .repo
-            .list_bookings_by_tenant(tenant_id, limit.clamp(1, 100), offset.max(0))
+        let (limit, offset) = Self::clamp_page(limit, offset);
+        self.repo
+            .list_bookings_by_tenant(tenant_id, limit, offset)
             .await
-            .map_err(AppError::internal)?;
-        Ok(bookings.into_iter().filter(MarketplaceBooking::is_offered_to_carrier).collect())
+            .map_err(AppError::internal)
+    }
+
+    /// Total bookings in the tenant the admin list can show.
+    pub async fn count_bookings_for_tenant(&self, tenant_id: Uuid) -> AppResult<i64> {
+        self.repo.count_bookings_by_tenant(tenant_id).await.map_err(AppError::internal)
     }
 
     pub async fn update_listing(
@@ -906,6 +925,12 @@ mod booking_tests {
         }
         async fn list_bookings_by_tenant(&self, t: Uuid, _l: i64, _o: i64) -> anyhow::Result<Vec<MarketplaceBooking>> {
             Ok(self.bookings.lock().unwrap().iter().filter(|b| b.tenant_id == t).cloned().collect())
+        }
+        async fn count_listings_by_tenant(&self, t: Uuid) -> anyhow::Result<i64> {
+            Ok(self.listings.lock().unwrap().iter().filter(|l| l.tenant_id == t).count() as i64)
+        }
+        async fn count_bookings_by_tenant(&self, t: Uuid) -> anyhow::Result<i64> {
+            Ok(self.bookings.lock().unwrap().iter().filter(|b| b.tenant_id == t).count() as i64)
         }
         async fn update_listing(&self, _l: &VehicleListing) -> anyhow::Result<()> { Ok(()) }
         async fn delete_listing(&self, _id: Uuid) -> anyhow::Result<bool> { Ok(true) }
